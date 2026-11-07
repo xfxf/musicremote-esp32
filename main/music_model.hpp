@@ -13,6 +13,7 @@ enum class PlaybackState : uint8_t { playing = 1, paused = 2, stopped = 3, unkno
 
 struct Track {
   int32_t index{-1};
+  int32_t queue_row{-1};
   int32_t duration_ms{0};
   uint16_t bitrate{0};
   uint8_t rating{0};
@@ -46,6 +47,12 @@ struct Snapshot {
   int32_t active_playlist_id{-1};
   std::string active_playlist_name{"CURRENT PLAYLIST"};
   std::vector<Track> queue;
+  uint32_t queue_total_count{0};
+  uint32_t queue_page_start{0};
+  bool queue_index_ready{false};
+  bool queue_indexing{false};
+  bool queue_filter_active{false};
+  std::string queue_filter_label;
   std::vector<Playlist> playlists;
   uint64_t queue_revision{0};
   uint64_t playlists_revision{0};

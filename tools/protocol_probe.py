@@ -201,7 +201,7 @@ def playback_state(frames: list[Frame]) -> tuple[int, bool, int, int] | None:
     return None
 
 
-def parse_playlists(frames: list[Frame]) -> list[tuple[int, str, bool, bool]]:
+def parse_playlists(frames: list[Frame]) -> list[tuple[int, str, int, bool, bool]]:
     for raw in reversed(frames):
         frame = expand_frame(raw)
         if frame.message_type != 41 or len(frame.payload) < 12:
@@ -209,15 +209,15 @@ def parse_playlists(frames: list[Frame]) -> list[tuple[int, str, bool, bool]]:
         payload = frame.payload
         count = struct.unpack_from("<I", payload)[0]
         offset = 12
-        result: list[tuple[int, str, bool, bool]] = []
+        result: list[tuple[int, str, int, bool, bool]] = []
         for _ in range(count):
             if offset + 12 > len(payload):
                 raise ValueError("truncated playlist collection")
-            playlist_id, _track_count = struct.unpack_from("<ii", payload, offset)
+            playlist_id, track_count = struct.unpack_from("<ii", payload, offset)
             flags = struct.unpack_from("<H", payload, offset + 8)[0]
             offset += 12
             name, offset = cstring(payload, offset)
-            result.append((playlist_id, name, bool(flags & 1), bool(flags & 2)))
+            result.append((playlist_id, name, track_count, bool(flags & 1), bool(flags & 2)))
         return result
     return []
 
@@ -311,8 +311,9 @@ def describe(frame: Frame) -> str:
         folder_id = struct.unpack_from("<i", p, 4)[0]
         entries = parse_playlists([frame])
         summary = ", ".join(
-            f"{playlist_id}:{name!r}{' [folder]' if folder else ''}{' [read-only]' if read_only else ''}"
-            for playlist_id, name, folder, read_only in entries
+            f"{playlist_id}:{name!r} ({track_count} tracks)"
+            f"{' [folder]' if folder else ''}{' [read-only]' if read_only else ''}"
+            for playlist_id, name, track_count, folder, read_only in entries
         )
         return f"playlists folder_id={folder_id} count={count} entries=[{summary}]"
     if frame.message_type in (9, 31, 50):
@@ -332,7 +333,7 @@ def main() -> int:
     parser.add_argument("--env", type=Path, default=Path(".env"))
     parser.add_argument(
         "command",
-        choices=("state", "playlists", "playlist", "ping", "exercise"),
+        choices=("state", "playlists", "playlist", "activate", "ping", "exercise"),
     )
     parser.add_argument("--playlist-id", type=int, default=-1)
     args = parser.parse_args()
@@ -352,6 +353,9 @@ def main() -> int:
         if args.command == "playlists":
             client.send(4, struct.pack("<Bi", 13, args.playlist_id))
         elif args.command == "playlist":
+            client.send(4, struct.pack("<Bii", 10, args.playlist_id, 1))
+        elif args.command == "activate":
+            playback_command(client, 12, args.playlist_id)
             client.send(4, struct.pack("<Bii", 10, args.playlist_id, 1))
         elif args.command == "ping":
             client.send(23)

@@ -42,6 +42,23 @@ Date: 2026-11-08 (Australia/Melbourne)
   specified as a microSD-preferred persistent index in issue #7 because the
   board's 2 MB PSRAM cannot safely retain the wire payload, decoded strings,
   search index, networking, and LVGL state together.
+- Commit `f7a2374` was flashed and completed two physical microSD index runs of
+  all 48,321 `NAS:Music` tracks from the 1,223,088-byte compressed frame. The
+  final run reported completion 89 seconds after boot, stayed authenticated to
+  AIMP throughout, served framebuffer requests while the worker was active,
+  and neither reset nor started a duplicate rebuild. The resulting first page
+  shows real queue rows and the root playlist view resolves AIMP's `-1` current
+  sentinel back to playlist ID 2, highlighting `NAS:Music`.
+- Commit `f68297c` was flashed after the final index-handoff fixes and completed
+  another physical index of the same 48,321-track frame. It reported completion
+  about 77 seconds after frame receipt without resetting or dropping the live
+  UI/network task. AIMP was then restored to `Local files`.
+- Hardware iterations on the same card exposed and fixed three otherwise
+  build-clean faults: 4 KiB I/O buffers exhausting the 12 KiB network-task
+  stack, write-only staging files being read during final index assembly, and
+  synchronous indexing causing AIMP to time out and reconnect. The final design
+  keeps bulk buffers on the heap, opens staging streams for readback, and runs
+  index construction on a separate task while the network task remains live.
 - Commit `36e2d23` was flashed and authenticated after adding monotonic local
   progress extrapolation. Two physical framebuffer captures of the same
   playing track advanced from 24:38 to 24:51, with matching progress-knob
@@ -54,6 +71,37 @@ Date: 2026-11-08 (Australia/Melbourne)
   duration is unknown. Those edge cases still require targeted physical tests;
   this run directly validates normal playing progress and a panic-free online
   soak only.
+- The issue #7 completion build replaced the multi-file index assembler with a
+  single atomic staging file and rebuilt all 48,321 `NAS:Music` rows from the
+  1,223,088-byte compressed response in about 110 seconds. The device remained
+  authenticated and responsive. A reset then received the identical response,
+  validated its source hash, and published the cached index in about 6 seconds
+  without rewriting it.
+- Read-only physical diagnostics loaded the page beginning at global row 10,001,
+  returned A-prefix results with global rows 6, 30, 35, and 86, and found artist
+  substring matches for `Mars` at global rows including 483 and 5,258. This
+  confirms page/search results do not substitute local result positions for the
+  AIMP queue row.
+- A temporary flash-only qualification build mounted the 4 MB `storage` SPIFFS
+  partition with 3,757 KiB usable. It rejected `NAS:Music` as
+  `FLASH INDEX TOO LARGE` without a reset, then—using a lowered streaming
+  threshold only to exercise the same path—built and promoted a 195-track,
+  16,418-byte decoded fixture. Switching to a different fixture inside the
+  15-minute protection interval reused the previous 195-row index and displayed
+  `INDEX STALE - RETRY LATER`; an SPIFFS `access()` incompatibility exposed by
+  this run was replaced with `stat()` checks. The production 512 KiB threshold
+  and `auto` microSD preference were restored afterward.
+- Recovery fault injection physically moved the valid 48,321-row SD index to
+  `INDEX.BAK`, wrote a three-byte corrupt `INDEX.DAT`, and rebooted through the
+  production recovery constructor. The backup was restored and the complete
+  queue became ready from the matching source response in about 6.5 seconds.
+- A separate temporary hash-mismatch build was reset 15 seconds after the full
+  NAS frame began rebuilding. The immediate reset also made the card miss all
+  three mount attempts, so the device safely mounted internal SPIFFS and stayed
+  online instead of crashing. The clean production image then remounted the
+  card, removed about 4 MB of interrupted staging files, retained/reused the
+  prior promoted 48,321-row index, and restored the card's reported free space
+  from 60,595 MB to 60,599 MB on the following boot.
 
 ## Visual inspection
 
@@ -71,3 +119,18 @@ Inspection covered orientation, navigation selection, clipping, list text,
 live state, theme-state colours, the right-aligned connection indicator, main
 volume control, the compact timeline layout, queue paging controls, and
 contiguous full-height bottom touch targets.
+
+The following two large-playlist captures come from commit `f7a2374`, before
+`f68297c` moved queue titles to x=48. They do not yet show the current row
+layout or a page at row 10,000 or later.
+
+![48,321-track SD queue](../artifacts/device-large-queue.png)
+![Large playlist active state](../artifacts/device-large-playlists.png)
+
+The issue #7 completion captures show the current fixed-size paging and local
+search surfaces on the same physical board:
+
+![Queue page beginning at row 10,001](../artifacts/device-large-deep.png)
+![A-prefix results](../artifacts/device-large-az-results.png)
+![A-Z chooser](../artifacts/device-large-az.png)
+![Search keyboard](../artifacts/device-large-search.png)

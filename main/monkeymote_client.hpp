@@ -1,8 +1,10 @@
 #pragma once
 
 #include "music_model.hpp"
+#include "playlist_index.hpp"
 
 #include <atomic>
+#include <cstdio>
 #include <cstdint>
 #include <deque>
 #include <mutex>
@@ -31,6 +33,9 @@ enum class CommandType {
   clear_playlist,
   delete_playlist,
   create_playlist,
+  request_queue_page,
+  filter_queue,
+  clear_queue_filter,
 };
 
 struct Command {
@@ -46,6 +51,8 @@ public:
     std::string host;
     uint16_t port{19371};
     std::string password;
+    std::string storage_directory;
+    bool storage_internal_flash{false};
   };
 
   MonkeyMoteClient(Model &model, Config config);
@@ -60,8 +67,11 @@ private:
   // Leave headroom for LVGL, Wi-Fi and the decoded model on a board with 2 MB
   // PSRAM. Oversized playlist frames are drained without allocating them.
   static constexpr size_t kMaxPayload = 512 * 1024;
+  static constexpr size_t kMaxStreamedPayload = 4 * 1024 * 1024;
+  static constexpr uint32_t kMaxStreamedDecoded = 64 * 1024 * 1024;
 
   static void task_entry(void *context);
+  static void index_task_entry(void *context);
   void run();
   bool connect_and_authenticate();
   void close_socket();
@@ -76,6 +86,13 @@ private:
   void parse_playlists(const std::vector<uint8_t> &payload);
   void parse_playlist(const std::vector<uint8_t> &payload);
   void parse_compressed(const std::vector<uint8_t> &payload);
+  bool start_streamed_frame(uint32_t type, uint32_t length);
+  bool consume_streamed_frame();
+  void finish_streamed_frame();
+  void build_streamed_index();
+  void abort_streamed_frame(const char *status);
+  void load_index_page(uint32_t start, bool require_indexing = false);
+  void search_index_page(uint32_t start, bool require_indexing = false);
 
   Model &model_;
   Config config_;
@@ -84,6 +101,14 @@ private:
   void *task_{nullptr};
   std::vector<uint8_t> receive_buffer_;
   size_t discard_remaining_{0};
+  PlaylistIndex playlist_index_;
+  FILE *streamed_frame_{nullptr};
+  size_t streamed_remaining_{0};
+  std::atomic<bool> index_building_{false};
+  std::atomic<bool> index_superseded_{false};
+  bool queue_filter_active_{false};
+  PlaylistIndex::SearchMode queue_filter_mode_{PlaylistIndex::SearchMode::contains};
+  std::string queue_filter_;
   int64_t last_receive_us_{0};
   int64_t last_ping_us_{0};
   std::mutex commands_mutex_;

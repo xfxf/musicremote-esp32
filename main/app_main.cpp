@@ -5,11 +5,14 @@
 
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
+#include <inttypes.h>
 
 #include "esp_event.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_spiffs.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -24,9 +27,15 @@ constexpr char kTag[] = "musicremote";
 constexpr EventBits_t kWifiConnected = BIT0;
 EventGroupHandle_t wifi_events;
 
+struct DiagnosticContext {
+  musicremote::MusicUi *ui;
+  musicremote::MonkeyMoteClient *client;
+};
+
 esp_err_t screenshot_handler(httpd_req_t *request) {
-  auto *ui = static_cast<musicremote::MusicUi *>(request->user_ctx);
-  char query[32]{};
+  auto *context = static_cast<DiagnosticContext *>(request->user_ctx);
+  auto *ui = context == nullptr ? nullptr : context->ui;
+  char query[192]{};
   char page[16]{};
   if (ui != nullptr && httpd_req_get_url_query_str(request, query, sizeof(query)) == ESP_OK &&
       httpd_query_key_value(query, "page", page, sizeof(page)) == ESP_OK) {
@@ -38,8 +47,46 @@ esp_err_t screenshot_handler(httpd_req_t *request) {
       ui->select_page_for_diagnostics(2);
     } else if (std::strcmp(page, "more") == 0) {
       ui->select_page_for_diagnostics(3);
+    } else if (std::strcmp(page, "az") == 0) {
+      ui->select_overlay_for_diagnostics(1);
+    } else if (std::strcmp(page, "search") == 0) {
+      ui->select_overlay_for_diagnostics(2);
     }
-    vTaskDelay(pdMS_TO_TICKS(40));
+    if (context->client != nullptr) {
+      char start_text[16]{};
+      char filter[8]{};
+      char search[65]{};
+      if (httpd_query_key_value(query, "start", start_text, sizeof(start_text)) == ESP_OK) {
+        char *end = nullptr;
+        const unsigned long start = std::strtoul(start_text, &end, 10);
+        if (end != start_text && end != nullptr && *end == '\0' && start <= INT32_MAX) {
+          context->client->enqueue(
+              {musicremote::CommandType::request_queue_page, static_cast<int32_t>(start)});
+        }
+      }
+      if (httpd_query_key_value(query, "filter", filter, sizeof(filter)) == ESP_OK) {
+        if (std::strcmp(filter, "#") == 0) {
+          context->client->enqueue(
+              {musicremote::CommandType::filter_queue,
+               static_cast<int32_t>(musicremote::PlaylistIndex::SearchMode::non_alpha)});
+        } else if (filter[0] != '\0' && filter[1] == '\0' &&
+                   ((filter[0] >= 'A' && filter[0] <= 'Z') ||
+                    (filter[0] >= 'a' && filter[0] <= 'z'))) {
+          context->client->enqueue(
+              {musicremote::CommandType::filter_queue,
+               static_cast<int32_t>(musicremote::PlaylistIndex::SearchMode::prefix), 0,
+               filter});
+        }
+      }
+      if (httpd_query_key_value(query, "search", search, sizeof(search)) == ESP_OK &&
+          search[0] != '\0') {
+        context->client->enqueue(
+            {musicremote::CommandType::filter_queue,
+             static_cast<int32_t>(musicremote::PlaylistIndex::SearchMode::contains), 0,
+             search});
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(500));
   }
   std::vector<uint8_t> pixels;
   uint32_t width = 0;
@@ -76,7 +123,7 @@ esp_err_t screenshot_handler(httpd_req_t *request) {
   return httpd_resp_send_chunk(request, nullptr, 0);
 }
 
-void start_diagnostics(musicremote::MusicUi &ui) {
+void start_diagnostics(musicremote::MusicUi &ui, musicremote::MonkeyMoteClient &client) {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.stack_size = 8192;
   httpd_handle_t server = nullptr;
@@ -84,10 +131,11 @@ void start_diagnostics(musicremote::MusicUi &ui) {
     ESP_LOGW(kTag, "Could not start screenshot server");
     return;
   }
+  static DiagnosticContext context{.ui = &ui, .client = &client};
   const httpd_uri_t screenshot = {.uri = "/screenshot.ppm",
                                   .method = HTTP_GET,
                                   .handler = screenshot_handler,
-                                  .user_ctx = &ui};
+                                  .user_ctx = &context};
   ESP_ERROR_CHECK_WITHOUT_ABORT(httpd_register_uri_handler(server, &screenshot));
   ESP_LOGI(kTag, "Screenshot endpoint: http://musicremote.local/screenshot.ppm");
 }
@@ -169,6 +217,53 @@ extern "C" void app_main() {
   lv_display_set_rotation(lv_display_get_default(), LV_DISPLAY_ROTATION_90);
   board.brightness(82.0f);
 
+  uint32_t sd_size_mb = 0;
+  uint32_t sd_free_mb = 0;
+  bool sd_ready = false;
+  const bool flash_only = std::strcmp(MUSICREMOTE_PLAYLIST_STORAGE, "flash") == 0;
+  const bool sd_required = std::strcmp(MUSICREMOTE_PLAYLIST_STORAGE, "sd") == 0;
+  if (!flash_only) {
+    for (int attempt = 0; attempt < 3 && !sd_ready; ++attempt) {
+      sd_ready = board.initialize_sdcard({.format_if_mount_failed = false, .max_files = 8});
+      if (!sd_ready) {
+        vTaskDelay(pdMS_TO_TICKS(400));
+      }
+    }
+  }
+  if (!sd_ready) {
+    ESP_LOGW(kTag, "microSD unavailable; large-playlist indexing will remain disabled");
+  } else if (board.get_sd_card_info(&sd_size_mb, &sd_free_mb)) {
+    ESP_LOGI(kTag, "microSD mounted at %s: %" PRIu32 " MB total, %" PRIu32 " MB free",
+             espp::SmartPanleeSc01Plus::mount_point, sd_size_mb, sd_free_mb);
+  } else {
+    ESP_LOGW(kTag, "microSD mounted at %s but its capacity query failed",
+             espp::SmartPanleeSc01Plus::mount_point);
+  }
+
+  bool flash_ready = false;
+  if (!sd_ready && !sd_required) {
+    const esp_vfs_spiffs_conf_t flash_config{.base_path = "/flash",
+                                             .partition_label = "storage",
+                                             .max_files = 8,
+                                             .format_if_mount_failed = true};
+    flash_ready = esp_vfs_spiffs_register(&flash_config) == ESP_OK;
+    if (flash_ready) {
+      size_t total = 0;
+      size_t used = 0;
+      if (esp_spiffs_info("storage", &total, &used) == ESP_OK) {
+        ESP_LOGI(kTag, "Internal playlist storage mounted: %u KB total, %u KB free",
+                 static_cast<unsigned>(total / 1024),
+                 static_cast<unsigned>((total - used) / 1024));
+      }
+    } else {
+      ESP_LOGW(kTag, "Internal playlist storage unavailable");
+    }
+  }
+
+  const char *storage_directory = sd_ready ? "/sdcard/mremote"
+                                  : flash_ready ? "/flash/mremote"
+                                                : "";
+
   static musicremote::Model model;
   model.update([](musicremote::Snapshot &state) {
     state.connection = musicremote::ConnectionState::wifi;
@@ -177,7 +272,9 @@ extern "C" void app_main() {
   static musicremote::MonkeyMoteClient client(
       model, {.host = MUSICREMOTE_AIMP_HOST,
               .port = static_cast<uint16_t>(MUSICREMOTE_AIMP_PORT),
-              .password = MUSICREMOTE_AIMP_PASSWORD});
+              .password = MUSICREMOTE_AIMP_PASSWORD,
+              .storage_directory = storage_directory,
+              .storage_internal_flash = flash_ready});
   static musicremote::MusicUi ui(model, client);
 
   if (!board.initialize_touch()) {
@@ -196,5 +293,5 @@ extern "C" void app_main() {
   mdns_init();
   mdns_hostname_set("musicremote");
   client.start();
-  start_diagnostics(ui);
+  start_diagnostics(ui, client);
 }

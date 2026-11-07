@@ -85,7 +85,24 @@ bool MusicUi::select_page_for_diagnostics(uint8_t page) {
     return false;
   }
   std::lock_guard lock(mutex_);
+  lv_obj_set_hidden(filter_overlay_, true);
+  lv_obj_set_hidden(search_overlay_, true);
   show_page(static_cast<Page>(page));
+  return true;
+}
+
+bool MusicUi::select_overlay_for_diagnostics(uint8_t overlay) {
+  if (overlay > 2) {
+    return false;
+  }
+  std::lock_guard lock(mutex_);
+  lv_obj_set_hidden(filter_overlay_, overlay != 1);
+  lv_obj_set_hidden(search_overlay_, overlay != 2);
+  if (overlay == 1) {
+    lv_obj_move_foreground(filter_overlay_);
+  } else if (overlay == 2) {
+    lv_obj_move_foreground(search_overlay_);
+  }
   return true;
 }
 
@@ -147,6 +164,7 @@ void MusicUi::create_ui() {
   create_playlists_page();
   create_more_page();
   create_navigation();
+  create_filter_overlays();
   show_page(Page::now);
 }
 
@@ -290,13 +308,16 @@ void MusicUi::create_queue_page() {
   lv_obj_set_size(page, 480, 234);
   queue_title_ = make_label(page, "CURRENT PLAYLIST", &lv_font_montserrat_22, color(kText));
   lv_obj_set_pos(queue_title_, 14, 4);
-  lv_obj_set_width(queue_title_, 250);
+  lv_obj_set_width(queue_title_, 144);
   lv_label_set_long_mode(queue_title_, LV_LABEL_LONG_SCROLL_CIRCULAR);
+  queue_filter_button_ = make_button(page, "FIND", 82, 42);
+  lv_obj_set_pos(queue_filter_button_, 168, 0);
+  lv_obj_add_event_cb(queue_filter_button_, event_handler, LV_EVENT_CLICKED, this);
   queue_previous_page_ = make_button(page, LV_SYMBOL_LEFT, 48, 42);
-  lv_obj_set_pos(queue_previous_page_, 278, 0);
+  lv_obj_set_pos(queue_previous_page_, 258, 0);
   lv_obj_add_event_cb(queue_previous_page_, event_handler, LV_EVENT_CLICKED, this);
   queue_next_page_ = make_button(page, LV_SYMBOL_RIGHT, 48, 42);
-  lv_obj_set_pos(queue_next_page_, 332, 0);
+  lv_obj_set_pos(queue_next_page_, 312, 0);
   lv_obj_add_event_cb(queue_next_page_, event_handler, LV_EVENT_CLICKED, this);
   lv_obj_t *clear = make_button(page, "CLEAR", 80, 42);
   lv_obj_align(clear, LV_ALIGN_TOP_RIGHT, -14, 0);
@@ -310,6 +331,72 @@ void MusicUi::create_queue_page() {
   lv_obj_set_style_pad_all(queue_list_, 0, 0);
   lv_obj_set_style_pad_row(queue_list_, 3, 0);
   lv_obj_set_flex_flow(queue_list_, LV_FLEX_FLOW_COLUMN);
+}
+
+void MusicUi::create_filter_overlays() {
+  filter_overlay_ = lv_obj_create(root_);
+  lv_obj_remove_style_all(filter_overlay_);
+  lv_obj_set_size(filter_overlay_, 480, 320);
+  lv_obj_set_pos(filter_overlay_, 0, 0);
+  lv_obj_set_style_bg_color(filter_overlay_, color(kBackground), 0);
+  lv_obj_set_style_bg_opa(filter_overlay_, LV_OPA_COVER, 0);
+  lv_obj_add_flag(filter_overlay_, LV_OBJ_FLAG_HIDDEN);
+
+  lv_obj_t *title = make_label(filter_overlay_, "BROWSE A-Z", &lv_font_montserrat_22,
+                               color(kText));
+  lv_obj_set_pos(title, 14, 14);
+  filter_search_button_ = make_button(filter_overlay_, "SEARCH", 100, 48);
+  lv_obj_set_pos(filter_search_button_, 260, 4);
+  lv_obj_add_event_cb(filter_search_button_, event_handler, LV_EVENT_CLICKED, this);
+  filter_close_button_ = make_button(filter_overlay_, "CLOSE", 100, 48);
+  lv_obj_set_pos(filter_close_button_, 368, 4);
+  lv_obj_add_event_cb(filter_close_button_, event_handler, LV_EVENT_CLICKED, this);
+
+  static constexpr const char *kAlphabet[28] = {
+      "#", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
+      "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "ALL"};
+  for (size_t i = 0; i < std::size(alphabet_buttons_); ++i) {
+    alphabet_buttons_[i] = make_button(filter_overlay_, kAlphabet[i], 72, 44);
+    lv_obj_set_pos(alphabet_buttons_[i], 14 + static_cast<int>(i % 6) * 76,
+                   62 + static_cast<int>(i / 6) * 49);
+    lv_obj_add_event_cb(alphabet_buttons_[i], event_handler, LV_EVENT_CLICKED, this);
+  }
+
+  search_overlay_ = lv_obj_create(root_);
+  lv_obj_remove_style_all(search_overlay_);
+  lv_obj_set_size(search_overlay_, 480, 320);
+  lv_obj_set_pos(search_overlay_, 0, 0);
+  lv_obj_set_style_bg_color(search_overlay_, color(kBackground), 0);
+  lv_obj_set_style_bg_opa(search_overlay_, LV_OPA_COVER, 0);
+  lv_obj_add_flag(search_overlay_, LV_OBJ_FLAG_HIDDEN);
+
+  search_textarea_ = lv_textarea_create(search_overlay_);
+  lv_obj_set_pos(search_textarea_, 12, 8);
+  lv_obj_set_size(search_textarea_, 332, 48);
+  lv_textarea_set_one_line(search_textarea_, true);
+  lv_textarea_set_max_length(search_textarea_, 64);
+  lv_textarea_set_placeholder_text(search_textarea_, "TITLE OR ARTIST");
+  lv_obj_set_style_text_font(search_textarea_, &lv_font_montserrat_18, 0);
+  lv_obj_set_style_bg_color(search_textarea_, color(kPanel), 0);
+  lv_obj_set_style_text_color(search_textarea_, color(kText), 0);
+
+  lv_obj_t *cancel = make_button(search_overlay_, "CANCEL", 116, 48);
+  lv_obj_set_pos(cancel, 352, 8);
+
+  search_keyboard_ = lv_keyboard_create(search_overlay_);
+  lv_obj_set_pos(search_keyboard_, 8, 64);
+  lv_obj_set_size(search_keyboard_, 464, 248);
+  lv_keyboard_set_textarea(search_keyboard_, search_textarea_);
+  lv_obj_set_style_text_font(search_keyboard_, &lv_font_montserrat_18, LV_PART_ITEMS);
+  lv_obj_add_event_cb(search_keyboard_, event_handler, LV_EVENT_READY, this);
+  lv_obj_add_event_cb(search_keyboard_, event_handler, LV_EVENT_CANCEL, this);
+  lv_obj_add_event_cb(cancel, [](lv_event_t *event) {
+    auto *ui = static_cast<MusicUi *>(lv_event_get_user_data(event));
+    if (ui != nullptr) {
+      lv_obj_add_flag(ui->search_overlay_, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_remove_flag(ui->filter_overlay_, LV_OBJ_FLAG_HIDDEN);
+    }
+  }, LV_EVENT_CLICKED, this);
 }
 
 void MusicUi::create_playlists_page() {
@@ -443,10 +530,19 @@ void MusicUi::update(const Snapshot &snapshot) {
   apply_toggle(more_shuffle_, snapshot.shuffle);
   apply_toggle(repeat_button_, snapshot.repeat != 0);
   apply_toggle(more_repeat_, snapshot.repeat != 0);
-  lv_label_set_text(queue_title_, snapshot.active_playlist_name.c_str());
+  const char *queue_title = snapshot.queue_indexing
+                                ? snapshot.status.c_str()
+                            : snapshot.queue_filter_active
+                                ? snapshot.queue_filter_label.c_str()
+                                : snapshot.active_playlist_name.c_str();
+  lv_label_set_text(queue_title_, queue_title);
+  lv_obj_set_state(queue_filter_button_, LV_STATE_DISABLED,
+                   !snapshot.queue_index_ready || snapshot.queue_indexing);
   if (snapshot.queue_revision != rendered_queue_revision_ ||
       snapshot.queue.size() != rendered_queue_size_) {
-    if (snapshot.active_queue_index >= 0 &&
+    if (snapshot.queue_index_ready) {
+      queue_page_start_ = snapshot.queue_page_start;
+    } else if (snapshot.active_queue_index >= 0 &&
         static_cast<size_t>(snapshot.active_queue_index) < snapshot.queue.size()) {
       queue_page_start_ = static_cast<size_t>(snapshot.active_queue_index) / 100 * 100;
     } else {
@@ -536,11 +632,15 @@ void MusicUi::update_timeline(int64_t now_us, bool force) {
 
 void MusicUi::rebuild_queue(const Snapshot &snapshot) {
   lv_obj_clean(queue_list_);
-  queue_build_index_ = queue_page_start_;
-  queue_build_limit_ = std::min<size_t>(snapshot.queue.size(), queue_page_start_ + 100);
+  queue_build_index_ = snapshot.queue_index_ready ? 0 : queue_page_start_;
+  queue_build_limit_ = snapshot.queue_index_ready
+                           ? snapshot.queue.size()
+                           : std::min<size_t>(snapshot.queue.size(), queue_page_start_ + 100);
+  const size_t total = snapshot.queue_index_ready ? snapshot.queue_total_count
+                                                   : snapshot.queue.size();
   lv_obj_set_state(queue_previous_page_, LV_STATE_DISABLED, queue_page_start_ == 0);
   lv_obj_set_state(queue_next_page_, LV_STATE_DISABLED,
-                   queue_page_start_ + 100 >= snapshot.queue.size());
+                   queue_page_start_ + 100 >= total);
 }
 
 void MusicUi::append_queue_rows(const Snapshot &snapshot) {
@@ -549,29 +649,30 @@ void MusicUi::append_queue_rows(const Snapshot &snapshot) {
   const size_t end = std::min(queue_build_index_ + 8, queue_build_limit_);
   for (size_t i = queue_build_index_; i < end; ++i) {
     const Track &track = snapshot.queue[i];
+    const size_t queue_row = track.queue_row >= 0 ? static_cast<size_t>(track.queue_row) : i;
     lv_obj_t *row = lv_button_create(queue_list_);
     lv_obj_set_width(row, lv_pct(100));
     lv_obj_set_height(row, 48);
     lv_obj_set_style_radius(row, 2, 0);
-    lv_obj_set_style_bg_color(row, i == static_cast<size_t>(snapshot.active_queue_index)
+    lv_obj_set_style_bg_color(row, queue_row == static_cast<size_t>(snapshot.active_queue_index)
                                       ? color(0x154344)
                                       : color(kPanel),
                               0);
     lv_obj_set_style_shadow_width(row, 0, 0);
     lv_obj_add_event_cb(row, queue_row_handler, LV_EVENT_CLICKED, this);
     lv_obj_add_event_cb(row, queue_row_handler, LV_EVENT_LONG_PRESSED, this);
-    lv_obj_t *index = make_label(row, std::to_string(i + 1).c_str(), &lv_font_montserrat_14,
+    lv_obj_t *index = make_label(row, std::to_string(queue_row + 1).c_str(), &lv_font_montserrat_14,
                                  color(kMuted));
     lv_obj_align(index, LV_ALIGN_LEFT_MID, 0, 0);
     const std::string title = track.title.empty() ? "Unknown track" : track.title;
     lv_obj_t *name = make_label(row, title.c_str(), &lv_font_montserrat_18, color(kText));
-    lv_obj_set_size(name, 330, 21);
+    lv_obj_set_size(name, 318, 21);
     lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
-    lv_obj_align(name, LV_ALIGN_LEFT_MID, 36, -8);
+    lv_obj_align(name, LV_ALIGN_LEFT_MID, 48, -8);
     lv_obj_t *artist = make_label(row, track.artist.c_str(), &lv_font_montserrat_14, color(kMuted));
-    lv_obj_set_size(artist, 330, 17);
+    lv_obj_set_size(artist, 318, 17);
     lv_label_set_long_mode(artist, LV_LABEL_LONG_DOT);
-    lv_obj_align(artist, LV_ALIGN_LEFT_MID, 36, 11);
+    lv_obj_align(artist, LV_ALIGN_LEFT_MID, 48, 11);
     const std::string duration = format_time(track.duration_ms);
     lv_obj_t *time = make_label(row, duration.c_str(), &lv_font_montserrat_14, color(kMuted));
     lv_obj_align(time, LV_ALIGN_RIGHT_MID, -2, 0);
@@ -582,7 +683,13 @@ void MusicUi::append_queue_rows(const Snapshot &snapshot) {
 void MusicUi::update_queue_selection(const Snapshot &snapshot) {
   const uint32_t count = lv_obj_get_child_count(queue_list_);
   for (uint32_t child = 0; child < count; ++child) {
-    const size_t index = queue_page_start_ + child;
+    const size_t position = snapshot.queue_index_ready ? child : queue_page_start_ + child;
+    if (position >= snapshot.queue.size()) {
+      break;
+    }
+    const Track &track = snapshot.queue[position];
+    const size_t index = track.queue_row >= 0 ? static_cast<size_t>(track.queue_row)
+                                              : queue_page_start_ + child;
     lv_obj_set_style_bg_color(lv_obj_get_child(queue_list_, child),
                               index == static_cast<size_t>(snapshot.active_queue_index)
                                   ? color(0x154344)
@@ -629,7 +736,9 @@ void MusicUi::queue_row_handler(lv_event_t *event) {
   if (ui == nullptr || local_index < 0) {
     return;
   }
-  const size_t index = ui->queue_page_start_ + static_cast<size_t>(local_index);
+  const size_t index = ui->snapshot_.queue_index_ready
+                           ? static_cast<size_t>(local_index)
+                           : ui->queue_page_start_ + static_cast<size_t>(local_index);
   if (index >= ui->snapshot_.queue.size()) {
     return;
   }
@@ -638,9 +747,10 @@ void MusicUi::queue_row_handler(lv_event_t *event) {
   }
   if (lv_event_get_code(event) == LV_EVENT_LONG_PRESSED) {
     ui->suppress_queue_click_ = true;
-    const int32_t item = ui->snapshot_.queue[index].index >= 0
-                             ? ui->snapshot_.queue[index].index
-                             : static_cast<int32_t>(index);
+    const Track &track = ui->snapshot_.queue[index];
+    const int32_t item = track.index >= 0       ? track.index
+                         : track.queue_row >= 0 ? track.queue_row
+                                                : static_cast<int32_t>(index);
     ui->client_.enqueue({CommandType::delete_index, ui->snapshot_.active_playlist_id,
                          item});
   } else {
@@ -650,7 +760,10 @@ void MusicUi::queue_row_handler(lv_event_t *event) {
     }
     // AIMP's play command takes the zero-based queue row. The item ID carried
     // in playlist metadata is for mutations/details and may legitimately be -1.
-    ui->client_.enqueue({CommandType::play_index, static_cast<int32_t>(index)});
+    const int32_t queue_row = ui->snapshot_.queue[index].queue_row >= 0
+                                  ? ui->snapshot_.queue[index].queue_row
+                                  : static_cast<int32_t>(index);
+    ui->client_.enqueue({CommandType::play_index, queue_row});
     ui->show_page(Page::now);
   }
 }
@@ -705,10 +818,68 @@ void MusicUi::handle_event(lv_event_t *event) {
   if (target == queue_previous_page_ || target == queue_next_page_) {
     if (target == queue_previous_page_ && queue_page_start_ >= 100) {
       queue_page_start_ -= 100;
-    } else if (target == queue_next_page_ && queue_page_start_ + 100 < snapshot_.queue.size()) {
+    } else if (target == queue_next_page_ &&
+               queue_page_start_ + 100 < (snapshot_.queue_index_ready
+                                               ? snapshot_.queue_total_count
+                                               : snapshot_.queue.size())) {
       queue_page_start_ += 100;
     }
-    rebuild_queue(snapshot_);
+    if (snapshot_.queue_index_ready) {
+      client_.enqueue({CommandType::request_queue_page,
+                       static_cast<int32_t>(queue_page_start_)});
+    } else {
+      rebuild_queue(snapshot_);
+    }
+    return;
+  }
+  if (target == queue_filter_button_) {
+    lv_obj_remove_flag(filter_overlay_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(filter_overlay_);
+    return;
+  }
+  if (target == filter_close_button_) {
+    lv_obj_add_flag(filter_overlay_, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  if (target == filter_search_button_) {
+    lv_obj_add_flag(filter_overlay_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(search_overlay_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(search_overlay_);
+    lv_obj_send_event(search_textarea_, LV_EVENT_FOCUSED, nullptr);
+    return;
+  }
+  for (size_t i = 0; i < std::size(alphabet_buttons_); ++i) {
+    if (target != alphabet_buttons_[i]) {
+      continue;
+    }
+    lv_obj_add_flag(filter_overlay_, LV_OBJ_FLAG_HIDDEN);
+    if (i == 27) {
+      client_.enqueue({CommandType::clear_queue_filter});
+    } else if (i == 0) {
+      client_.enqueue({CommandType::filter_queue,
+                       static_cast<int32_t>(PlaylistIndex::SearchMode::non_alpha), 0, ""});
+    } else {
+      std::string letter(1, static_cast<char>('A' + i - 1));
+      client_.enqueue({CommandType::filter_queue,
+                       static_cast<int32_t>(PlaylistIndex::SearchMode::prefix), 0,
+                       std::move(letter)});
+    }
+    return;
+  }
+  if (target == search_keyboard_) {
+    if (code == LV_EVENT_CANCEL) {
+      lv_obj_add_flag(search_overlay_, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_remove_flag(filter_overlay_, LV_OBJ_FLAG_HIDDEN);
+    } else if (code == LV_EVENT_READY) {
+      const char *query = lv_textarea_get_text(search_textarea_);
+      if (query != nullptr && query[0] != '\0') {
+        client_.enqueue({CommandType::filter_queue,
+                         static_cast<int32_t>(PlaylistIndex::SearchMode::contains), 0,
+                         query});
+        lv_textarea_set_text(search_textarea_, "");
+        lv_obj_add_flag(search_overlay_, LV_OBJ_FLAG_HIDDEN);
+      }
+    }
     return;
   }
   if (snapshot_.connection != ConnectionState::online) {
