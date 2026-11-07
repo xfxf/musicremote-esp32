@@ -91,6 +91,17 @@ Date: 2026-11-08 (Australia/Melbourne)
   `INDEX STALE - RETRY LATER`; an SPIFFS `access()` incompatibility exposed by
   this run was replaced with `stat()` checks. The production 512 KiB threshold
   and `auto` microSD preference were restored afterward.
+- Recovery fault injection physically moved the valid 48,321-row SD index to
+  `INDEX.BAK`, wrote a three-byte corrupt `INDEX.DAT`, and rebooted through the
+  production recovery constructor. The backup was restored and the complete
+  queue became ready from the matching source response in about 6.5 seconds.
+- A separate temporary hash-mismatch build was reset 15 seconds after the full
+  NAS frame began rebuilding. The immediate reset also made the card miss all
+  three mount attempts, so the device safely mounted internal SPIFFS and stayed
+  online instead of crashing. The clean production image then remounted the
+  card, removed about 4 MB of interrupted staging files, retained/reused the
+  prior promoted 48,321-row index, and restored the card's reported free space
+  from 60,595 MB to 60,599 MB on the following boot.
 
 ## Visual inspection
 

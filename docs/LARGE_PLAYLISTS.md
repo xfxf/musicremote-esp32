@@ -37,9 +37,9 @@ Before a build, free space is checked conservatively against six decoded sizes
 plus 1 MiB on microSD, or three decoded sizes plus 256 KiB on SPIFFS. The
 completed file is flushed and synced, the prior index is moved to `INDEX.BAK`,
 and `INDEX.TMP` is promoted. A failed promotion restores the backup; boot
-recovery also restores a backup when the final file is absent. All names use
-FAT 8.3 form because this firmware intentionally disables FAT long-file-name
-allocation.
+recovery also restores a structurally valid backup when the final file is
+absent or has an invalid header/extent. All names use FAT 8.3 form because this
+firmware intentionally disables FAT long-file-name allocation.
 
 The index header records a 64-bit hash and byte length of the compressed source.
 An identical response reuses the promoted file instead of rebuilding it. On
