@@ -602,6 +602,15 @@ void MonkeyMoteClient::load_index_page(uint32_t start) {
     }
     state.active_playlist_id = playlist_id;
     state.active_playlist_name = std::move(name);
+    bool playlist_state_changed = false;
+    for (auto &playlist : state.playlists) {
+      const bool active = playlist.id == playlist_id;
+      playlist_state_changed = playlist_state_changed || playlist.active != active;
+      playlist.active = active;
+    }
+    if (playlist_state_changed) {
+      ++state.playlists_revision;
+    }
     state.queue = std::move(tracks);
     state.queue_total_count = total;
     state.queue_page_start = start;
