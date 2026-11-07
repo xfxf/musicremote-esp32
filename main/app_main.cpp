@@ -189,7 +189,7 @@ extern "C" void app_main() {
       model, {.host = MUSICREMOTE_AIMP_HOST,
               .port = static_cast<uint16_t>(MUSICREMOTE_AIMP_PORT),
               .password = MUSICREMOTE_AIMP_PASSWORD,
-              .storage_directory = board.is_sd_card_available() ? "/sdcard/musicremote" : ""});
+              .storage_directory = board.is_sd_card_available() ? "/sdcard/mremote" : ""});
   static musicremote::MusicUi ui(model, client);
 
   if (!board.initialize_touch()) {

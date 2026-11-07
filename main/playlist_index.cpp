@@ -241,7 +241,7 @@ PlaylistIndex::PlaylistIndex(std::string directory) : directory_(std::move(direc
   if (!directory_.empty()) {
     mkdir(directory_.c_str(), 0755);
   }
-  incoming_path_ = path("playlist-wire.tmp");
+  incoming_path_ = path("WIRE.TMP");
   recover_index();
 }
 
@@ -257,8 +257,8 @@ bool PlaylistIndex::recover_index() const {
   if (directory_.empty()) {
     return false;
   }
-  const std::string final = path("playlist.idx");
-  const std::string backup = path("playlist.idx.bak");
+  const std::string final = path("INDEX.DAT");
+  const std::string backup = path("INDEX.BAK");
   if (access(final.c_str(), F_OK) != 0 && access(backup.c_str(), F_OK) == 0) {
     return rename(backup.c_str(), final.c_str()) == 0;
   }
@@ -271,10 +271,10 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
     result.error = "NO STORAGE";
     return result;
   }
-  const std::string raw_path = path("playlist-raw.tmp");
-  const std::string records_path = path("playlist-records.tmp");
-  const std::string strings_path = path("playlist-strings.tmp");
-  const std::string index_path = path("playlist.idx.tmp");
+  const std::string raw_path = path("RAW.TMP");
+  const std::string records_path = path("REC.TMP");
+  const std::string strings_path = path("STR.TMP");
+  const std::string index_path = path("INDEX.TMP");
   FILE *wire = std::fopen(incoming_path_.c_str(), "rb");
   if (wire == nullptr) {
     result.error = "WIRE FILE MISSING";
@@ -405,8 +405,8 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
     }
   }
   {
-    const std::string final = path("playlist.idx");
-    const std::string backup = path("playlist.idx.bak");
+    const std::string final = path("INDEX.DAT");
+    const std::string backup = path("INDEX.BAK");
     unlink(backup.c_str());
     const bool had_final = access(final.c_str(), F_OK) == 0;
     if ((had_final && rename(final.c_str(), backup.c_str()) != 0) ||
@@ -435,7 +435,7 @@ cleanup:
 bool PlaylistIndex::load_page(uint32_t start, uint32_t limit, std::vector<Track> &tracks,
                               uint32_t &total, int32_t &playlist_id, std::string &name) const {
   tracks.clear();
-  FILE *file = std::fopen(path("playlist.idx").c_str(), "rb");
+  FILE *file = std::fopen(path("INDEX.DAT").c_str(), "rb");
   IndexHeader header{};
   struct stat file_stat {};
   if (file == nullptr || !read_exact(file, &header, sizeof(header)) || !valid_header(header) ||

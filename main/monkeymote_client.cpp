@@ -453,6 +453,8 @@ bool MonkeyMoteClient::start_streamed_frame(uint32_t type, uint32_t length) {
   }
   streamed_frame_ = std::fopen(playlist_index_.incoming_path().c_str(), "wb");
   if (streamed_frame_ == nullptr) {
+    ESP_LOGW(kTag, "Could not open playlist stream file %s: errno=%d",
+             playlist_index_.incoming_path().c_str(), errno);
     return false;
   }
   streamed_remaining_ = length;
