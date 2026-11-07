@@ -419,13 +419,19 @@ bool MonkeyMoteClient::process_socket(int timeout_ms) {
     if (type == 45 && length > kMaxPayload && receive_buffer_.size() < 22) {
       break;
     }
+    const bool compressed_envelope_ready =
+        type == 45 && length >= 10 && receive_buffer_.size() >= 22;
+    const uint32_t advertised_size =
+        compressed_envelope_ready ? read_u32(receive_buffer_.data() + 12) : 0;
+    const uint32_t inner_type =
+        compressed_envelope_ready ? read_u32(receive_buffer_.data() + 16) : 0;
     const bool stream_playlist =
-        type == 45 && receive_buffer_.size() >= 22 &&
-        (length > kMaxPayload || read_u32(receive_buffer_.data() + 12) > kMaxPayload) &&
-        read_u32(receive_buffer_.data() + 16) != 45;
+        compressed_envelope_ready && advertised_size <= kMaxStreamedDecoded &&
+        (inner_type == 9 || inner_type == 31 || inner_type == 50) &&
+        (length > kMaxPayload || advertised_size > kMaxPayload);
     if (stream_playlist || length > kMaxPayload) {
       receive_buffer_.erase(receive_buffer_.begin(), receive_buffer_.begin() + 12);
-      if (stream_playlist && length <= 4 * 1024 * 1024 && start_streamed_frame(type, length)) {
+      if (stream_playlist && length <= kMaxStreamedPayload && start_streamed_frame(type, length)) {
         continue;
       }
       ESP_LOGW(kTag, "Draining oversized payload: %" PRIu32, length);
@@ -584,7 +590,8 @@ void MonkeyMoteClient::load_index_page(uint32_t start) {
   }
   model_.update([start, total, playlist_id, name = std::move(name),
                  tracks = std::move(tracks)](Snapshot &state) mutable {
-    if (state.active_playlist_id >= 0 && state.active_playlist_id != playlist_id) {
+    if (!state.queue_indexing && state.active_playlist_id >= 0 &&
+        state.active_playlist_id != playlist_id) {
       state.queue.clear();
       state.queue_total_count = 0;
       state.queue_page_start = 0;

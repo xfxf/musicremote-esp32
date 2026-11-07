@@ -118,7 +118,7 @@ bool decompress_lz4(FILE *source, size_t compressed_size, FILE *target,
   // This must live in the external-capable heap, not on the 12 KiB network
   // task stack. It is the only full LZ4 history window retained in RAM.
   std::vector<uint8_t> history(kHistoryBytes);
-  std::array<uint8_t, kCopyBufferBytes> output_buffer{};
+  std::vector<uint8_t> output_buffer(kCopyBufferBytes);
   size_t buffered = 0;
   size_t output = 0;
 

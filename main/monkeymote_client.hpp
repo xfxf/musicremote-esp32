@@ -64,6 +64,8 @@ private:
   // Leave headroom for LVGL, Wi-Fi and the decoded model on a board with 2 MB
   // PSRAM. Oversized playlist frames are drained without allocating them.
   static constexpr size_t kMaxPayload = 512 * 1024;
+  static constexpr size_t kMaxStreamedPayload = 4 * 1024 * 1024;
+  static constexpr uint32_t kMaxStreamedDecoded = 64 * 1024 * 1024;
 
   static void task_entry(void *context);
   void run();
