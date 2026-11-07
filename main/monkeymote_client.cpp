@@ -455,10 +455,12 @@ bool MonkeyMoteClient::process_socket(int timeout_ms) {
     if (stream_playlist || length > kMaxPayload) {
       receive_buffer_.erase(receive_buffer_.begin(), receive_buffer_.begin() + 12);
       if (stream_playlist && index_building_) {
-        ESP_LOGI(kTag, "Deferring large playlist received while index build is active");
         index_superseded_ = true;
-        discard_remaining_ = length;
-        continue;
+        if (index_building_) {
+          ESP_LOGI(kTag, "Deferring large playlist received while index build is active");
+          discard_remaining_ = length;
+          continue;
+        }
       }
       if (stream_playlist && length <= kMaxStreamedPayload && start_streamed_frame(type, length)) {
         continue;
@@ -573,6 +575,9 @@ void MonkeyMoteClient::build_streamed_index() {
                                                                   uint32_t total) {
     if (completed == total || completed % 4096 == 1) {
       model_.update([completed, total](Snapshot &state) {
+        if (!state.queue_indexing) {
+          return;
+        }
         state.status = "INDEXING " +
                        std::to_string(completed * 100 / std::max<uint32_t>(1, total)) + "%";
       });
@@ -645,7 +650,10 @@ void MonkeyMoteClient::load_index_page(uint32_t start, bool require_indexing) {
   int32_t playlist_id = -1;
   std::string name;
   if (!playlist_index_.load_page(start, 100, tracks, total, playlist_id, name)) {
-    model_.update([](Snapshot &state) {
+    model_.update([require_indexing](Snapshot &state) {
+      if (require_indexing && !state.queue_indexing) {
+        return;
+      }
       state.queue.clear();
       state.queue_total_count = 0;
       state.queue_page_start = 0;
@@ -1070,6 +1078,7 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
   }
   model_.update([playlist_id, name = std::move(name), flags, count,
                  tracks = std::move(tracks)](Snapshot &state) mutable {
+    const bool replaced_index_build = state.queue_indexing;
     const int32_t resolved_playlist_id = resolve_playlist_id(state, playlist_id, name, count);
     state.active_playlist_id = resolved_playlist_id;
     if (!name.empty()) {
@@ -1093,6 +1102,9 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
     state.queue_page_start = 0;
     state.queue_index_ready = false;
     state.queue_indexing = false;
+    if (replaced_index_build) {
+      state.status = "AIMP ONLINE";
+    }
     bool playlist_state_changed = false;
     for (auto &playlist : state.playlists) {
       const bool active = playlist.id == resolved_playlist_id;

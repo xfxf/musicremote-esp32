@@ -69,8 +69,8 @@ bool write_exact(FILE *file, const void *data, size_t size) {
 }
 
 bool copy_file(FILE *source, FILE *target) {
-  // Index building runs on the network task. Keep bulk I/O buffers off its
-  // stack: FAT and stdio already have a relatively deep call chain here.
+  // Index building runs on the dedicated 12 KiB playlist_index task. Keep
+  // bulk I/O buffers off its stack: FAT and stdio have a deep call chain.
   std::vector<uint8_t> buffer(kCopyBufferBytes);
   while (true) {
     const size_t count = std::fread(buffer.data(), 1, buffer.size(), source);
@@ -120,8 +120,8 @@ private:
 bool decompress_lz4(FILE *source, size_t compressed_size, FILE *target,
                     uint32_t expected_size) {
   ByteReader input(source, compressed_size);
-  // This must live in the external-capable heap, not on the 12 KiB network
-  // task stack. It is the only full LZ4 history window retained in RAM.
+  // This must live in the external-capable heap, not on the 12 KiB index-task
+  // stack. It is the only full LZ4 history window retained in RAM.
   std::vector<uint8_t> history(kHistoryBytes);
   std::vector<uint8_t> output_buffer(kCopyBufferBytes);
   size_t buffered = 0;
@@ -340,16 +340,22 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
     return result;
   }
   FILE *raw = std::fopen(raw_path.c_str(), "wb");
-  const bool decoded = raw != nullptr &&
-                       decompress_lz4(wire, static_cast<size_t>(wire_stat.st_size) - 10, raw,
-                                      decoded_size);
-  std::fclose(wire);
-  if (raw != nullptr) {
-    std::fclose(raw);
+  if (raw == nullptr) {
+    std::fclose(wire);
+    result.error = "INDEX FILE OPEN FAILED";
+    return result;
   }
-  if (!decoded) {
+  const bool decoded = decompress_lz4(
+      wire, static_cast<size_t>(wire_stat.st_size) - 10, raw, decoded_size);
+  bool read_failed = std::ferror(wire) != 0;
+  bool write_failed = std::ferror(raw) != 0;
+  read_failed = std::fclose(wire) != 0 || read_failed;
+  write_failed = std::fclose(raw) != 0 || write_failed;
+  if (!decoded || read_failed || write_failed) {
     unlink(raw_path.c_str());
-    result.error = "LZ4 DECODE FAILED";
+    result.error = write_failed ? "SD CARD WRITE FAILED"
+                   : read_failed ? "SD CARD READ FAILED"
+                                 : "LZ4 DECODE FAILED";
     return result;
   }
 

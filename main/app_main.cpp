@@ -179,12 +179,14 @@ extern "C" void app_main() {
       vTaskDelay(pdMS_TO_TICKS(400));
     }
   }
-  if (sd_ready &&
-      board.get_sd_card_info(&sd_size_mb, &sd_free_mb)) {
+  if (!sd_ready) {
+    ESP_LOGW(kTag, "microSD unavailable; large-playlist indexing will remain disabled");
+  } else if (board.get_sd_card_info(&sd_size_mb, &sd_free_mb)) {
     ESP_LOGI(kTag, "microSD mounted at %s: %" PRIu32 " MB total, %" PRIu32 " MB free",
              espp::SmartPanleeSc01Plus::mount_point, sd_size_mb, sd_free_mb);
   } else {
-    ESP_LOGW(kTag, "microSD unavailable; large-playlist indexing will remain disabled");
+    ESP_LOGW(kTag, "microSD mounted at %s but its capacity query failed",
+             espp::SmartPanleeSc01Plus::mount_point);
   }
 
   static musicremote::Model model;

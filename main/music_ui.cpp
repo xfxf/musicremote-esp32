@@ -572,13 +572,13 @@ void MusicUi::append_queue_rows(const Snapshot &snapshot) {
     lv_obj_align(index, LV_ALIGN_LEFT_MID, 0, 0);
     const std::string title = track.title.empty() ? "Unknown track" : track.title;
     lv_obj_t *name = make_label(row, title.c_str(), &lv_font_montserrat_18, color(kText));
-    lv_obj_set_size(name, 330, 21);
+    lv_obj_set_size(name, 318, 21);
     lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
-    lv_obj_align(name, LV_ALIGN_LEFT_MID, 36, -8);
+    lv_obj_align(name, LV_ALIGN_LEFT_MID, 48, -8);
     lv_obj_t *artist = make_label(row, track.artist.c_str(), &lv_font_montserrat_14, color(kMuted));
-    lv_obj_set_size(artist, 330, 17);
+    lv_obj_set_size(artist, 318, 17);
     lv_label_set_long_mode(artist, LV_LABEL_LONG_DOT);
-    lv_obj_align(artist, LV_ALIGN_LEFT_MID, 36, 11);
+    lv_obj_align(artist, LV_ALIGN_LEFT_MID, 48, 11);
     const std::string duration = format_time(track.duration_ms);
     lv_obj_t *time = make_label(row, duration.c_str(), &lv_font_montserrat_14, color(kMuted));
     lv_obj_align(time, LV_ALIGN_RIGHT_MID, -2, 0);
