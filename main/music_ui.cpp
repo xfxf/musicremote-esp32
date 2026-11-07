@@ -365,6 +365,7 @@ void MusicUi::create_more_page() {
   volume_slider_ = lv_slider_create(page);
   lv_obj_set_pos(volume_slider_, 110, 157);
   lv_obj_set_size(volume_slider_, 356, 22);
+  lv_obj_set_ext_click_area(volume_slider_, 16);
   lv_slider_set_range(volume_slider_, 0, 100);
   lv_obj_set_style_bg_color(volume_slider_, color(0x28303D), LV_PART_MAIN);
   lv_obj_set_style_bg_color(volume_slider_, color(kAccent), LV_PART_INDICATOR);
