@@ -459,23 +459,39 @@ bool MonkeyMoteClient::process_socket(int timeout_ms) {
         if (index_building_) {
           ESP_LOGI(kTag, "Deferring large playlist received while index build is active");
           discard_remaining_ = length;
+          // AIMP has already switched to the newer playlist. Hide rows from
+          // any intervening queue until the worker can request this frame
+          // again; otherwise a tap would play the same row in the new queue.
+          model_.update([](Snapshot &state) {
+            state.queue.clear();
+            state.queue_total_count = 0;
+            state.queue_page_start = 0;
+            state.queue_index_ready = false;
+            state.queue_indexing = true;
+            ++state.queue_revision;
+            state.active_playlist_name = "LOADING LIBRARY";
+            state.status = "REFRESHING LIBRARY";
+          });
           continue;
         }
       }
       if (stream_playlist && length <= kMaxStreamedPayload && start_streamed_frame(type, length)) {
         continue;
       }
+      const bool storage_failed = stream_playlist && length <= kMaxStreamedPayload &&
+                                  playlist_index_.available();
       ESP_LOGW(kTag, "Draining oversized payload: %" PRIu32, length);
       discard_remaining_ = length;
-      model_.update([](Snapshot &state) {
+      model_.update([storage_failed](Snapshot &state) {
         state.queue.clear();
         state.queue_total_count = 0;
         state.queue_page_start = 0;
         state.queue_index_ready = false;
         state.queue_indexing = false;
         ++state.queue_revision;
-        state.active_playlist_name = "PLAYLIST TOO LARGE";
-        state.status = "PLAYLIST TOO LARGE";
+        state.active_playlist_name =
+            storage_failed ? "PLAYLIST UNAVAILABLE" : "PLAYLIST TOO LARGE";
+        state.status = storage_failed ? "SD CARD UNAVAILABLE" : "PLAYLIST TOO LARGE";
       });
       continue;
     }
@@ -578,6 +594,9 @@ void MonkeyMoteClient::finish_streamed_frame() {
 void MonkeyMoteClient::build_streamed_index() {
   const auto result = playlist_index_.build_from_compressed([this](uint32_t completed,
                                                                   uint32_t total) {
+    if (index_superseded_) {
+      return;
+    }
     if (completed == total || completed % 4096 == 1) {
       model_.update([completed, total](Snapshot &state) {
         if (!state.queue_indexing) {
@@ -645,6 +664,7 @@ void MonkeyMoteClient::abort_streamed_frame(const char *status) {
     state.queue_index_ready = false;
     state.queue_indexing = false;
     ++state.queue_revision;
+    state.active_playlist_name = "PLAYLIST UNAVAILABLE";
     state.status = status;
   });
 }
@@ -665,6 +685,7 @@ void MonkeyMoteClient::load_index_page(uint32_t start, bool require_indexing) {
       state.queue_indexing = false;
       state.queue_index_ready = false;
       ++state.queue_revision;
+      state.active_playlist_name = "PLAYLIST UNAVAILABLE";
       state.status = "INDEX READ FAILED";
     });
     return;

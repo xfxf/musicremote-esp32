@@ -83,6 +83,7 @@ flashed:
 ![Queue](../artifacts/device-queue.png)
 ![Playlists](../artifacts/device-playlists.png)
 ![More controls](../artifacts/device-more.png)
+
 Inspection covered orientation, navigation selection, clipping, list text,
 live state, theme-state colours, the right-aligned connection indicator, main
 volume control, the compact timeline layout, queue paging controls, and
