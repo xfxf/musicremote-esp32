@@ -35,6 +35,24 @@ uint32_t read_u32(const uint8_t *p) {
 
 int32_t read_i32(const uint8_t *p) { return static_cast<int32_t>(read_u32(p)); }
 
+int32_t resolve_playlist_id(const Snapshot &state, int32_t playlist_id,
+                            const std::string &name, uint32_t count) {
+  if (playlist_id >= 0) {
+    return playlist_id;
+  }
+  int32_t match = -1;
+  for (const auto &playlist : state.playlists) {
+    if (!playlist.folder && playlist.name == name && playlist.count >= 0 &&
+        static_cast<uint32_t>(playlist.count) == count) {
+      if (match >= 0) {
+        return -1;
+      }
+      match = playlist.id;
+    }
+  }
+  return match;
+}
+
 void append_u16(std::vector<uint8_t> &out, uint16_t value) {
   out.push_back(static_cast<uint8_t>(value));
   out.push_back(static_cast<uint8_t>(value >> 8));
@@ -648,16 +666,7 @@ void MonkeyMoteClient::load_index_page(uint32_t start, bool require_indexing) {
       resolved_playlist_id = state.active_playlist_id;
     }
     if (resolved_playlist_id < 0) {
-      for (const auto &playlist : state.playlists) {
-        if (!playlist.folder && playlist.name == name && playlist.count >= 0 &&
-            static_cast<uint32_t>(playlist.count) == total) {
-          if (resolved_playlist_id >= 0) {
-            resolved_playlist_id = -1;
-            break;
-          }
-          resolved_playlist_id = playlist.id;
-        }
-      }
+      resolved_playlist_id = resolve_playlist_id(state, playlist_id, name, total);
     }
     if (!state.queue_indexing && state.active_playlist_id >= 0 && resolved_playlist_id >= 0 &&
         state.active_playlist_id != resolved_playlist_id) {
@@ -1007,8 +1016,9 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
         validation_offset += field_size;
       }
     }
-    model_.update([playlist_id, name = std::move(name)](Snapshot &state) mutable {
-      state.active_playlist_id = playlist_id;
+    model_.update([playlist_id, count, name = std::move(name)](Snapshot &state) mutable {
+      const int32_t resolved_playlist_id = resolve_playlist_id(state, playlist_id, name, count);
+      state.active_playlist_id = resolved_playlist_id;
       state.active_playlist_name = name.empty() ? "PLAYLIST TOO LARGE" : std::move(name);
       state.queue.clear();
       state.queue_total_count = 0;
@@ -1016,6 +1026,15 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
       state.queue_index_ready = false;
       state.queue_indexing = false;
       ++state.queue_revision;
+      bool playlist_state_changed = false;
+      for (auto &playlist : state.playlists) {
+        const bool active = playlist.id == resolved_playlist_id;
+        playlist_state_changed = playlist_state_changed || playlist.active != active;
+        playlist.active = active;
+      }
+      if (playlist_state_changed) {
+        ++state.playlists_revision;
+      }
       state.status = "PLAYLIST TOO LARGE";
     });
     return;
@@ -1051,7 +1070,8 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
   }
   model_.update([playlist_id, name = std::move(name), flags, count,
                  tracks = std::move(tracks)](Snapshot &state) mutable {
-    state.active_playlist_id = playlist_id;
+    const int32_t resolved_playlist_id = resolve_playlist_id(state, playlist_id, name, count);
+    state.active_playlist_id = resolved_playlist_id;
     if (!name.empty()) {
       state.active_playlist_name = std::move(name);
     }
@@ -1075,7 +1095,7 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
     state.queue_indexing = false;
     bool playlist_state_changed = false;
     for (auto &playlist : state.playlists) {
-      const bool active = playlist.id == playlist_id;
+      const bool active = playlist.id == resolved_playlist_id;
       playlist_state_changed = playlist_state_changed || playlist.active != active;
       playlist.active = active;
     }
