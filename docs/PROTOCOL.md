@@ -27,10 +27,11 @@ session. Passwords and digests must never be logged.
 | 43 | Command result; a non-zero first byte means failure |
 
 Type 45 begins with the uncompressed size (`uint32_t`), inner type (`uint32_t`),
-two reserved bytes, then a raw LZ4 block. The decoder rejects output beyond 512
-KiB and requires an exact advertised-size match. The firmware's complete-frame
-limit is also 512 KiB so LVGL, Wi-Fi, and the decoded model retain memory headroom;
-larger frames are drained from the socket without allocating their payload.
+two reserved bytes, then a raw LZ4 block. Normal messages reject output beyond
+512 KiB and require an exact advertised-size match. Oversized type-45 playlist
+responses take a separate microSD path: the wire body is streamed to disk, the
+raw block is decoded with a bounded 64 KiB history, and only a 100-row index page
+is loaded into the model. Other oversized frames are drained without allocation.
 
 ## Commands
 
@@ -74,10 +75,11 @@ byte frame before decoding. No playlist offset/count parameters or server-side
 search operation were found in the observed protocol, and the reference client
 filters its received collection locally. Consequently, paging the UI does not
 reduce the network or decoding cost: full-library search requires streaming the
-single response into external storage and building a local index. Issue #7
-specifies a microSD-backed implementation. Until that lands, oversized frames
-are drained and the UI reports `PLAYLIST TOO LARGE` without dropping the AIMP
-connection.
+single response into external storage and building a local index. The issue #7
+implementation prefers the SC01 Plus microSD slot, uses atomic promotion, and
+reads 100-row pages. If storage is unavailable or indexing fails, the frame is
+drained and the UI reports the failure without allocating the complete response
+or dropping the AIMP connection.
 
 The host probe in `tools/protocol_probe.py` implements the same framing,
 authentication, and LZ4 decoding without third-party Python dependencies.

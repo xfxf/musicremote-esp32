@@ -75,7 +75,7 @@ bool copy_file(FILE *source, FILE *target) {
     if (count != 0 && !write_exact(target, buffer.data(), count)) {
       return false;
     }
-    taskYIELD();
+    vTaskDelay(1);
     if (count < buffer.size()) {
       return std::feof(source) != 0;
     }
@@ -127,7 +127,7 @@ bool decompress_lz4(FILE *source, size_t compressed_size, FILE *target,
     history[output % history.size()] = value;
     ++output;
     if ((output & 0x3fff) == 0) {
-      taskYIELD();
+      vTaskDelay(1);
     }
     return true;
   };
@@ -220,10 +220,17 @@ bool read_field(FILE *file, uint16_t wire_length, std::string &value) {
 }
 
 bool skip_field(FILE *file, uint16_t wire_length) {
-  if (std::fseek(file, static_cast<long>(wire_length) + 1, SEEK_CUR) != 0) {
-    return false;
+  std::array<uint8_t, 256> buffer{};
+  size_t remaining = wire_length;
+  while (remaining != 0) {
+    const size_t chunk = std::min(remaining, buffer.size());
+    if (!read_exact(file, buffer.data(), chunk)) {
+      return false;
+    }
+    remaining -= chunk;
   }
-  return true;
+  uint8_t terminator = 0;
+  return read_exact(file, &terminator, 1) && terminator == 0;
 }
 
 bool append_string(FILE *file, std::string_view value, uint32_t &offset, uint16_t &length) {
@@ -304,7 +311,7 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
     result.error = "UNSUPPORTED LARGE FRAME";
     return result;
   }
-  const uint64_t needed = static_cast<uint64_t>(decoded_size) * 3 + 1024 * 1024;
+  const uint64_t needed = static_cast<uint64_t>(decoded_size) * 5 + 1024 * 1024;
   uint64_t total_bytes = 0;
   uint64_t free_bytes = 0;
   if (esp_vfs_fat_info("/sdcard", &total_bytes, &free_bytes) != ESP_OK ||
@@ -377,7 +384,7 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
       progress(row + 1, result.count);
     }
     if ((row & 0xff) == 0) {
-      taskYIELD();
+      vTaskDelay(1);
     }
   }
   if (std::fgetc(raw) != EOF || std::ferror(raw) != 0) {

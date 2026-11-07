@@ -474,6 +474,7 @@ bool MonkeyMoteClient::start_streamed_frame(uint32_t type, uint32_t length) {
 bool MonkeyMoteClient::consume_streamed_frame() {
   const size_t count = std::min(streamed_remaining_, receive_buffer_.size());
   if (count != 0 && std::fwrite(receive_buffer_.data(), 1, count, streamed_frame_) != count) {
+    receive_buffer_.erase(receive_buffer_.begin(), receive_buffer_.begin() + count);
     std::fclose(streamed_frame_);
     streamed_frame_ = nullptr;
     streamed_remaining_ -= count;
