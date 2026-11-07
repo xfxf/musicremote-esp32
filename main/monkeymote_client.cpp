@@ -511,6 +511,7 @@ bool MonkeyMoteClient::start_streamed_frame(uint32_t type, uint32_t length) {
     state.queue_index_ready = false;
     state.queue_indexing = true;
     ++state.queue_revision;
+    state.active_playlist_name = "LOADING LIBRARY";
     state.status = "RECEIVING LIBRARY";
   });
   ESP_LOGI(kTag, "Streaming %" PRIu32 "-byte playlist frame to microSD", length);
@@ -523,11 +524,13 @@ bool MonkeyMoteClient::consume_streamed_frame() {
     receive_buffer_.erase(receive_buffer_.begin(), receive_buffer_.begin() + count);
     std::fclose(streamed_frame_);
     streamed_frame_ = nullptr;
+    unlink(playlist_index_.incoming_path().c_str());
     streamed_remaining_ -= count;
     discard_remaining_ = streamed_remaining_;
     streamed_remaining_ = 0;
     model_.update([](Snapshot &state) {
       state.queue_indexing = false;
+      state.active_playlist_name = "PLAYLIST UNAVAILABLE";
       state.status = "SD CARD WRITE FAILED";
     });
     return true;
@@ -543,6 +546,7 @@ bool MonkeyMoteClient::consume_streamed_frame() {
       unlink(playlist_index_.incoming_path().c_str());
       model_.update([](Snapshot &state) {
         state.queue_indexing = false;
+        state.active_playlist_name = "PLAYLIST UNAVAILABLE";
         state.status = "SD CARD WRITE FAILED";
       });
       return true;
@@ -565,6 +569,7 @@ void MonkeyMoteClient::finish_streamed_frame() {
     unlink(playlist_index_.incoming_path().c_str());
     model_.update([](Snapshot &state) {
       state.queue_indexing = false;
+      state.active_playlist_name = "PLAYLIST UNAVAILABLE";
       state.status = "INDEX TASK FAILED";
     });
   }

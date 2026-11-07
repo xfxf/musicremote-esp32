@@ -260,7 +260,9 @@ bool valid_header(const IndexHeader &header) {
   return header.magic == kIndexMagic && header.version == kIndexVersion &&
          header.header_size == sizeof(IndexHeader) &&
          header.records_offset == sizeof(IndexHeader) &&
-         header.strings_offset == sizeof(IndexHeader) + header.count * sizeof(IndexRecord);
+         static_cast<uint64_t>(header.strings_offset) ==
+             sizeof(IndexHeader) +
+                 static_cast<uint64_t>(header.count) * sizeof(IndexRecord);
 }
 
 } // namespace
@@ -284,6 +286,12 @@ std::string PlaylistIndex::path(const char *name) const {
 bool PlaylistIndex::recover_index() const {
   if (directory_.empty()) {
     return false;
+  }
+  // Construction calls recovery before the network/index tasks start. Remove
+  // staging files left by a reset so they cannot consume the free space needed
+  // by the next build.
+  for (const char *name : {"WIRE.TMP", "RAW.TMP", "REC.TMP", "STR.TMP", "INDEX.TMP"}) {
+    unlink(path(name).c_str());
   }
   const std::string final = path("INDEX.DAT");
   const std::string backup = path("INDEX.BAK");

@@ -49,6 +49,10 @@ Date: 2026-11-08 (Australia/Melbourne)
   and neither reset nor started a duplicate rebuild. The resulting first page
   shows real queue rows and the root playlist view resolves AIMP's `-1` current
   sentinel back to playlist ID 2, highlighting `NAS:Music`.
+- Commit `f68297c` was flashed after the final index-handoff fixes and completed
+  another physical index of the same 48,321-track frame. It reported completion
+  about 77 seconds after frame receipt without resetting or dropping the live
+  UI/network task. AIMP was then restored to `Local files`.
 - Hardware iterations on the same card exposed and fixed three otherwise
   build-clean faults: 4 KiB I/O buffers exhausting the 12 KiB network-task
   stack, write-only staging files being read during final index assembly, and
@@ -79,10 +83,14 @@ flashed:
 ![Queue](../artifacts/device-queue.png)
 ![Playlists](../artifacts/device-playlists.png)
 ![More controls](../artifacts/device-more.png)
-![48,321-track SD queue](../artifacts/device-large-queue.png)
-![Large playlist active state](../artifacts/device-large-playlists.png)
-
 Inspection covered orientation, navigation selection, clipping, list text,
 live state, theme-state colours, the right-aligned connection indicator, main
 volume control, the compact timeline layout, queue paging controls, and
 contiguous full-height bottom touch targets.
+
+The following two large-playlist captures come from commit `f7a2374`, before
+`f68297c` moved queue titles to x=48. They do not yet show the current row
+layout or a page at row 10,000 or later.
+
+![48,321-track SD queue](../artifacts/device-large-queue.png)
+![Large playlist active state](../artifacts/device-large-playlists.png)

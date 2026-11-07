@@ -443,7 +443,9 @@ void MusicUi::update(const Snapshot &snapshot) {
   apply_toggle(more_shuffle_, snapshot.shuffle);
   apply_toggle(repeat_button_, snapshot.repeat != 0);
   apply_toggle(more_repeat_, snapshot.repeat != 0);
-  lv_label_set_text(queue_title_, snapshot.active_playlist_name.c_str());
+  lv_label_set_text(queue_title_,
+                    snapshot.queue_indexing ? snapshot.status.c_str()
+                                            : snapshot.active_playlist_name.c_str());
   if (snapshot.queue_revision != rendered_queue_revision_ ||
       snapshot.queue.size() != rendered_queue_size_) {
     if (snapshot.queue_index_ready) {
