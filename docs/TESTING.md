@@ -42,10 +42,12 @@ Date: 2026-11-08 (Australia/Melbourne)
   specified as a microSD-preferred persistent index in issue #7 because the
   board's 2 MB PSRAM cannot safely retain the wire payload, decoded strings,
   search index, networking, and LVGL state together.
-- Commit `72ec8ac` was flashed and authenticated after adding monotonic local
+- Commit `36e2d23` was flashed and authenticated after adding monotonic local
   progress extrapolation. Two physical framebuffer captures of the same
-  playing track advanced from 13:26 to 13:36, with matching progress-knob
+  playing track advanced from 24:38 to 24:51, with matching progress-knob
   movement, while fresh AIMP type-6 packets remain authoritative sync points.
+  The final build uses decisecond slider units so the 10 Hz interpolation is
+  also reflected in the control position between elapsed-label ticks.
   The implementation is designed to freeze the last extrapolated value while
   offline, wait for a new type-6 sync after reconnect, preserve an optimistic
   seek target until a post-send host reply, and update elapsed text when
@@ -56,7 +58,7 @@ Date: 2026-11-08 (Australia/Melbourne)
 ## Visual inspection
 
 The following are captures of the LVGL framebuffer served by the physical
-board, not desktop mockups. They were recaptured from commit `72ec8ac` after
+board, not desktop mockups. They were recaptured from commit `36e2d23` after
 the compact side-by-side progress/volume row and queue-page buttons were
 flashed:
 
