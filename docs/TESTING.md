@@ -102,6 +102,27 @@ Date: 2026-11-08 (Australia/Melbourne)
   card, removed about 4 MB of interrupted staging files, retained/reused the
   prior promoted 48,321-row index, and restored the card's reported free space
   from 60,595 MB to 60,599 MB on the following boot.
+- The issue #8 guarded live-mutation run created a uniquely named disposable
+  playlist, populated it with one media-library item, played it, and sought to
+  78,639 ms of a 157,279 ms track. AIMP replied with type 6 positions from
+  78,639 through 78,790 ms while remaining in the playing state. The same run
+  changed rating 0 to 1 and back to 0, removed the item (type 32), repopulated
+  and cleared the playlist (type 20), then deleted it (type 7/subcommand 16).
+  Type 42 creation and every resulting playlist count were confirmed by a
+  follow-up read; no validation playlist remained afterward.
+- The mutation probe logs only request/response message types, payload sizes,
+  counts, and command-result bytes. It recorded create `42/36`, population
+  `21/20`, seek `7/5`, rating `10/1`, removal `32/8`, clear `20/4`, and delete
+  `7/5`; authentication material and payload bodies were not captured.
+- The run restored its observed playlist, stopped/playing state, position,
+  volume 49,679, shuffle off, repeat mode 2, and rating 0. After qualification,
+  AIMP was explicitly returned to the original `Local files` playlist in the
+  stopped state.
+- A temporary flash-only diagnostic hook sent LVGL's real long-press and click
+  events to the play control. Playback was running at 6:47 before the long
+  press, stopped at 0:00 on the long press, and remained stopped after the
+  release/click event. This proves the long-press suppression latch consumes
+  the subsequent click. The hook was removed before the production build.
 
 ## Visual inspection
 
@@ -119,6 +140,17 @@ Inspection covered orientation, navigation selection, clipping, list text,
 live state, theme-state colours, the right-aligned connection indicator, main
 volume control, the compact timeline layout, queue paging controls, and
 contiguous full-height bottom touch targets.
+
+The issue #8 captures below directly cover locally extrapolated progress and
+long-press suppression. On the same playing track, elapsed time advances from
+1:43 to 1:49 with corresponding progress-knob movement despite no intervening
+authoritative type 6 update. The long-press pair shows playback before the
+gesture and still stopped after release:
+
+![Elapsed time at 1:43](../artifacts/device-progress-143.png)
+![Elapsed time at 1:49](../artifacts/device-progress-149.png)
+![Playing before long press](../artifacts/device-longpress-before.png)
+![Still stopped after release](../artifacts/device-longpress-release.png)
 
 The following two large-playlist captures come from commit `f7a2374`, before
 `f68297c` moved queue titles to x=48. They do not yet show the current row
