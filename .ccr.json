@@ -1,0 +1,13 @@
+{
+  "mode": "converge",
+  "instructions": [
+    "AGENTS.md"
+  ],
+  "exclude_re": "(?i)(^|/)(\\.env[^/]*|.*\\.(pem|key|p12|pfx|keystore|jks)|.*(secret|credential|password|token)[^/]*\\.(json|ya?ml|ini|cfg|conf|toml|txt|properties))$",
+  "review_config_files": [
+    "**/AGENTS.md",
+    ".agents/**",
+    ".codex/**",
+    ".github/copilot-instructions.md"
+  ]
+}
