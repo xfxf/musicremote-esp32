@@ -172,7 +172,14 @@ extern "C" void app_main() {
 
   uint32_t sd_size_mb = 0;
   uint32_t sd_free_mb = 0;
-  if (board.initialize_sdcard({.format_if_mount_failed = false, .max_files = 8}) &&
+  bool sd_ready = false;
+  for (int attempt = 0; attempt < 3 && !sd_ready; ++attempt) {
+    sd_ready = board.initialize_sdcard({.format_if_mount_failed = false, .max_files = 8});
+    if (!sd_ready) {
+      vTaskDelay(pdMS_TO_TICKS(400));
+    }
+  }
+  if (sd_ready &&
       board.get_sd_card_info(&sd_size_mb, &sd_free_mb)) {
     ESP_LOGI(kTag, "microSD mounted at %s: %" PRIu32 " MB total, %" PRIu32 " MB free",
              espp::SmartPanleeSc01Plus::mount_point, sd_size_mb, sd_free_mb);

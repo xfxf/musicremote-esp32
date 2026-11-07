@@ -10,6 +10,8 @@
 #include <unistd.h>
 
 #include "esp_vfs_fat.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 namespace musicremote {
 namespace {
@@ -73,6 +75,7 @@ bool copy_file(FILE *source, FILE *target) {
     if (count != 0 && !write_exact(target, buffer.data(), count)) {
       return false;
     }
+    taskYIELD();
     if (count < buffer.size()) {
       return std::feof(source) != 0;
     }
@@ -112,7 +115,9 @@ private:
 bool decompress_lz4(FILE *source, size_t compressed_size, FILE *target,
                     uint32_t expected_size) {
   ByteReader input(source, compressed_size);
-  std::array<uint8_t, kHistoryBytes> history{};
+  // This must live in the external-capable heap, not on the 12 KiB network
+  // task stack. It is the only full LZ4 history window retained in RAM.
+  std::vector<uint8_t> history(kHistoryBytes);
   size_t output = 0;
 
   auto emit = [&](uint8_t value) {
@@ -121,6 +126,9 @@ bool decompress_lz4(FILE *source, size_t compressed_size, FILE *target,
     }
     history[output % history.size()] = value;
     ++output;
+    if ((output & 0x3fff) == 0) {
+      taskYIELD();
+    }
     return true;
   };
 
@@ -367,6 +375,9 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
     }
     if (progress && (row % 512 == 0 || row + 1 == result.count)) {
       progress(row + 1, result.count);
+    }
+    if ((row & 0xff) == 0) {
+      taskYIELD();
     }
   }
   if (std::fgetc(raw) != EOF || std::ferror(raw) != 0) {
