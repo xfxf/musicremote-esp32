@@ -1,11 +1,11 @@
 # Validation record
 
-Date: 2026-11-07 (Australia/Melbourne)
+Date: 2026-11-08 (Australia/Melbourne)
 
 ## Build and hardware
 
 - ESP-IDF 5.5.4 build passed for `esp32s3`.
-- Firmware: `0x1b2ee0` bytes (approximately 1.78 MB).
+- Firmware: `0x1b30e0` bytes (approximately 1.78 MB).
 - App partition: `0x3f0000`; 57% remained free.
 - Flashed and hash-verified over `/dev/ttyACM0`.
 - Boot identified ESP32-S3 revision 0.2, 2 MB PSRAM, and 16 MB physical flash
@@ -39,17 +39,20 @@ Date: 2026-11-07 (Australia/Melbourne)
   were restored after the activation test.
 - No server-side playlist pagination or search request was found. The current
   queue UI pages decoded results in 100-row chunks; full-library A-Z/search is
-  specified as a microSD-backed index in issue #7 because the board's 2 MB
-  PSRAM cannot safely retain the wire payload, decoded strings, search index,
-  networking, and LVGL state together.
+  specified as a microSD-preferred persistent index in issue #7 because the
+  board's 2 MB PSRAM cannot safely retain the wire payload, decoded strings,
+  search index, networking, and LVGL state together.
+- Commit `79a7a7c` was flashed and authenticated after adding monotonic local
+  progress extrapolation. Two physical framebuffer captures of the same
+  playing track advanced from 4:21 to 4:29, with matching progress-knob
+  movement, while fresh AIMP type-6 packets remain authoritative sync points.
 
 ## Visual inspection
 
 The following are captures of the LVGL framebuffer served by the physical
-board, not desktop mockups. They predate the compact side-by-side progress and
-volume row and queue-page buttons in `fd8c7af`; the final-layout recapture is
-tracked in issue #8 because the USB device disappeared before the final build
-could be flashed:
+board, not desktop mockups. They were recaptured from commit `79a7a7c` after
+the compact side-by-side progress/volume row and queue-page buttons were
+flashed:
 
 ![Now playing](../artifacts/device-now.png)
 ![Queue](../artifacts/device-queue.png)
@@ -58,5 +61,5 @@ could be flashed:
 
 Inspection covered orientation, navigation selection, clipping, list text,
 live state, theme-state colours, the right-aligned connection indicator, main
-volume control, and contiguous full-height bottom touch targets. It does not
-claim physical validation of the later compact row or queue paging controls.
+volume control, the compact timeline layout, queue paging controls, and
+contiguous full-height bottom touch targets.
