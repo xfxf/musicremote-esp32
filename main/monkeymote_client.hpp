@@ -57,7 +57,9 @@ public:
 
 private:
   static constexpr uint32_t kMagic = 0x71D9873B;
-  static constexpr size_t kMaxPayload = 2 * 1024 * 1024;
+  // Leave headroom for LVGL, Wi-Fi and the decoded model on a board with 2 MB
+  // PSRAM. Oversized playlist frames are drained without allocating them.
+  static constexpr size_t kMaxPayload = 512 * 1024;
 
   static void task_entry(void *context);
   void run();
@@ -81,6 +83,9 @@ private:
   int socket_{-1};
   void *task_{nullptr};
   std::vector<uint8_t> receive_buffer_;
+  size_t discard_remaining_{0};
+  int64_t last_receive_us_{0};
+  int64_t last_ping_us_{0};
   std::mutex commands_mutex_;
   std::deque<Command> commands_;
 };

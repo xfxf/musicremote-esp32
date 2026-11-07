@@ -18,16 +18,19 @@ session. Passwords and digests must never be logged.
 | 5 | Current track metadata |
 | 6 | Position, playback, shuffle, repeat, and volume state |
 | 11 | Current queue index |
+| 12 / 17 / 30 / 35 | Queue/playlist changed notification; request the current queue again |
 | 23 | Keepalive (echoed) |
-| 28 | Capability mask |
+| 28 | Eight-byte capability mask |
 | 41 | Playlist collection |
 | 45 | LZ4-compressed inner message |
 | 9 / 31 / 50 | Playlist name and queue contents |
-| 43 | Command result |
+| 43 | Command result; a non-zero first byte means failure |
 
 Type 45 begins with the uncompressed size (`uint32_t`), inner type (`uint32_t`),
-two reserved bytes, then a raw LZ4 block. The decoder rejects output beyond 2
-MiB and requires an exact advertised-size match.
+two reserved bytes, then a raw LZ4 block. The decoder rejects output beyond 512
+KiB and requires an exact advertised-size match. The firmware's complete-frame
+limit is also 512 KiB so LVGL, Wi-Fi, and the decoded model retain memory headroom;
+larger frames are drained from the socket without allocating their payload.
 
 ## Commands
 
@@ -45,21 +48,36 @@ values are a following `int32_t`:
 | 12 | Activate playlist ID |
 | 16 | Delete playlist ID |
 
-Other implemented operations:
-
 The play value for subcommand 10 is the zero-based row in the current queue,
 not the per-item ID in playlist metadata (which AIMP may report as `-1`). Type
 11 publishes the current zero-based queue row.
+
+## Other implemented operations
 
 - Type 4 subcommand 13 requests playlists. Its `int32_t` argument is `-1` for
   the root or a playlist-folder ID for that folder's children. In each type 41
   entry, flag bit 0 means folder and bit 1 means protected/read-only; neither
   bit indicates the active playlist.
-- Type 4 subcommand 10 requests a playlist and queue.
+- Type 4 subcommand 10 requests a playlist and queue. Its payload is the
+  subcommand byte, playlist ID (`int32_t`, with `-1` meaning current), and an
+  observed constant `int32_t` value of 1.
 - Type 10 sets a one-byte rating from 0 through 5.
 - Type 20 clears a playlist.
 - Type 32 removes a queue item (playlist ID and item index).
-- Type 42 creates a playlist.
+- Type 42 creates a playlist from a parent/folder ID, reserved `uint16_t`, name
+  byte length, and NUL-terminated name.
+
+## Large playlists
+
+Live testing of the 48,321-entry `NAS:Music` playlist produced one 1,223,088
+byte frame before decoding. No playlist offset/count parameters or server-side
+search operation were found in the observed protocol, and the reference client
+filters its received collection locally. Consequently, paging the UI does not
+reduce the network or decoding cost: full-library search requires streaming the
+single response into external storage and building a local index. Issue #7
+specifies a microSD-backed implementation. Until that lands, oversized frames
+are drained and the UI reports `PLAYLIST TOO LARGE` without dropping the AIMP
+connection.
 
 The host probe in `tools/protocol_probe.py` implements the same framing,
 authentication, and LZ4 decoding without third-party Python dependencies.

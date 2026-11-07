@@ -97,8 +97,8 @@ void MusicUi::run() {
   while (true) {
     {
       std::lock_guard lock(mutex_);
-      const Snapshot latest = model_.copy();
-      if (latest.revision != rendered_revision_) {
+      Snapshot latest;
+      if (model_.copy_if_changed(rendered_revision_, latest)) {
         update(latest);
         rendered_revision_ = latest.revision;
       }
@@ -256,26 +256,28 @@ void MusicUi::create_now_page() {
   lv_obj_add_event_cb(next, event_handler, LV_EVENT_CLICKED, this);
 
   progress_slider_ = lv_slider_create(page);
-  lv_obj_set_pos(progress_slider_, 14, 166);
-  lv_obj_set_size(progress_slider_, 452, 18);
+  lv_obj_set_pos(progress_slider_, 14, 174);
+  lv_obj_set_size(progress_slider_, 252, 12);
+  lv_obj_set_ext_click_area(progress_slider_, 16);
   lv_slider_set_range(progress_slider_, 0, 1);
   lv_obj_set_style_bg_color(progress_slider_, color(0x28303D), LV_PART_MAIN);
   lv_obj_set_style_bg_color(progress_slider_, color(kAccentBlue), LV_PART_INDICATOR);
   lv_obj_set_style_bg_color(progress_slider_, color(kText), LV_PART_KNOB);
   lv_obj_add_event_cb(progress_slider_, event_handler, LV_EVENT_RELEASED, this);
   time_label_ = make_label(page, "0:00  /  0:00", &lv_font_montserrat_14, color(kMuted));
-  lv_obj_set_pos(time_label_, 14, 189);
+  lv_obj_set_pos(time_label_, 14, 207);
 
-  lv_obj_t *volume_text = make_label(page, "VOL", &lv_font_montserrat_14, color(kMuted));
-  lv_obj_set_pos(volume_text, 14, 212);
   main_volume_slider_ = lv_slider_create(page);
-  lv_obj_set_pos(main_volume_slider_, 58, 209);
-  lv_obj_set_size(main_volume_slider_, 408, 22);
+  lv_obj_set_pos(main_volume_slider_, 300, 174);
+  lv_obj_set_size(main_volume_slider_, 166, 12);
+  lv_obj_set_ext_click_area(main_volume_slider_, 16);
   lv_slider_set_range(main_volume_slider_, 0, 100);
   lv_obj_set_style_bg_color(main_volume_slider_, color(0x28303D), LV_PART_MAIN);
   lv_obj_set_style_bg_color(main_volume_slider_, color(kAccent), LV_PART_INDICATOR);
   lv_obj_set_style_bg_color(main_volume_slider_, color(kText), LV_PART_KNOB);
   lv_obj_add_event_cb(main_volume_slider_, event_handler, LV_EVENT_RELEASED, this);
+  main_volume_label_ = make_label(page, "VOL 0%", &lv_font_montserrat_14, color(kMuted));
+  lv_obj_set_pos(main_volume_label_, 300, 207);
 }
 
 void MusicUi::create_queue_page() {
@@ -286,9 +288,15 @@ void MusicUi::create_queue_page() {
   lv_obj_set_size(page, 480, 234);
   queue_title_ = make_label(page, "CURRENT PLAYLIST", &lv_font_montserrat_22, color(kText));
   lv_obj_set_pos(queue_title_, 14, 4);
-  lv_obj_set_width(queue_title_, 330);
+  lv_obj_set_width(queue_title_, 250);
   lv_label_set_long_mode(queue_title_, LV_LABEL_LONG_SCROLL_CIRCULAR);
-  lv_obj_t *clear = make_button(page, "CLEAR", 88, 42);
+  queue_previous_page_ = make_button(page, LV_SYMBOL_LEFT, 48, 42);
+  lv_obj_set_pos(queue_previous_page_, 278, 0);
+  lv_obj_add_event_cb(queue_previous_page_, event_handler, LV_EVENT_CLICKED, this);
+  queue_next_page_ = make_button(page, LV_SYMBOL_RIGHT, 48, 42);
+  lv_obj_set_pos(queue_next_page_, 332, 0);
+  lv_obj_add_event_cb(queue_next_page_, event_handler, LV_EVENT_CLICKED, this);
+  lv_obj_t *clear = make_button(page, "CLEAR", 80, 42);
   lv_obj_align(clear, LV_ALIGN_TOP_RIGHT, -14, 0);
   lv_obj_add_event_cb(clear, event_handler, LV_EVENT_LONG_PRESSED, this);
 
@@ -409,9 +417,11 @@ void MusicUi::update(const Snapshot &snapshot) {
   const int32_t duration_seconds =
       std::max<int32_t>(1, snapshot.now_playing.duration_ms / 1000);
   lv_slider_set_range(progress_slider_, 0, duration_seconds);
-  lv_slider_set_value(
-      progress_slider_,
-      std::clamp<int32_t>(snapshot.position_ms / 1000, 0, duration_seconds), LV_ANIM_OFF);
+  if (!lv_slider_is_dragged(progress_slider_)) {
+    lv_slider_set_value(
+        progress_slider_,
+        std::clamp<int32_t>(snapshot.position_ms / 1000, 0, duration_seconds), LV_ANIM_OFF);
+  }
   const int32_t display_position = snapshot.now_playing.duration_ms > 0
                                        ? std::clamp(snapshot.position_ms, int32_t{0},
                                                     snapshot.now_playing.duration_ms)
@@ -419,10 +429,16 @@ void MusicUi::update(const Snapshot &snapshot) {
   const std::string times = format_time(display_position) + "  /  " +
                             format_time(snapshot.now_playing.duration_ms);
   lv_label_set_text(time_label_, times.c_str());
-  lv_slider_set_value(volume_slider_, (static_cast<uint32_t>(snapshot.volume) * 100) / 65535,
-                      LV_ANIM_OFF);
-  lv_slider_set_value(main_volume_slider_,
-                      (static_cast<uint32_t>(snapshot.volume) * 100) / 65535, LV_ANIM_OFF);
+  const int volume_percent = (static_cast<uint32_t>(snapshot.volume) * 100) / 65535;
+  if (!lv_slider_is_dragged(volume_slider_)) {
+    lv_slider_set_value(volume_slider_, volume_percent, LV_ANIM_OFF);
+  }
+  if (!lv_slider_is_dragged(main_volume_slider_)) {
+    lv_slider_set_value(main_volume_slider_, volume_percent, LV_ANIM_OFF);
+  }
+  char volume_text[16];
+  std::snprintf(volume_text, sizeof(volume_text), "VOL %d%%", volume_percent);
+  lv_label_set_text(main_volume_label_, volume_text);
 
   auto apply_toggle = [](lv_obj_t *object, bool checked) {
     if (checked) {
@@ -438,9 +454,19 @@ void MusicUi::update(const Snapshot &snapshot) {
   lv_label_set_text(queue_title_, snapshot.active_playlist_name.c_str());
   if (snapshot.queue_revision != rendered_queue_revision_ ||
       snapshot.queue.size() != rendered_queue_size_) {
+    if (snapshot.active_queue_index >= 0 &&
+        static_cast<size_t>(snapshot.active_queue_index) < snapshot.queue.size()) {
+      queue_page_start_ = static_cast<size_t>(snapshot.active_queue_index) / 100 * 100;
+    } else {
+      queue_page_start_ = 0;
+    }
     rebuild_queue(snapshot);
     rendered_queue_size_ = snapshot.queue.size();
     rendered_queue_revision_ = snapshot.queue_revision;
+  }
+  if (snapshot.active_queue_index != rendered_active_queue_index_) {
+    update_queue_selection(snapshot);
+    rendered_active_queue_index_ = snapshot.active_queue_index;
   }
   if (snapshot.playlists_revision != rendered_playlist_revision_ ||
       snapshot.playlists.size() != rendered_playlist_size_) {
@@ -452,8 +478,11 @@ void MusicUi::update(const Snapshot &snapshot) {
 
 void MusicUi::rebuild_queue(const Snapshot &snapshot) {
   lv_obj_clean(queue_list_);
-  queue_build_index_ = 0;
-  queue_build_limit_ = std::min<size_t>(snapshot.queue.size(), 200);
+  queue_build_index_ = queue_page_start_;
+  queue_build_limit_ = std::min<size_t>(snapshot.queue.size(), queue_page_start_ + 100);
+  lv_obj_set_state(queue_previous_page_, LV_STATE_DISABLED, queue_page_start_ == 0);
+  lv_obj_set_state(queue_next_page_, LV_STATE_DISABLED,
+                   queue_page_start_ + 100 >= snapshot.queue.size());
 }
 
 void MusicUi::append_queue_rows(const Snapshot &snapshot) {
@@ -492,6 +521,18 @@ void MusicUi::append_queue_rows(const Snapshot &snapshot) {
   queue_build_index_ = end;
 }
 
+void MusicUi::update_queue_selection(const Snapshot &snapshot) {
+  const uint32_t count = lv_obj_get_child_count(queue_list_);
+  for (uint32_t child = 0; child < count; ++child) {
+    const size_t index = queue_page_start_ + child;
+    lv_obj_set_style_bg_color(lv_obj_get_child(queue_list_, child),
+                              index == static_cast<size_t>(snapshot.active_queue_index)
+                                  ? color(0x154344)
+                                  : color(kPanel),
+                              0);
+  }
+}
+
 void MusicUi::rebuild_playlists(const Snapshot &snapshot) {
   lv_obj_clean(playlist_list_);
   for (size_t i = 0; i < snapshot.playlists.size(); ++i) {
@@ -526,17 +567,32 @@ void MusicUi::event_handler(lv_event_t *event) {
 void MusicUi::queue_row_handler(lv_event_t *event) {
   auto *ui = static_cast<MusicUi *>(lv_event_get_user_data(event));
   lv_obj_t *row = static_cast<lv_obj_t *>(lv_event_get_target(event));
-  const int32_t index = lv_obj_get_index(row);
-  if (ui == nullptr || index < 0 || static_cast<size_t>(index) >= ui->snapshot_.queue.size()) {
+  const int32_t local_index = lv_obj_get_index(row);
+  if (ui == nullptr || local_index < 0) {
+    return;
+  }
+  const size_t index = ui->queue_page_start_ + static_cast<size_t>(local_index);
+  if (index >= ui->snapshot_.queue.size()) {
+    return;
+  }
+  if (ui->snapshot_.connection != ConnectionState::online) {
     return;
   }
   if (lv_event_get_code(event) == LV_EVENT_LONG_PRESSED) {
+    ui->suppress_queue_click_ = true;
+    const int32_t item = ui->snapshot_.queue[index].index >= 0
+                             ? ui->snapshot_.queue[index].index
+                             : static_cast<int32_t>(index);
     ui->client_.enqueue({CommandType::delete_index, ui->snapshot_.active_playlist_id,
-                         ui->snapshot_.queue[index].index});
+                         item});
   } else {
+    if (ui->suppress_queue_click_) {
+      ui->suppress_queue_click_ = false;
+      return;
+    }
     // AIMP's play command takes the zero-based queue row. The item ID carried
     // in playlist metadata is for mutations/details and may legitimately be -1.
-    ui->client_.enqueue({CommandType::play_index, index});
+    ui->client_.enqueue({CommandType::play_index, static_cast<int32_t>(index)});
     ui->show_page(Page::now);
   }
 }
@@ -549,6 +605,20 @@ void MusicUi::playlist_row_handler(lv_event_t *event) {
     return;
   }
   const Playlist &playlist = ui->snapshot_.playlists[index];
+  if (ui->snapshot_.connection != ConnectionState::online) {
+    return;
+  }
+  if (lv_event_get_code(event) == LV_EVENT_LONG_PRESSED) {
+    ui->suppress_playlist_click_ = true;
+    if (!playlist.folder && !playlist.read_only && !playlist.active) {
+      ui->client_.enqueue({CommandType::delete_playlist, playlist.id});
+    }
+    return;
+  }
+  if (ui->suppress_playlist_click_) {
+    ui->suppress_playlist_click_ = false;
+    return;
+  }
   if (playlist.folder && lv_event_get_code(event) != LV_EVENT_LONG_PRESSED) {
     ui->playlist_folder_ids_.push_back(playlist.id);
     ui->playlist_folder_names_.push_back(playlist.name);
@@ -556,9 +626,6 @@ void MusicUi::playlist_row_handler(lv_event_t *event) {
     lv_obj_add_flag(ui->new_playlist_button_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(ui->playlist_back_button_, LV_OBJ_FLAG_HIDDEN);
     ui->client_.enqueue({CommandType::request_playlists, playlist.id});
-  } else if (lv_event_get_code(event) == LV_EVENT_LONG_PRESSED && !playlist.folder &&
-             !playlist.read_only && !playlist.active) {
-    ui->client_.enqueue({CommandType::delete_playlist, playlist.id});
   } else if (!playlist.folder) {
     ui->client_.enqueue({CommandType::activate_playlist, playlist.id});
     ui->show_page(Page::queue);
@@ -574,9 +641,24 @@ void MusicUi::handle_event(lv_event_t *event) {
       return;
     }
   }
+  if (target == queue_previous_page_ || target == queue_next_page_) {
+    if (target == queue_previous_page_ && queue_page_start_ >= 100) {
+      queue_page_start_ -= 100;
+    } else if (target == queue_next_page_ && queue_page_start_ + 100 < snapshot_.queue.size()) {
+      queue_page_start_ += 100;
+    }
+    rebuild_queue(snapshot_);
+    return;
+  }
+  if (snapshot_.connection != ConnectionState::online) {
+    return;
+  }
   if (target == play_button_) {
     if (code == LV_EVENT_LONG_PRESSED) {
+      suppress_play_click_ = true;
       client_.enqueue({CommandType::stop});
+    } else if (suppress_play_click_) {
+      suppress_play_click_ = false;
     } else if (snapshot_.playback == PlaybackState::playing) {
       client_.enqueue({CommandType::pause});
     } else {
@@ -622,7 +704,9 @@ void MusicUi::handle_event(lv_event_t *event) {
   } else if (std::strcmp(text, "STOP") == 0) {
     client_.enqueue({CommandType::stop});
   } else if (std::strcmp(text, "REFRESH FROM AIMP") == 0) {
-    client_.enqueue({CommandType::request_state});
+    client_.enqueue({CommandType::request_playlist, -1});
+    const int32_t folder = playlist_folder_ids_.empty() ? -1 : playlist_folder_ids_.back();
+    client_.enqueue({CommandType::request_playlists, folder});
   } else if (std::strcmp(text, "CLEAR") == 0 && code == LV_EVENT_LONG_PRESSED) {
     client_.enqueue({CommandType::clear_playlist, snapshot_.active_playlist_id});
   } else if (std::strcmp(text, "+ ESP REMOTE") == 0 && code == LV_EVENT_LONG_PRESSED) {

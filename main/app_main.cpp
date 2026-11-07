@@ -1,4 +1,5 @@
 #include "monkeymote_client.hpp"
+#include "musicremote_config.hpp"
 #include "music_model.hpp"
 #include "music_ui.hpp"
 
@@ -21,9 +22,7 @@ namespace {
 
 constexpr char kTag[] = "musicremote";
 constexpr EventBits_t kWifiConnected = BIT0;
-constexpr EventBits_t kWifiFailed = BIT1;
 EventGroupHandle_t wifi_events;
-int retry_count = 0;
 
 esp_err_t screenshot_handler(httpd_req_t *request) {
   auto *ui = static_cast<musicremote::MusicUi *>(request->user_ctx);
@@ -99,15 +98,10 @@ void wifi_event(void *, esp_event_base_t base, int32_t id, void *data) {
     return;
   }
   if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-    if (retry_count++ < 12) {
-      esp_wifi_connect();
-    } else {
-      xEventGroupSetBits(wifi_events, kWifiFailed);
-    }
+    esp_wifi_connect();
     return;
   }
   if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
-    retry_count = 0;
     const auto *event = static_cast<const ip_event_got_ip_t *>(data);
     ESP_LOGI(kTag, "Wi-Fi connected: " IPSTR, IP2STR(&event->ip_info.ip));
     xEventGroupSetBits(wifi_events, kWifiConnected);
@@ -144,8 +138,8 @@ bool connect_wifi() {
   ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
   ESP_ERROR_CHECK(esp_wifi_start());
 
-  const EventBits_t bits = xEventGroupWaitBits(wifi_events, kWifiConnected | kWifiFailed, pdFALSE,
-                                                pdFALSE, pdMS_TO_TICKS(30000));
+  const EventBits_t bits = xEventGroupWaitBits(wifi_events, kWifiConnected, pdFALSE, pdFALSE,
+                                                pdMS_TO_TICKS(30000));
   return (bits & kWifiConnected) != 0;
 }
 
@@ -181,18 +175,19 @@ extern "C" void app_main() {
               .port = static_cast<uint16_t>(MUSICREMOTE_AIMP_PORT),
               .password = MUSICREMOTE_AIMP_PASSWORD});
   static musicremote::MusicUi ui(model, client);
-  ui.start();
 
   if (!board.initialize_touch()) {
     ESP_LOGW(kTag, "Touch controller initialization failed");
   }
-  if (!connect_wifi()) {
+  ui.start();
+
+  const bool wifi_ready = connect_wifi();
+  if (!wifi_ready) {
     model.update([](musicremote::Snapshot &state) {
       state.connection = musicremote::ConnectionState::offline;
-      state.status = "WIFI UNAVAILABLE";
+      state.status = "WAITING FOR WIFI";
     });
-    ESP_LOGE(kTag, "Could not connect to Wi-Fi");
-    return;
+    ESP_LOGW(kTag, "Wi-Fi not ready yet; reconnect continues in background");
   }
   mdns_init();
   mdns_hostname_set("musicremote");

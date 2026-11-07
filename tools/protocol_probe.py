@@ -85,7 +85,10 @@ class Client:
         if self.sock is None:
             raise RuntimeError("not connected")
         while len(self.buffer) < HEADER.size:
-            self.buffer.extend(self.sock.recv(16384))
+            chunk = self.sock.recv(16384)
+            if not chunk:
+                raise RuntimeError("connection closed")
+            self.buffer.extend(chunk)
         magic, message_type, size = HEADER.unpack_from(self.buffer)
         if magic != MAGIC:
             raise RuntimeError(f"bad magic 0x{magic:08x}")

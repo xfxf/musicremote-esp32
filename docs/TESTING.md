@@ -5,7 +5,7 @@ Date: 2026-11-07 (Australia/Melbourne)
 ## Build and hardware
 
 - ESP-IDF 5.5.4 build passed for `esp32s3`.
-- Firmware: `0x1b18a0` bytes (approximately 1.78 MB).
+- Firmware: `0x1b2ee0` bytes (approximately 1.78 MB).
 - App partition: `0x3f0000`; 57% remained free.
 - Flashed and hash-verified over `/dev/ttyACM0`.
 - Boot identified ESP32-S3 revision 0.2, 2 MB PSRAM, and 16 MB physical flash
@@ -16,8 +16,10 @@ Date: 2026-11-07 (Australia/Melbourne)
 
 - Joined the configured WPA2 network and acquired `192.168.227.64`.
 - Resolved the configured AIMP host by mDNS and authenticated on TCP 19371.
-- Parsed the live eight-playlist collection and active queue, including a
-  48,321-track playlist, without unbounded UI allocation.
+- Parsed the live eight-playlist collection. Requesting the 48,321-track
+  `NAS:Music` playlist produced a single 1,223,088-byte wire payload; the
+  firmware drained it without allocation, stayed connected, and presented the
+  bounded-memory `PLAYLIST TOO LARGE` state instead of crashing.
 - Reversibly changed and confirmed volume (35,388 to 34,364), shuffle (off to
   on), and repeat (mode 2 to mode 0), then restored the exact baseline values.
 - Switched away from and restored the live `musicforprogramming` playlist; the
@@ -35,6 +37,11 @@ Date: 2026-11-07 (Australia/Melbourne)
   not the metadata item ID (which was `-1` for this AIMP playlist). The exact
   prior track, 351,750 ms position, playback state, repeat, shuffle, and volume
   were restored after the activation test.
+- No server-side playlist pagination or search request was found. The current
+  queue UI pages decoded results in 100-row chunks; full-library A-Z/search is
+  specified as a microSD-backed index in issue #7 because the board's 2 MB
+  PSRAM cannot safely retain the wire payload, decoded strings, search index,
+  networking, and LVGL state together.
 
 ## Visual inspection
 

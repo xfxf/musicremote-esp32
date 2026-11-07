@@ -7,11 +7,13 @@
 #include <cstring>
 #include <inttypes.h>
 #include <netdb.h>
+#include <netinet/tcp.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mbedtls/md5.h"
@@ -205,8 +207,23 @@ void MonkeyMoteClient::run() {
       if (!process_socket(100)) {
         break;
       }
+      const int64_t now = esp_timer_get_time();
+      if (now - last_receive_us_ > 30'000'000) {
+        ESP_LOGW(kTag, "AIMP connection timed out");
+        break;
+      }
+      if (now - last_receive_us_ > 10'000'000 && now - last_ping_us_ > 10'000'000) {
+        if (!send_packet(23)) {
+          break;
+        }
+        last_ping_us_ = now;
+      }
     }
     close_socket();
+    {
+      std::lock_guard lock(commands_mutex_);
+      commands_.clear();
+    }
   }
   task_ = nullptr;
 }
@@ -232,6 +249,12 @@ bool MonkeyMoteClient::connect_and_authenticate() {
     setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     int yes = 1;
     setsockopt(socket_, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof(yes));
+    int keep_idle = 10;
+    int keep_interval = 3;
+    int keep_count = 3;
+    setsockopt(socket_, IPPROTO_TCP, TCP_KEEPIDLE, &keep_idle, sizeof(keep_idle));
+    setsockopt(socket_, IPPROTO_TCP, TCP_KEEPINTVL, &keep_interval, sizeof(keep_interval));
+    setsockopt(socket_, IPPROTO_TCP, TCP_KEEPCNT, &keep_count, sizeof(keep_count));
     if (connect(socket_, address, address_length) == 0) {
       return true;
     }
@@ -322,6 +345,9 @@ bool MonkeyMoteClient::connect_and_authenticate() {
   setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO, &nonblocking_timeout,
              sizeof(nonblocking_timeout));
   receive_buffer_.clear();
+  discard_remaining_ = 0;
+  last_receive_us_ = esp_timer_get_time();
+  last_ping_us_ = last_receive_us_;
   model_.update([](Snapshot &state) {
     state.connection = ConnectionState::online;
     state.status = "AIMP ONLINE";
@@ -357,7 +383,17 @@ bool MonkeyMoteClient::process_socket(int timeout_ms) {
     if (count <= 0) {
       return false;
     }
-    receive_buffer_.insert(receive_buffer_.end(), chunk.begin(), chunk.begin() + count);
+    last_receive_us_ = esp_timer_get_time();
+    size_t offset = 0;
+    if (discard_remaining_ != 0) {
+      const size_t discarded = std::min<size_t>(discard_remaining_, count);
+      discard_remaining_ -= discarded;
+      offset = discarded;
+    }
+    if (offset < static_cast<size_t>(count)) {
+      receive_buffer_.insert(receive_buffer_.end(), chunk.begin() + offset,
+                             chunk.begin() + count);
+    }
   }
   while (receive_buffer_.size() >= 12) {
     if (read_u32(receive_buffer_.data()) != kMagic) {
@@ -367,8 +403,21 @@ bool MonkeyMoteClient::process_socket(int timeout_ms) {
     const uint32_t type = read_u32(receive_buffer_.data() + 4);
     const uint32_t length = read_u32(receive_buffer_.data() + 8);
     if (length > kMaxPayload) {
-      ESP_LOGW(kTag, "Rejected oversized payload: %" PRIu32, length);
-      return false;
+      ESP_LOGW(kTag, "Draining oversized payload: %" PRIu32, length);
+      receive_buffer_.erase(receive_buffer_.begin(), receive_buffer_.begin() + 12);
+      const size_t available = std::min<size_t>(length, receive_buffer_.size());
+      receive_buffer_.erase(receive_buffer_.begin(), receive_buffer_.begin() + available);
+      discard_remaining_ = static_cast<size_t>(length) - available;
+      model_.update([](Snapshot &state) {
+        state.queue.clear();
+        ++state.queue_revision;
+        state.active_playlist_name = "PLAYLIST TOO LARGE";
+        state.status = "PLAYLIST TOO LARGE";
+      });
+      if (discard_remaining_ != 0) {
+        break;
+      }
+      continue;
     }
     if (receive_buffer_.size() < 12 + length) {
       break;
@@ -395,10 +444,7 @@ bool MonkeyMoteClient::process_frame(uint32_t type, const std::vector<uint8_t> &
     if (payload.size() >= 4) {
       const int32_t index = read_i32(payload.data());
       model_.update([index](Snapshot &state) {
-        if (state.active_queue_index != index) {
-          state.active_queue_index = index;
-          ++state.queue_revision;
-        }
+        state.active_queue_index = index;
       });
       return true;
     }
@@ -408,7 +454,6 @@ bool MonkeyMoteClient::process_frame(uint32_t type, const std::vector<uint8_t> &
   case 30:
   case 35:
     enqueue({CommandType::request_playlist, -1});
-    enqueue({CommandType::request_playlists, -1});
     return true;
   case 23:
     send_packet(23);
@@ -662,9 +707,6 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
     return;
   }
   const uint32_t count = read_u32(payload.data());
-  if (count > 10000) {
-    return;
-  }
   const int32_t playlist_id = read_i32(payload.data() + 4);
   const uint16_t name_length = read_u16(payload.data() + 8);
   const uint8_t flags = payload[10];
@@ -674,6 +716,16 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
   }
   std::string name(reinterpret_cast<const char *>(payload.data() + offset), name_length);
   offset += name_length + 1;
+  if (count > 10000) {
+    model_.update([playlist_id, name = std::move(name)](Snapshot &state) mutable {
+      state.active_playlist_id = playlist_id;
+      state.active_playlist_name = name.empty() ? "PLAYLIST TOO LARGE" : std::move(name);
+      state.queue.clear();
+      ++state.queue_revision;
+      state.status = "PLAYLIST TOO LARGE";
+    });
+    return;
+  }
   std::vector<Track> tracks;
   tracks.reserve(std::min<uint32_t>(count, 1000));
   for (uint32_t i = 0; i < count; ++i) {
@@ -742,6 +794,12 @@ void MonkeyMoteClient::parse_compressed(const std::vector<uint8_t> &payload) {
   const uint32_t uncompressed_size = read_u32(payload.data());
   const uint32_t inner_type = read_u32(payload.data() + 4);
   if (uncompressed_size > kMaxPayload) {
+    model_.update([](Snapshot &state) {
+      state.queue.clear();
+      ++state.queue_revision;
+      state.active_playlist_name = "PLAYLIST TOO LARGE";
+      state.status = "PLAYLIST TOO LARGE";
+    });
     return;
   }
   std::vector<uint8_t> uncompressed(uncompressed_size);

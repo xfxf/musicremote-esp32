@@ -20,12 +20,6 @@ set +a
 : "${AIMP_PORT:?AIMP_PORT is required}"
 : "${AIMP_PASSWORD:?AIMP_PASSWORD is required}"
 
-export MUSICREMOTE_WIFI_SSID="${WIFI_SSID}"
-export MUSICREMOTE_WIFI_PASSWORD="${WIFI_PASSWORD}"
-export MUSICREMOTE_AIMP_HOST="${AIMP_HOST}"
-export MUSICREMOTE_AIMP_PORT="${AIMP_PORT}"
-export MUSICREMOTE_AIMP_PASSWORD="${AIMP_PASSWORD}"
-
 cd "${project_dir}"
 idf.py set-target esp32s3
 

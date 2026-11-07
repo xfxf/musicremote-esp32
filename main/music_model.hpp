@@ -58,6 +58,15 @@ public:
     return state_;
   }
 
+  bool copy_if_changed(uint64_t known_revision, Snapshot &out) const {
+    std::lock_guard lock(mutex_);
+    if (state_.revision == known_revision) {
+      return false;
+    }
+    out = state_;
+    return true;
+  }
+
   template <typename Fn> void update(Fn &&fn) {
     std::lock_guard lock(mutex_);
     fn(state_);

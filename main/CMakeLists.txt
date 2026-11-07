@@ -2,11 +2,18 @@ set(local_env "${CMAKE_CURRENT_LIST_DIR}/../.env")
 if(NOT EXISTS "${local_env}")
     message(FATAL_ERROR "Missing .env. Copy .env.example and fill in the local settings.")
 endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${local_env}")
 
 file(STRINGS "${local_env}" env_lines)
 foreach(line IN LISTS env_lines)
     if(line MATCHES "^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
-        set("LOCAL_${CMAKE_MATCH_1}" "${CMAKE_MATCH_2}")
+        set(name "${CMAKE_MATCH_1}")
+        set(value "${CMAKE_MATCH_2}")
+        string(STRIP "${value}" value)
+        if(value MATCHES "^\"(.*)\"$" OR value MATCHES "^'(.*)'$")
+            set(value "${CMAKE_MATCH_1}")
+        endif()
+        set("LOCAL_${name}" "${value}")
     endif()
 endforeach()
 
@@ -16,12 +23,38 @@ foreach(name WIFI_SSID WIFI_PASSWORD AIMP_HOST AIMP_PORT AIMP_PASSWORD)
     endif()
 endforeach()
 
+if(NOT LOCAL_AIMP_PORT MATCHES "^[0-9]+$" OR LOCAL_AIMP_PORT LESS 1 OR LOCAL_AIMP_PORT GREATER 65535)
+    message(FATAL_ERROR "AIMP_PORT must be an integer from 1 through 65535")
+endif()
+
+function(escape_c_string input output)
+    set(value "${input}")
+    string(REPLACE "\\" "\\\\" value "${value}")
+    string(REPLACE "\"" "\\\"" value "${value}")
+    string(REPLACE "\n" "\\n" value "${value}")
+    string(REPLACE "\r" "\\r" value "${value}")
+    set("${output}" "${value}" PARENT_SCOPE)
+endfunction()
+
+escape_c_string("${LOCAL_WIFI_SSID}" CONFIG_WIFI_SSID)
+escape_c_string("${LOCAL_WIFI_PASSWORD}" CONFIG_WIFI_PASSWORD)
+escape_c_string("${LOCAL_AIMP_HOST}" CONFIG_AIMP_HOST)
+escape_c_string("${LOCAL_AIMP_PASSWORD}" CONFIG_AIMP_PASSWORD)
+set(CONFIG_AIMP_PORT "${LOCAL_AIMP_PORT}")
+set(generated_include_dir "${CMAKE_CURRENT_BINARY_DIR}/generated")
+file(MAKE_DIRECTORY "${generated_include_dir}")
+configure_file(
+    "${CMAKE_CURRENT_LIST_DIR}/musicremote_config.hpp.in"
+    "${generated_include_dir}/musicremote_config.hpp"
+    @ONLY
+)
+
 idf_component_register(
     SRCS
         "app_main.cpp"
         "monkeymote_client.cpp"
         "music_ui.cpp"
-    INCLUDE_DIRS "."
+    INCLUDE_DIRS "." "${generated_include_dir}"
     REQUIRES
         esp_event
         esp_netif
@@ -33,10 +66,3 @@ idf_component_register(
 )
 
 target_compile_features(${COMPONENT_LIB} PUBLIC cxx_std_20)
-target_compile_definitions(${COMPONENT_LIB} PRIVATE
-    MUSICREMOTE_WIFI_SSID="${LOCAL_WIFI_SSID}"
-    MUSICREMOTE_WIFI_PASSWORD="${LOCAL_WIFI_PASSWORD}"
-    MUSICREMOTE_AIMP_HOST="${LOCAL_AIMP_HOST}"
-    MUSICREMOTE_AIMP_PORT=${LOCAL_AIMP_PORT}
-    MUSICREMOTE_AIMP_PASSWORD="${LOCAL_AIMP_PASSWORD}"
-)
