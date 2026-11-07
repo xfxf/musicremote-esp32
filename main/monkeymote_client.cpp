@@ -611,8 +611,8 @@ void MonkeyMoteClient::build_streamed_index() {
   bool superseded = index_superseded_.exchange(false);
   if (!result.success) {
     ESP_LOGW(kTag, "Large playlist index failed: %s", result.error.c_str());
-    model_.update([message = result.error, superseded](Snapshot &state) {
-      if (!state.queue_indexing || superseded) {
+    model_.update([this, message = result.error, superseded](Snapshot &state) {
+      if (!state.queue_indexing || superseded || index_superseded_) {
         return;
       }
       state.queue.clear();
@@ -675,8 +675,8 @@ void MonkeyMoteClient::load_index_page(uint32_t start, bool require_indexing) {
   int32_t playlist_id = -1;
   std::string name;
   if (!playlist_index_.load_page(start, 100, tracks, total, playlist_id, name)) {
-    model_.update([require_indexing](Snapshot &state) {
-      if (require_indexing && !state.queue_indexing) {
+    model_.update([this, require_indexing](Snapshot &state) {
+      if (require_indexing && (!state.queue_indexing || index_superseded_)) {
         return;
       }
       state.queue.clear();
@@ -690,9 +690,12 @@ void MonkeyMoteClient::load_index_page(uint32_t start, bool require_indexing) {
     });
     return;
   }
-  model_.update([start, total, playlist_id, require_indexing, name = std::move(name),
+  model_.update([this, start, total, playlist_id, require_indexing, name = std::move(name),
                  tracks = std::move(tracks)](Snapshot &state) mutable {
-    if (require_indexing && !state.queue_indexing) {
+    // The network task sets index_superseded_ before its deferral update. Check
+    // it while publishing under the model lock so an older page cannot replace
+    // the refresh state with tappable rows.
+    if (require_indexing && (!state.queue_indexing || index_superseded_)) {
       return;
     }
     int32_t resolved_playlist_id = playlist_id;
