@@ -4,6 +4,7 @@
 #include <cstring>
 #include <cstdio>
 
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -102,6 +103,7 @@ void MusicUi::run() {
         update(latest);
         rendered_revision_ = latest.revision;
       }
+      update_timeline(esp_timer_get_time());
       append_queue_rows(snapshot_);
       lv_timer_handler();
     }
@@ -418,18 +420,7 @@ void MusicUi::update(const Snapshot &snapshot) {
   const int32_t duration_seconds =
       std::max<int32_t>(1, snapshot.now_playing.duration_ms / 1000);
   lv_slider_set_range(progress_slider_, 0, duration_seconds);
-  if (!lv_slider_is_dragged(progress_slider_)) {
-    lv_slider_set_value(
-        progress_slider_,
-        std::clamp<int32_t>(snapshot.position_ms / 1000, 0, duration_seconds), LV_ANIM_OFF);
-  }
-  const int32_t display_position = snapshot.now_playing.duration_ms > 0
-                                       ? std::clamp(snapshot.position_ms, int32_t{0},
-                                                    snapshot.now_playing.duration_ms)
-                                       : 0;
-  const std::string times = format_time(display_position) + "  /  " +
-                            format_time(snapshot.now_playing.duration_ms);
-  lv_label_set_text(time_label_, times.c_str());
+  update_timeline(esp_timer_get_time(), true);
   const int volume_percent = (static_cast<uint32_t>(snapshot.volume) * 100) / 65535;
   if (!lv_slider_is_dragged(volume_slider_)) {
     lv_slider_set_value(volume_slider_, volume_percent, LV_ANIM_OFF);
@@ -474,6 +465,40 @@ void MusicUi::update(const Snapshot &snapshot) {
     rebuild_playlists(snapshot);
     rendered_playlist_size_ = snapshot.playlists.size();
     rendered_playlist_revision_ = snapshot.playlists_revision;
+  }
+}
+
+void MusicUi::update_timeline(int64_t now_us, bool force) {
+  constexpr int64_t kTimelineIntervalUs = 100'000;
+  if (!force && now_us - last_timeline_render_us_ < kTimelineIntervalUs) {
+    return;
+  }
+  last_timeline_render_us_ = now_us;
+
+  int64_t position_ms = snapshot_.position_ms;
+  if (snapshot_.connection == ConnectionState::online &&
+      snapshot_.playback == PlaybackState::playing && snapshot_.position_updated_us > 0 &&
+      now_us >= snapshot_.position_updated_us) {
+    position_ms += (now_us - snapshot_.position_updated_us) / 1000;
+  }
+  if (snapshot_.now_playing.duration_ms > 0) {
+    position_ms = std::clamp<int64_t>(position_ms, 0, snapshot_.now_playing.duration_ms);
+  } else {
+    position_ms = std::max<int64_t>(0, position_ms);
+  }
+
+  const int32_t duration_seconds =
+      std::max<int32_t>(1, snapshot_.now_playing.duration_ms / 1000);
+  const int32_t position_seconds = static_cast<int32_t>(
+      std::min<int64_t>(position_ms / 1000, duration_seconds));
+  if (!lv_slider_is_dragged(progress_slider_)) {
+    lv_slider_set_value(progress_slider_, position_seconds, LV_ANIM_OFF);
+  }
+  if (force || position_seconds != rendered_position_second_) {
+    const std::string times = format_time(static_cast<int32_t>(position_ms)) + "  /  " +
+                              format_time(snapshot_.now_playing.duration_ms);
+    lv_label_set_text(time_label_, times.c_str());
+    rendered_position_second_ = position_seconds;
   }
 }
 

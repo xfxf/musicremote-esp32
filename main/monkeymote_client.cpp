@@ -647,8 +647,10 @@ void MonkeyMoteClient::parse_playback(const std::vector<uint8_t> &payload) {
   const uint8_t repeat = payload[6];
   const uint16_t volume = payload.size() >= 10 ? read_u16(payload.data() + 8)
                                                 : static_cast<uint16_t>(payload[7] * 257);
+  const int64_t received_us = esp_timer_get_time();
   model_.update([=](Snapshot &state) {
     state.position_ms = position;
+    state.position_updated_us = received_us;
     state.playback = state_value <= 3 ? static_cast<PlaybackState>(state_value)
                                       : PlaybackState::unknown;
     state.shuffle = shuffle;

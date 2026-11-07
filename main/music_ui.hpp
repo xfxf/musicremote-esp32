@@ -42,6 +42,7 @@ private:
   void create_more_page();
   void show_page(Page page);
   void update(const Snapshot &snapshot);
+  void update_timeline(int64_t now_us, bool force = false);
   void rebuild_queue(const Snapshot &snapshot);
   void append_queue_rows(const Snapshot &snapshot);
   void update_queue_selection(const Snapshot &snapshot);
@@ -67,6 +68,8 @@ private:
   size_t queue_build_limit_{0};
   size_t queue_page_start_{0};
   int32_t rendered_active_queue_index_{-1};
+  int32_t rendered_position_second_{-1};
+  int64_t last_timeline_render_us_{0};
   bool suppress_play_click_{false};
   bool suppress_queue_click_{false};
   bool suppress_playlist_click_{false};
