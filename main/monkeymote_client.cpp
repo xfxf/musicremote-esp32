@@ -138,7 +138,8 @@ bool recv_exact(int socket, void *data, size_t size) {
 } // namespace
 
 MonkeyMoteClient::MonkeyMoteClient(Model &model, Config config)
-    : model_(model), config_(std::move(config)) {}
+    : model_(model), config_(std::move(config)),
+      playlist_index_(config_.storage_directory) {}
 
 MonkeyMoteClient::~MonkeyMoteClient() { stop(); }
 
@@ -161,6 +162,10 @@ void MonkeyMoteClient::start() {
 void MonkeyMoteClient::stop() {
   running_ = false;
   close_socket();
+  if (streamed_frame_ != nullptr) {
+    std::fclose(streamed_frame_);
+    streamed_frame_ = nullptr;
+  }
 }
 
 void MonkeyMoteClient::enqueue(Command command) {
@@ -384,18 +389,30 @@ bool MonkeyMoteClient::process_socket(int timeout_ms) {
       return false;
     }
     last_receive_us_ = esp_timer_get_time();
-    size_t offset = 0;
-    if (discard_remaining_ != 0) {
-      const size_t discarded = std::min<size_t>(discard_remaining_, count);
-      discard_remaining_ -= discarded;
-      offset = discarded;
-    }
-    if (offset < static_cast<size_t>(count)) {
-      receive_buffer_.insert(receive_buffer_.end(), chunk.begin() + offset,
-                             chunk.begin() + count);
-    }
+    receive_buffer_.insert(receive_buffer_.end(), chunk.begin(), chunk.begin() + count);
   }
-  while (receive_buffer_.size() >= 12) {
+  while (true) {
+    if (discard_remaining_ != 0) {
+      const size_t discarded = std::min(discard_remaining_, receive_buffer_.size());
+      receive_buffer_.erase(receive_buffer_.begin(), receive_buffer_.begin() + discarded);
+      discard_remaining_ -= discarded;
+      if (discard_remaining_ != 0) {
+        break;
+      }
+      continue;
+    }
+    if (streamed_frame_ != nullptr) {
+      if (!consume_streamed_frame()) {
+        return false;
+      }
+      if (streamed_frame_ != nullptr || receive_buffer_.empty()) {
+        break;
+      }
+      continue;
+    }
+    if (receive_buffer_.size() < 12) {
+      break;
+    }
     if (read_u32(receive_buffer_.data()) != kMagic) {
       ESP_LOGW(kTag, "Protocol desynchronised");
       return false;
@@ -403,20 +420,18 @@ bool MonkeyMoteClient::process_socket(int timeout_ms) {
     const uint32_t type = read_u32(receive_buffer_.data() + 4);
     const uint32_t length = read_u32(receive_buffer_.data() + 8);
     if (length > kMaxPayload) {
-      ESP_LOGW(kTag, "Draining oversized payload: %" PRIu32, length);
       receive_buffer_.erase(receive_buffer_.begin(), receive_buffer_.begin() + 12);
-      const size_t available = std::min<size_t>(length, receive_buffer_.size());
-      receive_buffer_.erase(receive_buffer_.begin(), receive_buffer_.begin() + available);
-      discard_remaining_ = static_cast<size_t>(length) - available;
+      if (type == 45 && length <= 4 * 1024 * 1024 && start_streamed_frame(type, length)) {
+        continue;
+      }
+      ESP_LOGW(kTag, "Draining oversized payload: %" PRIu32, length);
+      discard_remaining_ = length;
       model_.update([](Snapshot &state) {
         state.queue.clear();
         ++state.queue_revision;
         state.active_playlist_name = "PLAYLIST TOO LARGE";
         state.status = "PLAYLIST TOO LARGE";
       });
-      if (discard_remaining_ != 0) {
-        break;
-      }
       continue;
     }
     if (receive_buffer_.size() < 12 + length) {
@@ -430,6 +445,107 @@ bool MonkeyMoteClient::process_socket(int timeout_ms) {
     }
   }
   return true;
+}
+
+bool MonkeyMoteClient::start_streamed_frame(uint32_t type, uint32_t length) {
+  if (type != 45 || !playlist_index_.available()) {
+    return false;
+  }
+  streamed_frame_ = std::fopen(playlist_index_.incoming_path().c_str(), "wb");
+  if (streamed_frame_ == nullptr) {
+    return false;
+  }
+  streamed_remaining_ = length;
+  model_.update([](Snapshot &state) {
+    state.queue.clear();
+    state.queue_total_count = 0;
+    state.queue_page_start = 0;
+    state.queue_index_ready = false;
+    state.queue_indexing = true;
+    ++state.queue_revision;
+    state.status = "RECEIVING LIBRARY";
+  });
+  ESP_LOGI(kTag, "Streaming %" PRIu32 "-byte playlist frame to microSD", length);
+  return true;
+}
+
+bool MonkeyMoteClient::consume_streamed_frame() {
+  const size_t count = std::min(streamed_remaining_, receive_buffer_.size());
+  if (count != 0 && std::fwrite(receive_buffer_.data(), 1, count, streamed_frame_) != count) {
+    std::fclose(streamed_frame_);
+    streamed_frame_ = nullptr;
+    streamed_remaining_ -= count;
+    discard_remaining_ = streamed_remaining_;
+    streamed_remaining_ = 0;
+    model_.update([](Snapshot &state) {
+      state.queue_indexing = false;
+      state.status = "SD CARD WRITE FAILED";
+    });
+    return true;
+  }
+  receive_buffer_.erase(receive_buffer_.begin(), receive_buffer_.begin() + count);
+  streamed_remaining_ -= count;
+  if (streamed_remaining_ == 0) {
+    std::fflush(streamed_frame_);
+    fsync(fileno(streamed_frame_));
+    std::fclose(streamed_frame_);
+    streamed_frame_ = nullptr;
+    finish_streamed_frame();
+  }
+  return true;
+}
+
+void MonkeyMoteClient::finish_streamed_frame() {
+  model_.update([](Snapshot &state) { state.status = "INDEXING LIBRARY"; });
+  const auto result = playlist_index_.build_from_compressed([this](uint32_t completed,
+                                                                  uint32_t total) {
+    if (completed == total || completed % 4096 == 1) {
+      model_.update([completed, total](Snapshot &state) {
+        state.status = "INDEXING " +
+                       std::to_string(completed * 100 / std::max<uint32_t>(1, total)) + "%";
+      });
+    }
+  });
+  unlink(playlist_index_.incoming_path().c_str());
+  if (!result.success) {
+    ESP_LOGW(kTag, "Large playlist index failed: %s", result.error.c_str());
+    model_.update([message = result.error](Snapshot &state) {
+      state.queue_indexing = false;
+      state.active_playlist_name = "PLAYLIST TOO LARGE";
+      state.status = message;
+    });
+    return;
+  }
+  ESP_LOGI(kTag, "Indexed %" PRIu32 " tracks for playlist %" PRId32, result.count,
+           result.playlist_id);
+  load_index_page(0);
+}
+
+void MonkeyMoteClient::load_index_page(uint32_t start) {
+  std::vector<Track> tracks;
+  uint32_t total = 0;
+  int32_t playlist_id = -1;
+  std::string name;
+  if (!playlist_index_.load_page(start, 100, tracks, total, playlist_id, name)) {
+    model_.update([](Snapshot &state) {
+      state.queue_indexing = false;
+      state.queue_index_ready = false;
+      state.status = "INDEX READ FAILED";
+    });
+    return;
+  }
+  model_.update([start, total, playlist_id, name = std::move(name),
+                 tracks = std::move(tracks)](Snapshot &state) mutable {
+    state.active_playlist_id = playlist_id;
+    state.active_playlist_name = std::move(name);
+    state.queue = std::move(tracks);
+    state.queue_total_count = total;
+    state.queue_page_start = start;
+    state.queue_indexing = false;
+    state.queue_index_ready = true;
+    state.status = "LIBRARY READY";
+    ++state.queue_revision;
+  });
 }
 
 bool MonkeyMoteClient::process_frame(uint32_t type, const std::vector<uint8_t> &payload) {
@@ -604,6 +720,9 @@ void MonkeyMoteClient::send_command(const Command &command) {
     enqueue({CommandType::request_playlists, -1});
     break;
   }
+  case CommandType::request_queue_page:
+    load_index_page(static_cast<uint32_t>(std::max<int32_t>(command.first, 0)));
+    break;
   }
 }
 
@@ -761,6 +880,7 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
     }
     Track track;
     track.index = read_i32(payload.data() + offset);
+    track.queue_row = static_cast<int32_t>(i);
     track.duration_ms = read_i32(payload.data() + offset + 4);
     track.bitrate = read_u16(payload.data() + offset + 8);
     track.rating = payload[offset + 11];
@@ -781,7 +901,7 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
       tracks.push_back(std::move(track));
     }
   }
-  model_.update([playlist_id, name = std::move(name), flags,
+  model_.update([playlist_id, name = std::move(name), flags, count,
                  tracks = std::move(tracks)](Snapshot &state) mutable {
     state.active_playlist_id = playlist_id;
     if (!name.empty()) {
@@ -799,6 +919,10 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
                                            });
     if (queue_changed) {
       state.queue = std::move(tracks);
+      state.queue_total_count = count;
+      state.queue_page_start = 0;
+      state.queue_index_ready = false;
+      state.queue_indexing = false;
       ++state.queue_revision;
     }
     bool playlist_state_changed = false;

@@ -446,7 +446,9 @@ void MusicUi::update(const Snapshot &snapshot) {
   lv_label_set_text(queue_title_, snapshot.active_playlist_name.c_str());
   if (snapshot.queue_revision != rendered_queue_revision_ ||
       snapshot.queue.size() != rendered_queue_size_) {
-    if (snapshot.active_queue_index >= 0 &&
+    if (snapshot.queue_index_ready) {
+      queue_page_start_ = snapshot.queue_page_start;
+    } else if (snapshot.active_queue_index >= 0 &&
         static_cast<size_t>(snapshot.active_queue_index) < snapshot.queue.size()) {
       queue_page_start_ = static_cast<size_t>(snapshot.active_queue_index) / 100 * 100;
     } else {
@@ -536,11 +538,15 @@ void MusicUi::update_timeline(int64_t now_us, bool force) {
 
 void MusicUi::rebuild_queue(const Snapshot &snapshot) {
   lv_obj_clean(queue_list_);
-  queue_build_index_ = queue_page_start_;
-  queue_build_limit_ = std::min<size_t>(snapshot.queue.size(), queue_page_start_ + 100);
+  queue_build_index_ = snapshot.queue_index_ready ? 0 : queue_page_start_;
+  queue_build_limit_ = snapshot.queue_index_ready
+                           ? snapshot.queue.size()
+                           : std::min<size_t>(snapshot.queue.size(), queue_page_start_ + 100);
+  const size_t total = snapshot.queue_index_ready ? snapshot.queue_total_count
+                                                   : snapshot.queue.size();
   lv_obj_set_state(queue_previous_page_, LV_STATE_DISABLED, queue_page_start_ == 0);
   lv_obj_set_state(queue_next_page_, LV_STATE_DISABLED,
-                   queue_page_start_ + 100 >= snapshot.queue.size());
+                   queue_page_start_ + 100 >= total);
 }
 
 void MusicUi::append_queue_rows(const Snapshot &snapshot) {
@@ -549,18 +555,19 @@ void MusicUi::append_queue_rows(const Snapshot &snapshot) {
   const size_t end = std::min(queue_build_index_ + 8, queue_build_limit_);
   for (size_t i = queue_build_index_; i < end; ++i) {
     const Track &track = snapshot.queue[i];
+    const size_t queue_row = track.queue_row >= 0 ? static_cast<size_t>(track.queue_row) : i;
     lv_obj_t *row = lv_button_create(queue_list_);
     lv_obj_set_width(row, lv_pct(100));
     lv_obj_set_height(row, 48);
     lv_obj_set_style_radius(row, 2, 0);
-    lv_obj_set_style_bg_color(row, i == static_cast<size_t>(snapshot.active_queue_index)
+    lv_obj_set_style_bg_color(row, queue_row == static_cast<size_t>(snapshot.active_queue_index)
                                       ? color(0x154344)
                                       : color(kPanel),
                               0);
     lv_obj_set_style_shadow_width(row, 0, 0);
     lv_obj_add_event_cb(row, queue_row_handler, LV_EVENT_CLICKED, this);
     lv_obj_add_event_cb(row, queue_row_handler, LV_EVENT_LONG_PRESSED, this);
-    lv_obj_t *index = make_label(row, std::to_string(i + 1).c_str(), &lv_font_montserrat_14,
+    lv_obj_t *index = make_label(row, std::to_string(queue_row + 1).c_str(), &lv_font_montserrat_14,
                                  color(kMuted));
     lv_obj_align(index, LV_ALIGN_LEFT_MID, 0, 0);
     const std::string title = track.title.empty() ? "Unknown track" : track.title;
@@ -582,7 +589,10 @@ void MusicUi::append_queue_rows(const Snapshot &snapshot) {
 void MusicUi::update_queue_selection(const Snapshot &snapshot) {
   const uint32_t count = lv_obj_get_child_count(queue_list_);
   for (uint32_t child = 0; child < count; ++child) {
-    const size_t index = queue_page_start_ + child;
+    const Track &track = snapshot.queue[snapshot.queue_index_ready ? child
+                                                                   : queue_page_start_ + child];
+    const size_t index = track.queue_row >= 0 ? static_cast<size_t>(track.queue_row)
+                                              : queue_page_start_ + child;
     lv_obj_set_style_bg_color(lv_obj_get_child(queue_list_, child),
                               index == static_cast<size_t>(snapshot.active_queue_index)
                                   ? color(0x154344)
@@ -629,7 +639,9 @@ void MusicUi::queue_row_handler(lv_event_t *event) {
   if (ui == nullptr || local_index < 0) {
     return;
   }
-  const size_t index = ui->queue_page_start_ + static_cast<size_t>(local_index);
+  const size_t index = ui->snapshot_.queue_index_ready
+                           ? static_cast<size_t>(local_index)
+                           : ui->queue_page_start_ + static_cast<size_t>(local_index);
   if (index >= ui->snapshot_.queue.size()) {
     return;
   }
@@ -650,7 +662,10 @@ void MusicUi::queue_row_handler(lv_event_t *event) {
     }
     // AIMP's play command takes the zero-based queue row. The item ID carried
     // in playlist metadata is for mutations/details and may legitimately be -1.
-    ui->client_.enqueue({CommandType::play_index, static_cast<int32_t>(index)});
+    const int32_t queue_row = ui->snapshot_.queue[index].queue_row >= 0
+                                  ? ui->snapshot_.queue[index].queue_row
+                                  : static_cast<int32_t>(index);
+    ui->client_.enqueue({CommandType::play_index, queue_row});
     ui->show_page(Page::now);
   }
 }
@@ -705,10 +720,18 @@ void MusicUi::handle_event(lv_event_t *event) {
   if (target == queue_previous_page_ || target == queue_next_page_) {
     if (target == queue_previous_page_ && queue_page_start_ >= 100) {
       queue_page_start_ -= 100;
-    } else if (target == queue_next_page_ && queue_page_start_ + 100 < snapshot_.queue.size()) {
+    } else if (target == queue_next_page_ &&
+               queue_page_start_ + 100 < (snapshot_.queue_index_ready
+                                               ? snapshot_.queue_total_count
+                                               : snapshot_.queue.size())) {
       queue_page_start_ += 100;
     }
-    rebuild_queue(snapshot_);
+    if (snapshot_.queue_index_ready) {
+      client_.enqueue({CommandType::request_queue_page,
+                       static_cast<int32_t>(queue_page_start_)});
+    } else {
+      rebuild_queue(snapshot_);
+    }
     return;
   }
   if (snapshot_.connection != ConnectionState::online) {

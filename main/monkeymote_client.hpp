@@ -1,8 +1,10 @@
 #pragma once
 
 #include "music_model.hpp"
+#include "playlist_index.hpp"
 
 #include <atomic>
+#include <cstdio>
 #include <cstdint>
 #include <deque>
 #include <mutex>
@@ -31,6 +33,7 @@ enum class CommandType {
   clear_playlist,
   delete_playlist,
   create_playlist,
+  request_queue_page,
 };
 
 struct Command {
@@ -46,6 +49,7 @@ public:
     std::string host;
     uint16_t port{19371};
     std::string password;
+    std::string storage_directory;
   };
 
   MonkeyMoteClient(Model &model, Config config);
@@ -76,6 +80,10 @@ private:
   void parse_playlists(const std::vector<uint8_t> &payload);
   void parse_playlist(const std::vector<uint8_t> &payload);
   void parse_compressed(const std::vector<uint8_t> &payload);
+  bool start_streamed_frame(uint32_t type, uint32_t length);
+  bool consume_streamed_frame();
+  void finish_streamed_frame();
+  void load_index_page(uint32_t start);
 
   Model &model_;
   Config config_;
@@ -84,6 +92,9 @@ private:
   void *task_{nullptr};
   std::vector<uint8_t> receive_buffer_;
   size_t discard_remaining_{0};
+  PlaylistIndex playlist_index_;
+  FILE *streamed_frame_{nullptr};
+  size_t streamed_remaining_{0};
   int64_t last_receive_us_{0};
   int64_t last_ping_us_{0};
   std::mutex commands_mutex_;

@@ -5,6 +5,7 @@
 
 #include <cstring>
 #include <cstdio>
+#include <inttypes.h>
 
 #include "esp_event.h"
 #include "esp_http_server.h"
@@ -169,6 +170,16 @@ extern "C" void app_main() {
   lv_display_set_rotation(lv_display_get_default(), LV_DISPLAY_ROTATION_90);
   board.brightness(82.0f);
 
+  uint32_t sd_size_mb = 0;
+  uint32_t sd_free_mb = 0;
+  if (board.initialize_sdcard({.format_if_mount_failed = false, .max_files = 8}) &&
+      board.get_sd_card_info(&sd_size_mb, &sd_free_mb)) {
+    ESP_LOGI(kTag, "microSD mounted at %s: %" PRIu32 " MB total, %" PRIu32 " MB free",
+             espp::SmartPanleeSc01Plus::mount_point, sd_size_mb, sd_free_mb);
+  } else {
+    ESP_LOGW(kTag, "microSD unavailable; large-playlist indexing will remain disabled");
+  }
+
   static musicremote::Model model;
   model.update([](musicremote::Snapshot &state) {
     state.connection = musicremote::ConnectionState::wifi;
@@ -177,7 +188,8 @@ extern "C" void app_main() {
   static musicremote::MonkeyMoteClient client(
       model, {.host = MUSICREMOTE_AIMP_HOST,
               .port = static_cast<uint16_t>(MUSICREMOTE_AIMP_PORT),
-              .password = MUSICREMOTE_AIMP_PASSWORD});
+              .password = MUSICREMOTE_AIMP_PASSWORD,
+              .storage_directory = board.is_sd_card_available() ? "/sdcard/musicremote" : ""});
   static musicremote::MusicUi ui(model, client);
 
   if (!board.initialize_touch()) {

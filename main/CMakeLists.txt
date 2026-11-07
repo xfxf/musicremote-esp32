@@ -55,6 +55,7 @@ idf_component_register(
     SRCS
         "app_main.cpp"
         "monkeymote_client.cpp"
+        "playlist_index.cpp"
         "music_ui.cpp"
     INCLUDE_DIRS "." "${generated_include_dir}"
     REQUIRES
@@ -62,6 +63,7 @@ idf_component_register(
         esp_netif
         esp_wifi
         esp_http_server
+        fatfs
         nvs_flash
         mdns
         mbedtls
