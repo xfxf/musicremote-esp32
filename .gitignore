@@ -1,0 +1,26 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+
+# ESP-IDF generated output
+build/
+managed_components/
+dependencies.lock
+sdkconfig
+sdkconfig.old
+
+# Host tooling
+__pycache__/
+*.pyc
+.venv/
+
+# IDE / OS files
+.vscode/
+.idea/
+.DS_Store
+
+# Captured diagnostics. Keep reviewed PNG evidence, ignore bulky raw frame buffers.
+artifacts/*.ppm
+artifacts/device-online.png
+

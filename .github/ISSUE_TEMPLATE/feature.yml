@@ -1,0 +1,25 @@
+name: Feature specification
+description: Specify firmware behavior and acceptance evidence
+title: "[Feature] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome
+      description: Describe the user-visible result.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Include build, live AIMP, physical-device, and visual evidence where relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: State restoration and safety
+      description: Identify credentials, destructive operations, or live AIMP state that must be protected.
+
