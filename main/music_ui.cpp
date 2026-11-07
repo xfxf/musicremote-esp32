@@ -475,12 +475,36 @@ void MusicUi::update_timeline(int64_t now_us, bool force) {
   }
   last_timeline_render_us_ = now_us;
 
-  int64_t position_ms = snapshot_.position_ms;
-  if (snapshot_.connection == ConnectionState::online &&
-      snapshot_.playback == PlaybackState::playing && snapshot_.position_updated_us > 0 &&
-      now_us >= snapshot_.position_updated_us) {
-    position_ms += (now_us - snapshot_.position_updated_us) / 1000;
+  if (snapshot_.position_updated_us > timeline_authoritative_updated_us_) {
+    timeline_authoritative_updated_us_ = snapshot_.position_updated_us;
+    // A model copy made before the seek reply can still carry the old host
+    // position. Keep the optimistic anchor until a packet received after the
+    // seek arrives.
+    if (timeline_pending_seek_us_ == 0 ||
+        snapshot_.position_updated_us > timeline_pending_seek_us_) {
+      timeline_position_ms_ = snapshot_.position_ms;
+      timeline_anchor_position_ms_ = snapshot_.position_ms;
+      timeline_anchor_us_ = snapshot_.position_updated_us;
+      timeline_extrapolating_ = snapshot_.connection == ConnectionState::online &&
+                                snapshot_.playback == PlaybackState::playing;
+      timeline_pending_seek_us_ = 0;
+    }
   }
+
+  if (timeline_extrapolating_ && now_us >= timeline_anchor_us_) {
+    timeline_position_ms_ =
+        timeline_anchor_position_ms_ + (now_us - timeline_anchor_us_) / 1000;
+  }
+  if (snapshot_.connection != ConnectionState::online ||
+      snapshot_.playback != PlaybackState::playing) {
+    // Freeze the most recently extrapolated value. Reconnecting does not turn
+    // extrapolation back on; only a newer authoritative type-6 packet does.
+    timeline_anchor_position_ms_ = timeline_position_ms_;
+    timeline_anchor_us_ = now_us;
+    timeline_extrapolating_ = false;
+  }
+
+  int64_t position_ms = timeline_position_ms_;
   if (snapshot_.now_playing.duration_ms > 0) {
     position_ms = std::clamp<int64_t>(position_ms, 0, snapshot_.now_playing.duration_ms);
   } else {
@@ -489,16 +513,17 @@ void MusicUi::update_timeline(int64_t now_us, bool force) {
 
   const int32_t duration_seconds =
       std::max<int32_t>(1, snapshot_.now_playing.duration_ms / 1000);
-  const int32_t position_seconds = static_cast<int32_t>(
-      std::min<int64_t>(position_ms / 1000, duration_seconds));
+  const int64_t elapsed_seconds = position_ms / 1000;
+  const int32_t slider_seconds =
+      static_cast<int32_t>(std::min<int64_t>(elapsed_seconds, duration_seconds));
   if (!lv_slider_is_dragged(progress_slider_)) {
-    lv_slider_set_value(progress_slider_, position_seconds, LV_ANIM_OFF);
+    lv_slider_set_value(progress_slider_, slider_seconds, LV_ANIM_OFF);
   }
-  if (force || position_seconds != rendered_position_second_) {
+  if (force || elapsed_seconds != rendered_position_second_) {
     const std::string times = format_time(static_cast<int32_t>(position_ms)) + "  /  " +
                               format_time(snapshot_.now_playing.duration_ms);
     lv_label_set_text(time_label_, times.c_str());
-    rendered_position_second_ = position_seconds;
+    rendered_position_second_ = elapsed_seconds;
   }
 }
 
@@ -719,7 +744,16 @@ void MusicUi::handle_event(lv_event_t *event) {
                          ? lv_label_get_text(lv_obj_get_child(target, 0))
                          : "";
   if (target == progress_slider_) {
-    client_.enqueue({CommandType::seek, lv_slider_get_value(progress_slider_) * 1000});
+    const int32_t target_ms = lv_slider_get_value(progress_slider_) * 1000;
+    const int64_t now_us = esp_timer_get_time();
+    timeline_position_ms_ = target_ms;
+    timeline_anchor_position_ms_ = target_ms;
+    timeline_anchor_us_ = now_us;
+    timeline_pending_seek_us_ = now_us;
+    timeline_extrapolating_ = snapshot_.connection == ConnectionState::online &&
+                              snapshot_.playback == PlaybackState::playing;
+    update_timeline(now_us, true);
+    client_.enqueue({CommandType::seek, target_ms});
   } else if (target == volume_slider_ || target == main_volume_slider_) {
     client_.enqueue({CommandType::volume, lv_slider_get_value(target) * 65535 / 100});
   } else if (target == shuffle_button_ || target == more_shuffle_) {

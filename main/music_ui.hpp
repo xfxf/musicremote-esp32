@@ -68,8 +68,14 @@ private:
   size_t queue_build_limit_{0};
   size_t queue_page_start_{0};
   int32_t rendered_active_queue_index_{-1};
-  int32_t rendered_position_second_{-1};
+  int64_t rendered_position_second_{-1};
   int64_t last_timeline_render_us_{0};
+  int64_t timeline_position_ms_{0};
+  int64_t timeline_anchor_position_ms_{0};
+  int64_t timeline_anchor_us_{0};
+  int64_t timeline_authoritative_updated_us_{0};
+  int64_t timeline_pending_seek_us_{0};
+  bool timeline_extrapolating_{false};
   bool suppress_play_click_{false};
   bool suppress_queue_click_{false};
   bool suppress_playlist_click_{false};
