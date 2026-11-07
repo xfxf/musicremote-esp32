@@ -29,9 +29,10 @@ session. Passwords and digests must never be logged.
 Type 45 begins with the uncompressed size (`uint32_t`), inner type (`uint32_t`),
 two reserved bytes, then a raw LZ4 block. Normal messages reject output beyond
 512 KiB and require an exact advertised-size match. Oversized type-45 playlist
-responses take a separate microSD path: the wire body is streamed to disk, the
-raw block is decoded with a bounded 64 KiB history, and only a 100-row index page
-is loaded into the model. Other oversized frames are drained without allocation.
+responses of at most 4 MiB on the wire and 64 MiB decoded take a separate
+microSD path: the wire body is streamed to disk, the raw block is decoded with a
+bounded 64 KiB history, and only a 100-row index page is loaded into the model.
+Larger and other oversized frames are drained without allocation.
 
 ## Commands
 

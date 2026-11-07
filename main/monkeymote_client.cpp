@@ -162,10 +162,6 @@ void MonkeyMoteClient::start() {
 void MonkeyMoteClient::stop() {
   running_ = false;
   close_socket();
-  if (streamed_frame_ != nullptr) {
-    std::fclose(streamed_frame_);
-    streamed_frame_ = nullptr;
-  }
 }
 
 void MonkeyMoteClient::enqueue(Command command) {
@@ -362,6 +358,7 @@ bool MonkeyMoteClient::connect_and_authenticate() {
 }
 
 void MonkeyMoteClient::close_socket() {
+  abort_streamed_frame("LIBRARY TRANSFER INTERRUPTED");
   const int old_socket = socket_;
   socket_ = -1;
   if (old_socket >= 0) {
@@ -419,15 +416,26 @@ bool MonkeyMoteClient::process_socket(int timeout_ms) {
     }
     const uint32_t type = read_u32(receive_buffer_.data() + 4);
     const uint32_t length = read_u32(receive_buffer_.data() + 8);
-    if (length > kMaxPayload) {
+    if (type == 45 && length > kMaxPayload && receive_buffer_.size() < 22) {
+      break;
+    }
+    const bool stream_playlist =
+        type == 45 && receive_buffer_.size() >= 22 &&
+        (length > kMaxPayload || read_u32(receive_buffer_.data() + 12) > kMaxPayload) &&
+        read_u32(receive_buffer_.data() + 16) != 45;
+    if (stream_playlist || length > kMaxPayload) {
       receive_buffer_.erase(receive_buffer_.begin(), receive_buffer_.begin() + 12);
-      if (type == 45 && length <= 4 * 1024 * 1024 && start_streamed_frame(type, length)) {
+      if (stream_playlist && length <= 4 * 1024 * 1024 && start_streamed_frame(type, length)) {
         continue;
       }
       ESP_LOGW(kTag, "Draining oversized payload: %" PRIu32, length);
       discard_remaining_ = length;
       model_.update([](Snapshot &state) {
         state.queue.clear();
+        state.queue_total_count = 0;
+        state.queue_page_start = 0;
+        state.queue_index_ready = false;
+        state.queue_indexing = false;
         ++state.queue_revision;
         state.active_playlist_name = "PLAYLIST TOO LARGE";
         state.status = "PLAYLIST TOO LARGE";
@@ -489,10 +497,18 @@ bool MonkeyMoteClient::consume_streamed_frame() {
   receive_buffer_.erase(receive_buffer_.begin(), receive_buffer_.begin() + count);
   streamed_remaining_ -= count;
   if (streamed_remaining_ == 0) {
-    std::fflush(streamed_frame_);
-    fsync(fileno(streamed_frame_));
-    std::fclose(streamed_frame_);
+    const bool flushed = std::fflush(streamed_frame_) == 0 &&
+                         fsync(fileno(streamed_frame_)) == 0;
+    const bool closed = std::fclose(streamed_frame_) == 0;
     streamed_frame_ = nullptr;
+    if (!flushed || !closed) {
+      unlink(playlist_index_.incoming_path().c_str());
+      model_.update([](Snapshot &state) {
+        state.queue_indexing = false;
+        state.status = "SD CARD WRITE FAILED";
+      });
+      return true;
+    }
     finish_streamed_frame();
   }
   return true;
@@ -509,11 +525,17 @@ void MonkeyMoteClient::finish_streamed_frame() {
       });
     }
   });
+  last_receive_us_ = esp_timer_get_time();
   unlink(playlist_index_.incoming_path().c_str());
   if (!result.success) {
     ESP_LOGW(kTag, "Large playlist index failed: %s", result.error.c_str());
     model_.update([message = result.error](Snapshot &state) {
+      state.queue.clear();
+      state.queue_total_count = 0;
+      state.queue_page_start = 0;
+      state.queue_index_ready = false;
       state.queue_indexing = false;
+      ++state.queue_revision;
       state.active_playlist_name = "PLAYLIST TOO LARGE";
       state.status = message;
     });
@@ -524,6 +546,25 @@ void MonkeyMoteClient::finish_streamed_frame() {
   load_index_page(0);
 }
 
+void MonkeyMoteClient::abort_streamed_frame(const char *status) {
+  if (streamed_frame_ == nullptr) {
+    return;
+  }
+  std::fclose(streamed_frame_);
+  streamed_frame_ = nullptr;
+  streamed_remaining_ = 0;
+  unlink(playlist_index_.incoming_path().c_str());
+  model_.update([status](Snapshot &state) {
+    state.queue.clear();
+    state.queue_total_count = 0;
+    state.queue_page_start = 0;
+    state.queue_index_ready = false;
+    state.queue_indexing = false;
+    ++state.queue_revision;
+    state.status = status;
+  });
+}
+
 void MonkeyMoteClient::load_index_page(uint32_t start) {
   std::vector<Track> tracks;
   uint32_t total = 0;
@@ -531,14 +572,27 @@ void MonkeyMoteClient::load_index_page(uint32_t start) {
   std::string name;
   if (!playlist_index_.load_page(start, 100, tracks, total, playlist_id, name)) {
     model_.update([](Snapshot &state) {
+      state.queue.clear();
+      state.queue_total_count = 0;
+      state.queue_page_start = 0;
       state.queue_indexing = false;
       state.queue_index_ready = false;
+      ++state.queue_revision;
       state.status = "INDEX READ FAILED";
     });
     return;
   }
   model_.update([start, total, playlist_id, name = std::move(name),
                  tracks = std::move(tracks)](Snapshot &state) mutable {
+    if (state.active_playlist_id >= 0 && state.active_playlist_id != playlist_id) {
+      state.queue.clear();
+      state.queue_total_count = 0;
+      state.queue_page_start = 0;
+      state.queue_index_ready = false;
+      ++state.queue_revision;
+      state.status = "STALE PLAYLIST INDEX";
+      return;
+    }
     state.active_playlist_id = playlist_id;
     state.active_playlist_name = std::move(name);
     state.queue = std::move(tracks);
@@ -724,7 +778,9 @@ void MonkeyMoteClient::send_command(const Command &command) {
     break;
   }
   case CommandType::request_queue_page:
-    load_index_page(static_cast<uint32_t>(std::max<int32_t>(command.first, 0)));
+    if (model_.copy().queue_index_ready) {
+      load_index_page(static_cast<uint32_t>(std::max<int32_t>(command.first, 0)));
+    }
     break;
   }
 }
@@ -870,6 +926,10 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
       state.active_playlist_id = playlist_id;
       state.active_playlist_name = name.empty() ? "PLAYLIST TOO LARGE" : std::move(name);
       state.queue.clear();
+      state.queue_total_count = 0;
+      state.queue_page_start = 0;
+      state.queue_index_ready = false;
+      state.queue_indexing = false;
       ++state.queue_revision;
       state.status = "PLAYLIST TOO LARGE";
     });
@@ -922,12 +982,12 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
                                            });
     if (queue_changed) {
       state.queue = std::move(tracks);
-      state.queue_total_count = count;
-      state.queue_page_start = 0;
-      state.queue_index_ready = false;
-      state.queue_indexing = false;
       ++state.queue_revision;
     }
+    state.queue_total_count = count;
+    state.queue_page_start = 0;
+    state.queue_index_ready = false;
+    state.queue_indexing = false;
     bool playlist_state_changed = false;
     for (auto &playlist : state.playlists) {
       const bool active = playlist.id == playlist_id;
@@ -954,6 +1014,10 @@ void MonkeyMoteClient::parse_compressed(const std::vector<uint8_t> &payload) {
   if (uncompressed_size > kMaxPayload) {
     model_.update([](Snapshot &state) {
       state.queue.clear();
+      state.queue_total_count = 0;
+      state.queue_page_start = 0;
+      state.queue_index_ready = false;
+      state.queue_indexing = false;
       ++state.queue_revision;
       state.active_playlist_name = "PLAYLIST TOO LARGE";
       state.status = "PLAYLIST TOO LARGE";

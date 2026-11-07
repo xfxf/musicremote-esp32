@@ -83,6 +83,7 @@ private:
   bool start_streamed_frame(uint32_t type, uint32_t length);
   bool consume_streamed_frame();
   void finish_streamed_frame();
+  void abort_streamed_frame(const char *status);
   void load_index_page(uint32_t start);
 
   Model &model_;

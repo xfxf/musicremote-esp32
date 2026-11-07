@@ -118,15 +118,22 @@ bool decompress_lz4(FILE *source, size_t compressed_size, FILE *target,
   // This must live in the external-capable heap, not on the 12 KiB network
   // task stack. It is the only full LZ4 history window retained in RAM.
   std::vector<uint8_t> history(kHistoryBytes);
+  std::array<uint8_t, kCopyBufferBytes> output_buffer{};
+  size_t buffered = 0;
   size_t output = 0;
 
   auto emit = [&](uint8_t value) {
-    if (output >= expected_size || std::fputc(value, target) == EOF) {
+    if (output >= expected_size) {
       return false;
     }
     history[output % history.size()] = value;
+    output_buffer[buffered++] = value;
     ++output;
-    if ((output & 0x3fff) == 0) {
+    if (buffered == output_buffer.size()) {
+      if (!write_exact(target, output_buffer.data(), buffered)) {
+        return false;
+      }
+      buffered = 0;
       vTaskDelay(1);
     }
     return true;
@@ -183,7 +190,8 @@ bool decompress_lz4(FILE *source, size_t compressed_size, FILE *target,
       }
     }
   }
-  return output == expected_size && std::fflush(target) == 0;
+  return output == expected_size && write_exact(target, output_buffer.data(), buffered) &&
+         std::fflush(target) == 0;
 }
 
 std::string normalize(std::string_view title, std::string_view artist) {
@@ -314,8 +322,14 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
   const uint64_t needed = static_cast<uint64_t>(decoded_size) * 5 + 1024 * 1024;
   uint64_t total_bytes = 0;
   uint64_t free_bytes = 0;
-  if (esp_vfs_fat_info("/sdcard", &total_bytes, &free_bytes) != ESP_OK ||
-      free_bytes < needed) {
+  const size_t slash = directory_.find('/', 1);
+  const std::string mount_point = directory_.substr(0, slash);
+  if (esp_vfs_fat_info(mount_point.c_str(), &total_bytes, &free_bytes) != ESP_OK) {
+    std::fclose(wire);
+    result.error = "STORAGE UNAVAILABLE";
+    return result;
+  }
+  if (free_bytes < needed) {
     std::fclose(wire);
     result.error = "SD CARD FULL";
     return result;

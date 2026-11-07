@@ -589,8 +589,11 @@ void MusicUi::append_queue_rows(const Snapshot &snapshot) {
 void MusicUi::update_queue_selection(const Snapshot &snapshot) {
   const uint32_t count = lv_obj_get_child_count(queue_list_);
   for (uint32_t child = 0; child < count; ++child) {
-    const Track &track = snapshot.queue[snapshot.queue_index_ready ? child
-                                                                   : queue_page_start_ + child];
+    const size_t position = snapshot.queue_index_ready ? child : queue_page_start_ + child;
+    if (position >= snapshot.queue.size()) {
+      break;
+    }
+    const Track &track = snapshot.queue[position];
     const size_t index = track.queue_row >= 0 ? static_cast<size_t>(track.queue_row)
                                               : queue_page_start_ + child;
     lv_obj_set_style_bg_color(lv_obj_get_child(queue_list_, child),
@@ -650,9 +653,10 @@ void MusicUi::queue_row_handler(lv_event_t *event) {
   }
   if (lv_event_get_code(event) == LV_EVENT_LONG_PRESSED) {
     ui->suppress_queue_click_ = true;
-    const int32_t item = ui->snapshot_.queue[index].index >= 0
-                             ? ui->snapshot_.queue[index].index
-                             : static_cast<int32_t>(index);
+    const Track &track = ui->snapshot_.queue[index];
+    const int32_t item = track.index >= 0       ? track.index
+                         : track.queue_row >= 0 ? track.queue_row
+                                                : static_cast<int32_t>(index);
     ui->client_.enqueue({CommandType::delete_index, ui->snapshot_.active_playlist_id,
                          item});
   } else {

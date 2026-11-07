@@ -12,10 +12,10 @@ decoder then uses one 64 KiB history window in PSRAM and writes `RAW.TMP`.
 Neither the compressed nor decoded response is held in memory.
 
 `INDEX.DAT` contains a versioned header, one fixed-size record per queue row,
-and a variable string area. Records retain the AIMP item ID, duration, original
-zero-based queue row, title and artist offsets, plus a normalized lowercase
-title/artist key for local search. Only one page of 100 display records is read
-into the model at a time.
+and a variable string area. Records retain the AIMP item ID, duration, and the
+offsets and lengths of the title, artist and normalized lowercase search key.
+The zero-based queue row is implied by the record's position, so records remain
+in wire order. Only one page of 100 display records is read into the model.
 
 Index construction uses separate record and string temporary files. Before a
 build, free space is checked against five times the advertised decoded size
