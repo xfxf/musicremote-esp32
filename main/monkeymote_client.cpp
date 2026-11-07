@@ -512,7 +512,7 @@ void MonkeyMoteClient::send_command(const Command &command) {
   auto simple = [this](uint8_t code, int32_t value) {
     std::vector<uint8_t> bytes{code};
     append_i32(bytes, value);
-    send_packet(7, bytes.data(), bytes.size());
+    return send_packet(7, bytes.data(), bytes.size());
   };
   switch (command.type) {
   case CommandType::play:
@@ -531,7 +531,10 @@ void MonkeyMoteClient::send_command(const Command &command) {
     simple(8, 0);
     break;
   case CommandType::seek:
-    simple(7, command.first);
+    if (simple(7, command.first)) {
+      const int64_t sent_us = esp_timer_get_time();
+      model_.update([sent_us](Snapshot &state) { state.seek_sent_us = sent_us; });
+    }
     break;
   case CommandType::shuffle:
     simple(4, command.first != 0);
@@ -647,8 +650,10 @@ void MonkeyMoteClient::parse_playback(const std::vector<uint8_t> &payload) {
   const uint8_t repeat = payload[6];
   const uint16_t volume = payload.size() >= 10 ? read_u16(payload.data() + 8)
                                                 : static_cast<uint16_t>(payload[7] * 257);
+  const int64_t received_us = esp_timer_get_time();
   model_.update([=](Snapshot &state) {
     state.position_ms = position;
+    state.position_updated_us = received_us;
     state.playback = state_value <= 3 ? static_cast<PlaybackState>(state_value)
                                       : PlaybackState::unknown;
     state.shuffle = shuffle;
