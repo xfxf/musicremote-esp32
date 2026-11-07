@@ -354,8 +354,10 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
   }
 
   raw = std::fopen(raw_path.c_str(), "rb");
-  FILE *records = std::fopen(records_path.c_str(), "wb");
-  FILE *strings = std::fopen(strings_path.c_str(), "wb");
+  // These temporary streams are rewound and read back while assembling the
+  // final index, so they must be opened for both writing and reading.
+  FILE *records = std::fopen(records_path.c_str(), "w+b");
+  FILE *strings = std::fopen(strings_path.c_str(), "w+b");
   std::array<uint8_t, 11> playlist_header{};
   if (raw == nullptr || records == nullptr || strings == nullptr ||
       !read_exact(raw, playlist_header.data(), playlist_header.size())) {
