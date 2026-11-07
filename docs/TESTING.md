@@ -46,7 +46,10 @@ Date: 2026-11-07 (Australia/Melbourne)
 ## Visual inspection
 
 The following are captures of the LVGL framebuffer served by the physical
-board, not desktop mockups:
+board, not desktop mockups. They predate the compact side-by-side progress and
+volume row and queue-page buttons in `fd8c7af`; the final-layout recapture is
+tracked in issue #8 because the USB device disappeared before the final build
+could be flashed:
 
 ![Now playing](../artifacts/device-now.png)
 ![Queue](../artifacts/device-queue.png)
@@ -55,4 +58,5 @@ board, not desktop mockups:
 
 Inspection covered orientation, navigation selection, clipping, list text,
 live state, theme-state colours, the right-aligned connection indicator, main
-volume control, and contiguous full-height bottom touch targets.
+volume control, and contiguous full-height bottom touch targets. It does not
+claim physical validation of the later compact row or queue paging controls.

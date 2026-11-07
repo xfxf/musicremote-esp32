@@ -21,6 +21,7 @@ from pathlib import Path
 MAGIC = 0x71D9873B
 HEADER = struct.Struct("<III")
 MAX_PAYLOAD = 2 * 1024 * 1024
+MAX_DECODED_PAYLOAD = 32 * 1024 * 1024
 
 
 def load_env(path: Path) -> dict[str, str]:
@@ -31,7 +32,10 @@ def load_env(path: Path) -> dict[str, str]:
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, value = line.split("=", 1)
-            values[key.strip()] = value.strip()
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                value = value[1:-1]
+            values[key.strip()] = value
     values.update({key: value for key, value in os.environ.items() if key.startswith("AIMP_")})
     return values
 
@@ -167,10 +171,10 @@ def lz4_decompress_block(source: bytes, expected_size: int) -> bytes:
                 if extension != 255:
                     break
         match_length += 4
+        if len(output) + match_length > expected_size:
+            raise ValueError("LZ4 output exceeds advertised size")
         for _ in range(match_length):
             output.append(output[-match_offset])
-        if len(output) > expected_size:
-            raise ValueError("LZ4 output exceeds advertised size")
     if len(output) != expected_size:
         raise ValueError(f"LZ4 size mismatch: {len(output)} != {expected_size}")
     return bytes(output)
@@ -180,6 +184,10 @@ def expand_frame(frame: Frame) -> Frame:
     if frame.message_type != 45 or len(frame.payload) < 10:
         return frame
     size, inner_type = struct.unpack_from("<II", frame.payload)
+    if inner_type == 45:
+        raise ValueError("nested compressed frame")
+    if size > MAX_DECODED_PAYLOAD:
+        raise ValueError(f"decoded payload too large: {size}")
     return Frame(inner_type, lz4_decompress_block(frame.payload[10:], size))
 
 

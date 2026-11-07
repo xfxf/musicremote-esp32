@@ -588,7 +588,7 @@ void MonkeyMoteClient::send_command(const Command &command) {
     break;
   case CommandType::delete_playlist:
     simple(16, command.first);
-    enqueue({CommandType::request_playlists, -1});
+    enqueue({CommandType::request_playlists, command.second});
     break;
   case CommandType::create_playlist: {
     const size_t name_size = std::min<size_t>(command.text.size(), 255);
@@ -717,6 +717,28 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
   std::string name(reinterpret_cast<const char *>(payload.data() + offset), name_length);
   offset += name_length + 1;
   if (count > 10000) {
+    // Oversized queues are not retained, but still validate the complete
+    // record structure before allowing an untrusted frame to alter the model.
+    size_t validation_offset = offset;
+    for (uint32_t i = 0; i < count; ++i) {
+      if (validation_offset > payload.size() || payload.size() - validation_offset < 32) {
+        return;
+      }
+      const std::array<uint16_t, 4> lengths{
+          read_u16(payload.data() + validation_offset + 24),
+          read_u16(payload.data() + validation_offset + 26),
+          read_u16(payload.data() + validation_offset + 28),
+          read_u16(payload.data() + validation_offset + 30)};
+      validation_offset += 32;
+      for (const uint16_t length : lengths) {
+        const size_t field_size = static_cast<size_t>(length) + 1;
+        if (validation_offset > payload.size() ||
+            field_size > payload.size() - validation_offset) {
+          return;
+        }
+        validation_offset += field_size;
+      }
+    }
     model_.update([playlist_id, name = std::move(name)](Snapshot &state) mutable {
       state.active_playlist_id = playlist_id;
       state.active_playlist_name = name.empty() ? "PLAYLIST TOO LARGE" : std::move(name);
@@ -793,6 +815,10 @@ void MonkeyMoteClient::parse_compressed(const std::vector<uint8_t> &payload) {
   }
   const uint32_t uncompressed_size = read_u32(payload.data());
   const uint32_t inner_type = read_u32(payload.data() + 4);
+  if (inner_type == 45) {
+    ESP_LOGW(kTag, "Nested compressed packet rejected");
+    return;
+  }
   if (uncompressed_size > kMaxPayload) {
     model_.update([](Snapshot &state) {
       state.queue.clear();

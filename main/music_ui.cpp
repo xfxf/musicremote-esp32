@@ -612,7 +612,10 @@ void MusicUi::playlist_row_handler(lv_event_t *event) {
   if (lv_event_get_code(event) == LV_EVENT_LONG_PRESSED) {
     ui->suppress_playlist_click_ = true;
     if (!playlist.folder && !playlist.read_only && !playlist.active) {
-      ui->client_.enqueue({CommandType::delete_playlist, playlist.id});
+      const int32_t folder_id = ui->playlist_folder_ids_.empty()
+                                    ? -1
+                                    : ui->playlist_folder_ids_.back();
+      ui->client_.enqueue({CommandType::delete_playlist, playlist.id, folder_id});
     }
     return;
   }

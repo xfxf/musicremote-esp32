@@ -125,10 +125,14 @@ bool connect_wifi() {
                                                        nullptr, &ip_instance));
 
   wifi_config_t wifi_config{};
-  std::strncpy(reinterpret_cast<char *>(wifi_config.sta.ssid), MUSICREMOTE_WIFI_SSID,
-               sizeof(wifi_config.sta.ssid) - 1);
-  std::strncpy(reinterpret_cast<char *>(wifi_config.sta.password), MUSICREMOTE_WIFI_PASSWORD,
-               sizeof(wifi_config.sta.password) - 1);
+  static_assert(sizeof(MUSICREMOTE_WIFI_SSID) - 1 <= sizeof(wifi_config.sta.ssid),
+                "WIFI_SSID exceeds the supported 32-byte length");
+  static_assert(sizeof(MUSICREMOTE_WIFI_PASSWORD) - 1 <= sizeof(wifi_config.sta.password),
+                "WIFI_PASSWORD exceeds the supported 64-byte length");
+  std::memcpy(wifi_config.sta.ssid, MUSICREMOTE_WIFI_SSID,
+              sizeof(MUSICREMOTE_WIFI_SSID) - 1);
+  std::memcpy(wifi_config.sta.password, MUSICREMOTE_WIFI_PASSWORD,
+              sizeof(MUSICREMOTE_WIFI_PASSWORD) - 1);
   wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
   wifi_config.sta.pmf_cfg.capable = true;
   wifi_config.sta.pmf_cfg.required = false;
