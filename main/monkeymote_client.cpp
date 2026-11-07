@@ -512,7 +512,7 @@ void MonkeyMoteClient::send_command(const Command &command) {
   auto simple = [this](uint8_t code, int32_t value) {
     std::vector<uint8_t> bytes{code};
     append_i32(bytes, value);
-    send_packet(7, bytes.data(), bytes.size());
+    return send_packet(7, bytes.data(), bytes.size());
   };
   switch (command.type) {
   case CommandType::play:
@@ -531,7 +531,10 @@ void MonkeyMoteClient::send_command(const Command &command) {
     simple(8, 0);
     break;
   case CommandType::seek:
-    simple(7, command.first);
+    if (simple(7, command.first)) {
+      const int64_t sent_us = esp_timer_get_time();
+      model_.update([sent_us](Snapshot &state) { state.seek_sent_us = sent_us; });
+    }
     break;
   case CommandType::shuffle:
     simple(4, command.first != 0);

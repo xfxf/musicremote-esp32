@@ -417,9 +417,9 @@ void MusicUi::update(const Snapshot &snapshot) {
   lv_label_set_text(rating_label_, rating);
   lv_label_set_text(play_icon_, snapshot.playback == PlaybackState::playing ? LV_SYMBOL_PAUSE
                                                                             : LV_SYMBOL_PLAY);
-  const int32_t duration_seconds =
-      std::max<int32_t>(1, snapshot.now_playing.duration_ms / 1000);
-  lv_slider_set_range(progress_slider_, 0, duration_seconds);
+  const int32_t duration_deciseconds =
+      std::max<int32_t>(1, snapshot.now_playing.duration_ms / 100);
+  lv_slider_set_range(progress_slider_, 0, duration_deciseconds);
   update_timeline(esp_timer_get_time(), true);
   const int volume_percent = (static_cast<uint32_t>(snapshot.volume) * 100) / 65535;
   if (!lv_slider_is_dragged(volume_slider_)) {
@@ -475,19 +475,24 @@ void MusicUi::update_timeline(int64_t now_us, bool force) {
   }
   last_timeline_render_us_ = now_us;
 
+  if (timeline_pending_seek_us_ != 0 && snapshot_.seek_sent_us > timeline_pending_seek_us_) {
+    timeline_pending_seek_sent_us_ = snapshot_.seek_sent_us;
+  }
   if (snapshot_.position_updated_us > timeline_authoritative_updated_us_) {
     timeline_authoritative_updated_us_ = snapshot_.position_updated_us;
     // A model copy made before the seek reply can still carry the old host
     // position. Keep the optimistic anchor until a packet received after the
     // seek arrives.
     if (timeline_pending_seek_us_ == 0 ||
-        snapshot_.position_updated_us > timeline_pending_seek_us_) {
+        (timeline_pending_seek_sent_us_ != 0 &&
+         snapshot_.position_updated_us > timeline_pending_seek_sent_us_)) {
       timeline_position_ms_ = snapshot_.position_ms;
       timeline_anchor_position_ms_ = snapshot_.position_ms;
       timeline_anchor_us_ = snapshot_.position_updated_us;
       timeline_extrapolating_ = snapshot_.connection == ConnectionState::online &&
                                 snapshot_.playback == PlaybackState::playing;
       timeline_pending_seek_us_ = 0;
+      timeline_pending_seek_sent_us_ = 0;
     }
   }
 
@@ -502,6 +507,8 @@ void MusicUi::update_timeline(int64_t now_us, bool force) {
     timeline_anchor_position_ms_ = timeline_position_ms_;
     timeline_anchor_us_ = now_us;
     timeline_extrapolating_ = false;
+    timeline_pending_seek_us_ = 0;
+    timeline_pending_seek_sent_us_ = 0;
   }
 
   int64_t position_ms = timeline_position_ms_;
@@ -511,13 +518,13 @@ void MusicUi::update_timeline(int64_t now_us, bool force) {
     position_ms = std::max<int64_t>(0, position_ms);
   }
 
-  const int32_t duration_seconds =
-      std::max<int32_t>(1, snapshot_.now_playing.duration_ms / 1000);
+  const int32_t duration_deciseconds =
+      std::max<int32_t>(1, snapshot_.now_playing.duration_ms / 100);
   const int64_t elapsed_seconds = position_ms / 1000;
-  const int32_t slider_seconds =
-      static_cast<int32_t>(std::min<int64_t>(elapsed_seconds, duration_seconds));
+  const int32_t slider_deciseconds = static_cast<int32_t>(
+      std::min<int64_t>(position_ms / 100, duration_deciseconds));
   if (!lv_slider_is_dragged(progress_slider_)) {
-    lv_slider_set_value(progress_slider_, slider_seconds, LV_ANIM_OFF);
+    lv_slider_set_value(progress_slider_, slider_deciseconds, LV_ANIM_OFF);
   }
   if (force || elapsed_seconds != rendered_position_second_) {
     const std::string times = format_time(static_cast<int32_t>(position_ms)) + "  /  " +
@@ -744,12 +751,13 @@ void MusicUi::handle_event(lv_event_t *event) {
                          ? lv_label_get_text(lv_obj_get_child(target, 0))
                          : "";
   if (target == progress_slider_) {
-    const int32_t target_ms = lv_slider_get_value(progress_slider_) * 1000;
+    const int32_t target_ms = lv_slider_get_value(progress_slider_) * 100;
     const int64_t now_us = esp_timer_get_time();
     timeline_position_ms_ = target_ms;
     timeline_anchor_position_ms_ = target_ms;
     timeline_anchor_us_ = now_us;
     timeline_pending_seek_us_ = now_us;
+    timeline_pending_seek_sent_us_ = 0;
     timeline_extrapolating_ = snapshot_.connection == ConnectionState::online &&
                               snapshot_.playback == PlaybackState::playing;
     update_timeline(now_us, true);

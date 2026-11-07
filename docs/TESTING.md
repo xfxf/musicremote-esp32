@@ -5,7 +5,7 @@ Date: 2026-11-08 (Australia/Melbourne)
 ## Build and hardware
 
 - ESP-IDF 5.5.4 build passed for `esp32s3`.
-- Firmware: `0x1b3250` bytes (approximately 1.78 MB).
+- Firmware: `0x1b3320` bytes (approximately 1.78 MB).
 - App partition: `0x3f0000`; 57% remained free.
 - Flashed and hash-verified over `/dev/ttyACM0`.
 - Boot identified ESP32-S3 revision 0.2, 2 MB PSRAM, and 16 MB physical flash
@@ -46,10 +46,12 @@ Date: 2026-11-08 (Australia/Melbourne)
   progress extrapolation. Two physical framebuffer captures of the same
   playing track advanced from 13:26 to 13:36, with matching progress-knob
   movement, while fresh AIMP type-6 packets remain authoritative sync points.
-  The final implementation also freezes the last extrapolated value while
-  offline, waits for a new type-6 sync after reconnect, preserves an optimistic
-  seek target until the host reply, and updates elapsed text when duration is
-  unknown.
+  The implementation is designed to freeze the last extrapolated value while
+  offline, wait for a new type-6 sync after reconnect, preserve an optimistic
+  seek target until a post-send host reply, and update elapsed text when
+  duration is unknown. Those edge cases still require targeted physical tests;
+  this run directly validates normal playing progress and a panic-free online
+  soak only.
 
 ## Visual inspection
 

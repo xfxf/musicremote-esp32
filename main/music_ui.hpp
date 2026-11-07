@@ -75,6 +75,7 @@ private:
   int64_t timeline_anchor_us_{0};
   int64_t timeline_authoritative_updated_us_{0};
   int64_t timeline_pending_seek_us_{0};
+  int64_t timeline_pending_seek_sent_us_{0};
   bool timeline_extrapolating_{false};
   bool suppress_play_click_{false};
   bool suppress_queue_click_{false};

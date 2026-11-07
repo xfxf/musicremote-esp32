@@ -40,6 +40,7 @@ struct Snapshot {
   uint16_t volume{0};
   int32_t position_ms{0};
   int64_t position_updated_us{0};
+  int64_t seek_sent_us{0};
   Track now_playing;
   int32_t active_queue_index{-1};
   int32_t active_playlist_id{-1};
