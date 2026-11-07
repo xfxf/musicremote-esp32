@@ -69,7 +69,9 @@ bool write_exact(FILE *file, const void *data, size_t size) {
 }
 
 bool copy_file(FILE *source, FILE *target) {
-  std::array<uint8_t, kCopyBufferBytes> buffer{};
+  // Index building runs on the network task. Keep bulk I/O buffers off its
+  // stack: FAT and stdio already have a relatively deep call chain here.
+  std::vector<uint8_t> buffer(kCopyBufferBytes);
   while (true) {
     const size_t count = std::fread(buffer.data(), 1, buffer.size(), source);
     if (count != 0 && !write_exact(target, buffer.data(), count)) {
@@ -84,7 +86,8 @@ bool copy_file(FILE *source, FILE *target) {
 
 class ByteReader {
 public:
-  ByteReader(FILE *file, size_t remaining) : file_(file), remaining_(remaining) {}
+  ByteReader(FILE *file, size_t remaining)
+      : file_(file), remaining_(remaining), buffer_(kCopyBufferBytes) {}
 
   bool byte(uint8_t &value) {
     if (cursor_ == available_) {
@@ -107,7 +110,9 @@ public:
 private:
   FILE *file_;
   size_t remaining_;
-  std::array<uint8_t, kCopyBufferBytes> buffer_{};
+  // A 4 KiB member would otherwise be embedded in the ByteReader stack
+  // object, on top of the LZ4/std::function/FAT call chain.
+  std::vector<uint8_t> buffer_;
   size_t cursor_{0};
   size_t available_{0};
 };
