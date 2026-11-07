@@ -11,6 +11,13 @@ written directly from the socket in bounded chunks to `WIRE.TMP`. A raw-LZ4
 decoder then uses one 64 KiB history window in PSRAM and writes `RAW.TMP`.
 Neither the compressed nor decoded response is held in memory.
 
+Decompression and index construction run on a dedicated FreeRTOS task so the
+network task continues answering AIMP keepalives and UI requests during the
+roughly 80-second full-library build. If another large response arrives while
+that task is active, the in-flight index is marked superseded and is not
+published; the current playlist is requested again after the worker exits.
+Likewise, a late success or failure cannot replace a newer small-playlist queue.
+
 `INDEX.DAT` contains a versioned header, one fixed-size record per queue row,
 and a variable string area. Records retain the AIMP item ID, duration, and the
 offsets and lengths of the title, artist and normalized lowercase search key.
@@ -24,6 +31,11 @@ to `INDEX.BAK`, and the new `INDEX.TMP` is promoted. A failed promotion restores
 the backup; boot recovery also restores a backup when the final file is absent.
 All names use FAT 8.3 form because this firmware intentionally disables FAT
 long-file-name allocation.
+
+AIMP may label a request for the current queue with playlist ID `-1`. On the
+first indexed page the firmware resolves that sentinel to a unique playlist
+with the same name and track count, then retains the resolved ID across later
+pages even while the user browses playlist folders.
 
 An absent, full, interrupted or malformed card never causes the firmware to
 allocate the complete response. It drains the frame, preserves any previously

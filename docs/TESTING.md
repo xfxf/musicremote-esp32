@@ -42,6 +42,19 @@ Date: 2026-11-08 (Australia/Melbourne)
   specified as a microSD-preferred persistent index in issue #7 because the
   board's 2 MB PSRAM cannot safely retain the wire payload, decoded strings,
   search index, networking, and LVGL state together.
+- Commit `f7a2374` was flashed and completed two physical microSD index runs of
+  all 48,321 `NAS:Music` tracks from the 1,223,088-byte compressed frame. The
+  final run reported completion 89 seconds after boot, stayed authenticated to
+  AIMP throughout, served framebuffer requests while the worker was active,
+  and neither reset nor started a duplicate rebuild. The resulting first page
+  shows real queue rows and the root playlist view resolves AIMP's `-1` current
+  sentinel back to playlist ID 2, highlighting `NAS:Music`.
+- Hardware iterations on the same card exposed and fixed three otherwise
+  build-clean faults: 4 KiB I/O buffers exhausting the 12 KiB network-task
+  stack, write-only staging files being read during final index assembly, and
+  synchronous indexing causing AIMP to time out and reconnect. The final design
+  keeps bulk buffers on the heap, opens staging streams for readback, and runs
+  index construction on a separate task while the network task remains live.
 - Commit `36e2d23` was flashed and authenticated after adding monotonic local
   progress extrapolation. Two physical framebuffer captures of the same
   playing track advanced from 24:38 to 24:51, with matching progress-knob
@@ -66,6 +79,8 @@ flashed:
 ![Queue](../artifacts/device-queue.png)
 ![Playlists](../artifacts/device-playlists.png)
 ![More controls](../artifacts/device-more.png)
+![48,321-track SD queue](../artifacts/device-large-queue.png)
+![Large playlist active state](../artifacts/device-large-playlists.png)
 
 Inspection covered orientation, navigation selection, clipping, list text,
 live state, theme-state colours, the right-aligned connection indicator, main
