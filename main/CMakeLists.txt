@@ -25,6 +25,16 @@ foreach(name WIFI_SSID WIFI_PASSWORD AIMP_HOST AIMP_PORT AIMP_PASSWORD)
     endif()
 endforeach()
 
+if(NOT DEFINED LOCAL_PLAYLIST_STORAGE)
+    set(LOCAL_PLAYLIST_STORAGE "auto")
+endif()
+if(DEFINED MUSICREMOTE_PLAYLIST_STORAGE_OVERRIDE)
+    set(LOCAL_PLAYLIST_STORAGE "${MUSICREMOTE_PLAYLIST_STORAGE_OVERRIDE}")
+endif()
+if(NOT LOCAL_PLAYLIST_STORAGE MATCHES "^(auto|sd|flash)$")
+    message(FATAL_ERROR "PLAYLIST_STORAGE must be auto, sd, or flash")
+endif()
+
 if(NOT LOCAL_AIMP_PORT MATCHES "^[0-9]+$" OR LOCAL_AIMP_PORT LESS 1 OR LOCAL_AIMP_PORT GREATER 65535)
     message(FATAL_ERROR "AIMP_PORT must be an integer from 1 through 65535")
 endif()
@@ -43,6 +53,7 @@ escape_c_string("${LOCAL_WIFI_PASSWORD}" CONFIG_WIFI_PASSWORD)
 escape_c_string("${LOCAL_AIMP_HOST}" CONFIG_AIMP_HOST)
 escape_c_string("${LOCAL_AIMP_PASSWORD}" CONFIG_AIMP_PASSWORD)
 set(CONFIG_AIMP_PORT "${LOCAL_AIMP_PORT}")
+set(CONFIG_PLAYLIST_STORAGE "${LOCAL_PLAYLIST_STORAGE}")
 set(generated_include_dir "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${generated_include_dir}")
 configure_file(
@@ -64,6 +75,7 @@ idf_component_register(
         esp_wifi
         esp_http_server
         fatfs
+        spiffs
         nvs_flash
         mdns
         mbedtls

@@ -12,6 +12,7 @@ the clarity of Microsoft Zune.
 - Play, pause, stop, previous, next, seek, volume, shuffle, and repeat modes.
 - Live now-playing metadata, playback state, position, and 0–5 track rating.
 - Browse AIMP playlists, switch the active playlist, and browse its queue.
+- Page, browse A-Z, and search title/artist across very large SD-backed queues.
 - Tap a queue item to play it; long-press to remove it.
 - Long-press `CLEAR` to clear the active playlist.
 - Long-press an inactive playlist to delete it.
@@ -40,6 +41,7 @@ Install/activate ESP-IDF, then:
 ```sh
 cp .env.example .env
 # Edit .env with the local Wi-Fi and AIMP plug-in settings.
+# PLAYLIST_STORAGE=auto prefers microSD and falls back to internal flash.
 tools/configure.sh
 idf.py build
 idf.py -p /dev/ttyACM0 flash monitor
@@ -69,8 +71,10 @@ outside their visible bounds to tolerate finger movement on release.
 
 The board exposes a LAN-only diagnostic framebuffer at
 `http://musicremote.local/screenshot.ppm?page=now`. Valid page names are
-`now`, `queue`, `playlists`, and `more`. This endpoint has no authentication;
-use the firmware only on a trusted Wi-Fi network.
+`now`, `queue`, `playlists`, `more`, `az`, and `search`. For non-mutating index
+diagnostics, the queue capture also accepts `start=10000`, `filter=A`, or
+`search=Mars`. This endpoint has no authentication; use the firmware only on a
+trusted Wi-Fi network.
 
 See [the product specification](docs/SPEC.md), [protocol notes](docs/PROTOCOL.md),
 [UI rationale](docs/UI.md), and [test record](docs/TESTING.md).

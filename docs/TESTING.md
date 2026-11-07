@@ -71,6 +71,26 @@ Date: 2026-11-08 (Australia/Melbourne)
   duration is unknown. Those edge cases still require targeted physical tests;
   this run directly validates normal playing progress and a panic-free online
   soak only.
+- The issue #7 completion build replaced the multi-file index assembler with a
+  single atomic staging file and rebuilt all 48,321 `NAS:Music` rows from the
+  1,223,088-byte compressed response in about 110 seconds. The device remained
+  authenticated and responsive. A reset then received the identical response,
+  validated its source hash, and published the cached index in about 6 seconds
+  without rewriting it.
+- Read-only physical diagnostics loaded the page beginning at global row 10,001,
+  returned A-prefix results with global rows 6, 30, 35, and 86, and found artist
+  substring matches for `Mars` at global rows including 483 and 5,258. This
+  confirms page/search results do not substitute local result positions for the
+  AIMP queue row.
+- A temporary flash-only qualification build mounted the 4 MB `storage` SPIFFS
+  partition with 3,757 KiB usable. It rejected `NAS:Music` as
+  `FLASH INDEX TOO LARGE` without a reset, then—using a lowered streaming
+  threshold only to exercise the same path—built and promoted a 195-track,
+  16,418-byte decoded fixture. Switching to a different fixture inside the
+  15-minute protection interval reused the previous 195-row index and displayed
+  `INDEX STALE - RETRY LATER`; an SPIFFS `access()` incompatibility exposed by
+  this run was replaced with `stat()` checks. The production 512 KiB threshold
+  and `auto` microSD preference were restored afterward.
 
 ## Visual inspection
 
@@ -95,3 +115,11 @@ layout or a page at row 10,000 or later.
 
 ![48,321-track SD queue](../artifacts/device-large-queue.png)
 ![Large playlist active state](../artifacts/device-large-playlists.png)
+
+The issue #7 completion captures show the current fixed-size paging and local
+search surfaces on the same physical board:
+
+![Queue page beginning at row 10,001](../artifacts/device-large-deep.png)
+![A-prefix results](../artifacts/device-large-az-results.png)
+![A-Z chooser](../artifacts/device-large-az.png)
+![Search keyboard](../artifacts/device-large-search.png)

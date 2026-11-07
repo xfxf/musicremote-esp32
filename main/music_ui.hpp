@@ -23,6 +23,7 @@ public:
   bool capture_rgb565(std::vector<uint8_t> &pixels, uint32_t &width, uint32_t &height,
                       uint32_t &stride);
   bool select_page_for_diagnostics(uint8_t page);
+  bool select_overlay_for_diagnostics(uint8_t overlay);
 
 private:
   enum class Page { now, queue, playlists, more };
@@ -40,6 +41,7 @@ private:
   void create_queue_page();
   void create_playlists_page();
   void create_more_page();
+  void create_filter_overlays();
   void show_page(Page page);
   void update(const Snapshot &snapshot);
   void update_timeline(int64_t now_us, bool force = false);
@@ -108,6 +110,7 @@ private:
   lv_obj_t *queue_list_{nullptr};
   lv_obj_t *queue_previous_page_{nullptr};
   lv_obj_t *queue_next_page_{nullptr};
+  lv_obj_t *queue_filter_button_{nullptr};
   lv_obj_t *playlist_list_{nullptr};
   lv_obj_t *playlist_title_{nullptr};
   lv_obj_t *playlist_back_button_{nullptr};
@@ -115,6 +118,13 @@ private:
   lv_obj_t *more_status_{nullptr};
   lv_obj_t *more_shuffle_{nullptr};
   lv_obj_t *more_repeat_{nullptr};
+  lv_obj_t *filter_overlay_{nullptr};
+  lv_obj_t *filter_search_button_{nullptr};
+  lv_obj_t *filter_close_button_{nullptr};
+  lv_obj_t *alphabet_buttons_[28]{};
+  lv_obj_t *search_overlay_{nullptr};
+  lv_obj_t *search_textarea_{nullptr};
+  lv_obj_t *search_keyboard_{nullptr};
 };
 
 } // namespace musicremote

@@ -157,7 +157,7 @@ bool recv_exact(int socket, void *data, size_t size) {
 
 MonkeyMoteClient::MonkeyMoteClient(Model &model, Config config)
     : model_(model), config_(std::move(config)),
-      playlist_index_(config_.storage_directory) {}
+      playlist_index_(config_.storage_directory, config_.storage_internal_flash) {}
 
 MonkeyMoteClient::~MonkeyMoteClient() { stop(); }
 
@@ -520,17 +520,21 @@ bool MonkeyMoteClient::start_streamed_frame(uint32_t type, uint32_t length) {
     return false;
   }
   streamed_remaining_ = length;
+  queue_filter_active_ = false;
+  queue_filter_.clear();
   model_.update([](Snapshot &state) {
     state.queue.clear();
     state.queue_total_count = 0;
     state.queue_page_start = 0;
     state.queue_index_ready = false;
     state.queue_indexing = true;
+    state.queue_filter_active = false;
+    state.queue_filter_label.clear();
     ++state.queue_revision;
     state.active_playlist_name = "LOADING LIBRARY";
     state.status = "RECEIVING LIBRARY";
   });
-  ESP_LOGI(kTag, "Streaming %" PRIu32 "-byte playlist frame to microSD", length);
+  ESP_LOGI(kTag, "Streaming %" PRIu32 "-byte playlist frame to index storage", length);
   return true;
 }
 
@@ -547,7 +551,7 @@ bool MonkeyMoteClient::consume_streamed_frame() {
     model_.update([](Snapshot &state) {
       state.queue_indexing = false;
       state.active_playlist_name = "PLAYLIST UNAVAILABLE";
-      state.status = "SD CARD WRITE FAILED";
+      state.status = "STORAGE WRITE FAILED";
     });
     return true;
   }
@@ -563,7 +567,7 @@ bool MonkeyMoteClient::consume_streamed_frame() {
       model_.update([](Snapshot &state) {
         state.queue_indexing = false;
         state.active_playlist_name = "PLAYLIST UNAVAILABLE";
-        state.status = "SD CARD WRITE FAILED";
+        state.status = "STORAGE WRITE FAILED";
       });
       return true;
     }
@@ -630,6 +634,9 @@ void MonkeyMoteClient::build_streamed_index() {
              result.playlist_id);
     if (!superseded) {
       load_index_page(0, true);
+      if (result.stale) {
+        model_.update([](Snapshot &state) { state.status = "INDEX STALE - RETRY LATER"; });
+      }
     }
     index_building_ = false;
   }
@@ -731,7 +738,64 @@ void MonkeyMoteClient::load_index_page(uint32_t start, bool require_indexing) {
     state.queue_page_start = start;
     state.queue_indexing = false;
     state.queue_index_ready = true;
+    state.queue_filter_active = false;
+    state.queue_filter_label.clear();
     state.status = "LIBRARY READY";
+    ++state.queue_revision;
+  });
+}
+
+void MonkeyMoteClient::search_index_page(uint32_t start, bool require_indexing) {
+  std::vector<Track> tracks;
+  uint32_t total = 0;
+  int32_t playlist_id = -1;
+  std::string name;
+  if (!playlist_index_.search_page(queue_filter_, queue_filter_mode_, start, 100, tracks,
+                                   total, playlist_id, name)) {
+    model_.update([this, require_indexing](Snapshot &state) {
+      if (require_indexing && (!state.queue_indexing || index_superseded_)) {
+        return;
+      }
+      state.queue.clear();
+      state.queue_total_count = 0;
+      state.queue_page_start = 0;
+      state.queue_indexing = false;
+      state.queue_filter_active = false;
+      state.queue_filter_label.clear();
+      ++state.queue_revision;
+      state.status = "SEARCH INDEX FAILED";
+    });
+    return;
+  }
+  const std::string label = queue_filter_mode_ == PlaylistIndex::SearchMode::contains
+                                ? "FIND: " + queue_filter_
+                            : queue_filter_mode_ == PlaylistIndex::SearchMode::non_alpha
+                                ? "A-Z: #"
+                                : "A-Z: " + queue_filter_;
+  model_.update([this, start, total, playlist_id, require_indexing, label,
+                 name = std::move(name), tracks = std::move(tracks)](Snapshot &state) mutable {
+    if (require_indexing && (!state.queue_indexing || index_superseded_)) {
+      return;
+    }
+    int32_t resolved_playlist_id = playlist_id;
+    if (resolved_playlist_id < 0) {
+      resolved_playlist_id = state.active_playlist_id;
+    }
+    if (state.active_playlist_id >= 0 && resolved_playlist_id >= 0 &&
+        state.active_playlist_id != resolved_playlist_id) {
+      state.status = "STALE PLAYLIST INDEX";
+      return;
+    }
+    state.active_playlist_id = resolved_playlist_id;
+    state.active_playlist_name = std::move(name);
+    state.queue = std::move(tracks);
+    state.queue_total_count = total;
+    state.queue_page_start = start;
+    state.queue_indexing = false;
+    state.queue_index_ready = true;
+    state.queue_filter_active = true;
+    state.queue_filter_label = label;
+    state.status = total == 0 ? "NO MATCHES" : "FILTER READY";
     ++state.queue_revision;
   });
 }
@@ -875,6 +939,8 @@ void MonkeyMoteClient::send_command(const Command &command) {
     send_packet(4, payload.data(), payload.size());
     break;
   case CommandType::activate_playlist:
+    queue_filter_active_ = false;
+    queue_filter_.clear();
     simple(12, command.first);
     enqueue({CommandType::request_playlist, command.first});
     break;
@@ -910,7 +976,29 @@ void MonkeyMoteClient::send_command(const Command &command) {
   }
   case CommandType::request_queue_page:
     if (model_.copy().queue_index_ready) {
-      load_index_page(static_cast<uint32_t>(std::max<int32_t>(command.first, 0)));
+      const uint32_t start = static_cast<uint32_t>(std::max<int32_t>(command.first, 0));
+      if (queue_filter_active_) {
+        search_index_page(start);
+      } else {
+        load_index_page(start);
+      }
+    }
+    break;
+  case CommandType::filter_queue:
+    if (model_.copy().queue_index_ready &&
+        command.first >= static_cast<int32_t>(PlaylistIndex::SearchMode::contains) &&
+        command.first <= static_cast<int32_t>(PlaylistIndex::SearchMode::non_alpha)) {
+      queue_filter_active_ = true;
+      queue_filter_mode_ = static_cast<PlaylistIndex::SearchMode>(command.first);
+      queue_filter_ = command.text;
+      search_index_page(static_cast<uint32_t>(std::max<int32_t>(command.second, 0)));
+    }
+    break;
+  case CommandType::clear_queue_filter:
+    queue_filter_active_ = false;
+    queue_filter_.clear();
+    if (model_.copy().queue_index_ready) {
+      load_index_page(0);
     }
     break;
   }
@@ -1053,6 +1141,8 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
         validation_offset += field_size;
       }
     }
+    queue_filter_active_ = false;
+    queue_filter_.clear();
     model_.update([playlist_id, count, name = std::move(name)](Snapshot &state) mutable {
       const int32_t resolved_playlist_id = resolve_playlist_id(state, playlist_id, name, count);
       state.active_playlist_id = resolved_playlist_id;
@@ -1062,6 +1152,8 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
       state.queue_page_start = 0;
       state.queue_index_ready = false;
       state.queue_indexing = false;
+      state.queue_filter_active = false;
+      state.queue_filter_label.clear();
       ++state.queue_revision;
       bool playlist_state_changed = false;
       for (auto &playlist : state.playlists) {
@@ -1076,6 +1168,8 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
     });
     return;
   }
+  queue_filter_active_ = false;
+  queue_filter_.clear();
   std::vector<Track> tracks;
   tracks.reserve(std::min<uint32_t>(count, 1000));
   for (uint32_t i = 0; i < count; ++i) {
@@ -1131,6 +1225,8 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
     state.queue_page_start = 0;
     state.queue_index_ready = false;
     state.queue_indexing = false;
+    state.queue_filter_active = false;
+    state.queue_filter_label.clear();
     if (replaced_index_build) {
       state.status = "AIMP ONLINE";
     }
@@ -1158,12 +1254,16 @@ void MonkeyMoteClient::parse_compressed(const std::vector<uint8_t> &payload) {
     return;
   }
   if (uncompressed_size > kMaxPayload) {
+    queue_filter_active_ = false;
+    queue_filter_.clear();
     model_.update([](Snapshot &state) {
       state.queue.clear();
       state.queue_total_count = 0;
       state.queue_page_start = 0;
       state.queue_index_ready = false;
       state.queue_indexing = false;
+      state.queue_filter_active = false;
+      state.queue_filter_label.clear();
       ++state.queue_revision;
       state.active_playlist_name = "PLAYLIST TOO LARGE";
       state.status = "PLAYLIST TOO LARGE";

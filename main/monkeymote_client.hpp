@@ -34,6 +34,8 @@ enum class CommandType {
   delete_playlist,
   create_playlist,
   request_queue_page,
+  filter_queue,
+  clear_queue_filter,
 };
 
 struct Command {
@@ -50,6 +52,7 @@ public:
     uint16_t port{19371};
     std::string password;
     std::string storage_directory;
+    bool storage_internal_flash{false};
   };
 
   MonkeyMoteClient(Model &model, Config config);
@@ -89,6 +92,7 @@ private:
   void build_streamed_index();
   void abort_streamed_frame(const char *status);
   void load_index_page(uint32_t start, bool require_indexing = false);
+  void search_index_page(uint32_t start, bool require_indexing = false);
 
   Model &model_;
   Config config_;
@@ -102,6 +106,9 @@ private:
   size_t streamed_remaining_{0};
   std::atomic<bool> index_building_{false};
   std::atomic<bool> index_superseded_{false};
+  bool queue_filter_active_{false};
+  PlaylistIndex::SearchMode queue_filter_mode_{PlaylistIndex::SearchMode::contains};
+  std::string queue_filter_;
   int64_t last_receive_us_{0};
   int64_t last_ping_us_{0};
   std::mutex commands_mutex_;

@@ -30,9 +30,10 @@ Type 45 begins with the uncompressed size (`uint32_t`), inner type (`uint32_t`),
 two reserved bytes, then a raw LZ4 block. Normal messages reject output beyond
 512 KiB and require an exact advertised-size match. Oversized type-45 playlist
 responses of at most 4 MiB on the wire and 64 MiB decoded take a separate
-microSD path: the wire body is streamed to disk, the raw block is decoded with a
-bounded 64 KiB history, and only a 100-row index page is loaded into the model.
-Larger and other oversized frames are drained without allocation.
+persistent-storage path: the wire body is streamed to microSD or the fitting
+internal SPIFFS fallback, the raw block is decoded with a bounded 64 KiB
+history, and only a 100-row index page is loaded into the model. Larger and
+other oversized frames are drained without allocation.
 
 ## Commands
 
@@ -77,10 +78,13 @@ search operation were found in the observed protocol, and the reference client
 filters its received collection locally. Consequently, paging the UI does not
 reduce the network or decoding cost: full-library search requires streaming the
 single response into external storage and building a local index. The issue #7
-implementation prefers the SC01 Plus microSD slot, uses atomic promotion, and
-reads 100-row pages. If storage is unavailable or indexing fails, the frame is
-drained and the UI reports the failure without allocating the complete response
-or dropping the AIMP connection.
+implementation prefers the SC01 Plus microSD slot, supports a size-gated 4 MB
+internal fallback, uses atomic promotion, and reads 100-row pages. A normalized
+local secondary index provides A-Z title prefixes and title/artist substring
+search because no corresponding server operation was observed. If storage is
+unavailable or indexing fails, the frame is drained and the UI reports the
+failure without allocating the complete response or dropping the AIMP
+connection.
 
 The host probe in `tools/protocol_probe.py` implements the same framing,
 authentication, and LZ4 decoding without third-party Python dependencies.

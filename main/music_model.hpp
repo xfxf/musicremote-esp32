@@ -51,6 +51,8 @@ struct Snapshot {
   uint32_t queue_page_start{0};
   bool queue_index_ready{false};
   bool queue_indexing{false};
+  bool queue_filter_active{false};
+  std::string queue_filter_label;
   std::vector<Playlist> playlists;
   uint64_t queue_revision{0};
   uint64_t playlists_revision{0};
