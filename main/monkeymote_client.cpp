@@ -177,6 +177,11 @@ void MonkeyMoteClient::task_entry(void *context) {
   vTaskDelete(nullptr);
 }
 
+void MonkeyMoteClient::index_task_entry(void *context) {
+  static_cast<MonkeyMoteClient *>(context)->build_streamed_index();
+  vTaskDelete(nullptr);
+}
+
 void MonkeyMoteClient::run() {
   int retry_seconds = 1;
   while (running_) {
@@ -431,6 +436,11 @@ bool MonkeyMoteClient::process_socket(int timeout_ms) {
         (length > kMaxPayload || advertised_size > kMaxPayload);
     if (stream_playlist || length > kMaxPayload) {
       receive_buffer_.erase(receive_buffer_.begin(), receive_buffer_.begin() + 12);
+      if (stream_playlist && index_building_) {
+        ESP_LOGI(kTag, "Draining duplicate large playlist while index build is active");
+        discard_remaining_ = length;
+        continue;
+      }
       if (stream_playlist && length <= kMaxStreamedPayload && start_streamed_frame(type, length)) {
         continue;
       }
@@ -521,7 +531,24 @@ bool MonkeyMoteClient::consume_streamed_frame() {
 }
 
 void MonkeyMoteClient::finish_streamed_frame() {
+  if (index_building_.exchange(true)) {
+    unlink(playlist_index_.incoming_path().c_str());
+    return;
+  }
   model_.update([](Snapshot &state) { state.status = "INDEXING LIBRARY"; });
+  TaskHandle_t handle = nullptr;
+  if (xTaskCreatePinnedToCore(index_task_entry, "playlist_index", 12 * 1024, this, 4, &handle,
+                              1) != pdPASS) {
+    index_building_ = false;
+    unlink(playlist_index_.incoming_path().c_str());
+    model_.update([](Snapshot &state) {
+      state.queue_indexing = false;
+      state.status = "INDEX TASK FAILED";
+    });
+  }
+}
+
+void MonkeyMoteClient::build_streamed_index() {
   const auto result = playlist_index_.build_from_compressed([this](uint32_t completed,
                                                                   uint32_t total) {
     if (completed == total || completed % 4096 == 1) {
@@ -531,7 +558,6 @@ void MonkeyMoteClient::finish_streamed_frame() {
       });
     }
   });
-  last_receive_us_ = esp_timer_get_time();
   unlink(playlist_index_.incoming_path().c_str());
   if (!result.success) {
     ESP_LOGW(kTag, "Large playlist index failed: %s", result.error.c_str());
@@ -545,11 +571,13 @@ void MonkeyMoteClient::finish_streamed_frame() {
       state.active_playlist_name = "PLAYLIST TOO LARGE";
       state.status = message;
     });
+    index_building_ = false;
     return;
   }
   ESP_LOGI(kTag, "Indexed %" PRIu32 " tracks for playlist %" PRId32, result.count,
            result.playlist_id);
   load_index_page(0);
+  index_building_ = false;
 }
 
 void MonkeyMoteClient::abort_streamed_frame(const char *status) {
@@ -590,8 +618,21 @@ void MonkeyMoteClient::load_index_page(uint32_t start) {
   }
   model_.update([start, total, playlist_id, name = std::move(name),
                  tracks = std::move(tracks)](Snapshot &state) mutable {
-    if (!state.queue_indexing && state.active_playlist_id >= 0 &&
-        state.active_playlist_id != playlist_id) {
+    int32_t resolved_playlist_id = playlist_id;
+    if (resolved_playlist_id < 0) {
+      for (const auto &playlist : state.playlists) {
+        if (!playlist.folder && playlist.name == name && playlist.count >= 0 &&
+            static_cast<uint32_t>(playlist.count) == total) {
+          if (resolved_playlist_id >= 0) {
+            resolved_playlist_id = -1;
+            break;
+          }
+          resolved_playlist_id = playlist.id;
+        }
+      }
+    }
+    if (!state.queue_indexing && state.active_playlist_id >= 0 && resolved_playlist_id >= 0 &&
+        state.active_playlist_id != resolved_playlist_id) {
       state.queue.clear();
       state.queue_total_count = 0;
       state.queue_page_start = 0;
@@ -600,11 +641,11 @@ void MonkeyMoteClient::load_index_page(uint32_t start) {
       state.status = "STALE PLAYLIST INDEX";
       return;
     }
-    state.active_playlist_id = playlist_id;
+    state.active_playlist_id = resolved_playlist_id;
     state.active_playlist_name = std::move(name);
     bool playlist_state_changed = false;
     for (auto &playlist : state.playlists) {
-      const bool active = playlist.id == playlist_id;
+      const bool active = playlist.id == resolved_playlist_id;
       playlist_state_changed = playlist_state_changed || playlist.active != active;
       playlist.active = active;
     }

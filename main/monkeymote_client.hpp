@@ -68,6 +68,7 @@ private:
   static constexpr uint32_t kMaxStreamedDecoded = 64 * 1024 * 1024;
 
   static void task_entry(void *context);
+  static void index_task_entry(void *context);
   void run();
   bool connect_and_authenticate();
   void close_socket();
@@ -85,6 +86,7 @@ private:
   bool start_streamed_frame(uint32_t type, uint32_t length);
   bool consume_streamed_frame();
   void finish_streamed_frame();
+  void build_streamed_index();
   void abort_streamed_frame(const char *status);
   void load_index_page(uint32_t start);
 
@@ -98,6 +100,7 @@ private:
   PlaylistIndex playlist_index_;
   FILE *streamed_frame_{nullptr};
   size_t streamed_remaining_{0};
+  std::atomic<bool> index_building_{false};
   int64_t last_receive_us_{0};
   int64_t last_ping_us_{0};
   std::mutex commands_mutex_;
