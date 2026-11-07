@@ -5,7 +5,7 @@ Date: 2026-11-08 (Australia/Melbourne)
 ## Build and hardware
 
 - ESP-IDF 5.5.4 build passed for `esp32s3`.
-- Firmware: `0x1b30e0` bytes (approximately 1.78 MB).
+- Firmware: `0x1b3250` bytes (approximately 1.78 MB).
 - App partition: `0x3f0000`; 57% remained free.
 - Flashed and hash-verified over `/dev/ttyACM0`.
 - Boot identified ESP32-S3 revision 0.2, 2 MB PSRAM, and 16 MB physical flash
@@ -42,15 +42,19 @@ Date: 2026-11-08 (Australia/Melbourne)
   specified as a microSD-preferred persistent index in issue #7 because the
   board's 2 MB PSRAM cannot safely retain the wire payload, decoded strings,
   search index, networking, and LVGL state together.
-- Commit `79a7a7c` was flashed and authenticated after adding monotonic local
+- Commit `72ec8ac` was flashed and authenticated after adding monotonic local
   progress extrapolation. Two physical framebuffer captures of the same
-  playing track advanced from 4:21 to 4:29, with matching progress-knob
+  playing track advanced from 13:26 to 13:36, with matching progress-knob
   movement, while fresh AIMP type-6 packets remain authoritative sync points.
+  The final implementation also freezes the last extrapolated value while
+  offline, waits for a new type-6 sync after reconnect, preserves an optimistic
+  seek target until the host reply, and updates elapsed text when duration is
+  unknown.
 
 ## Visual inspection
 
 The following are captures of the LVGL framebuffer served by the physical
-board, not desktop mockups. They were recaptured from commit `79a7a7c` after
+board, not desktop mockups. They were recaptured from commit `72ec8ac` after
 the compact side-by-side progress/volume row and queue-page buttons were
 flashed:
 
