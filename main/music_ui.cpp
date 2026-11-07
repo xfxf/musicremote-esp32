@@ -102,6 +102,7 @@ void MusicUi::run() {
         update(latest);
         rendered_revision_ = latest.revision;
       }
+      append_queue_rows(snapshot_);
       lv_timer_handler();
     }
     vTaskDelay(pdMS_TO_TICKS(16));
@@ -120,12 +121,14 @@ lv_obj_t *MusicUi::make_label(lv_obj_t *parent, const char *text, const lv_font_
 lv_obj_t *MusicUi::make_button(lv_obj_t *parent, const char *text, int width, int height) {
   lv_obj_t *button = lv_button_create(parent);
   lv_obj_set_size(button, width, height);
+  lv_obj_set_ext_click_area(button, 4);
   lv_obj_set_style_radius(button, 4, 0);
   lv_obj_set_style_bg_color(button, color(kPanel), 0);
   lv_obj_set_style_bg_color(button, color(0x174148), LV_STATE_PRESSED);
   lv_obj_set_style_bg_color(button, color(0x174148), LV_STATE_CHECKED);
   lv_obj_set_style_shadow_width(button, 0, 0);
   lv_obj_t *label = make_label(button, text, &lv_font_montserrat_18, color(kText));
+  lv_obj_set_clickable(label, false);
   lv_obj_center(label);
   return button;
 }
@@ -161,9 +164,11 @@ void MusicUi::create_header() {
   lv_obj_set_style_radius(status_dot_, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_bg_color(status_dot_, color(0xE04F5F), 0);
   lv_obj_set_style_bg_opa(status_dot_, LV_OPA_COVER, 0);
-  lv_obj_align(status_dot_, LV_ALIGN_RIGHT_MID, -102, 0);
+  lv_obj_align(status_dot_, LV_ALIGN_RIGHT_MID, -14, 0);
   status_label_ = make_label(header, "OFFLINE", &lv_font_montserrat_14, color(kMuted));
-  lv_obj_align(status_label_, LV_ALIGN_RIGHT_MID, -14, 0);
+  lv_obj_set_width(status_label_, 190);
+  lv_obj_set_style_text_align(status_label_, LV_TEXT_ALIGN_RIGHT, 0);
+  lv_obj_align(status_label_, LV_ALIGN_RIGHT_MID, -34, 0);
 }
 
 void MusicUi::create_navigation() {
@@ -173,20 +178,22 @@ void MusicUi::create_navigation() {
   lv_obj_align(nav, LV_ALIGN_BOTTOM_MID, 0, 0);
   lv_obj_set_style_bg_color(nav, color(0x0D1118), 0);
   lv_obj_set_style_bg_opa(nav, LV_OPA_COVER, 0);
-  lv_obj_set_flex_flow(nav, LV_FLEX_FLOW_ROW);
-  lv_obj_set_flex_align(nav, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER,
-                        LV_FLEX_ALIGN_CENTER);
+  lv_obj_clear_flag(nav, LV_OBJ_FLAG_SCROLLABLE);
 
   const char *labels[] = {"NOW", "QUEUE", "PLAYLISTS", "MORE"};
   for (size_t i = 0; i < 4; ++i) {
     nav_buttons_[i] = lv_button_create(nav);
-    lv_obj_set_size(nav_buttons_[i], 112, 38);
+    // Four contiguous hit regions cover the complete bottom bar, including
+    // the physical screen edge. There are intentionally no dead gutters.
+    lv_obj_set_pos(nav_buttons_[i], static_cast<int32_t>(i) * 120, 0);
+    lv_obj_set_size(nav_buttons_[i], 120, 46);
     lv_obj_set_style_radius(nav_buttons_[i], 0, 0);
     lv_obj_set_style_bg_opa(nav_buttons_[i], LV_OPA_TRANSP, 0);
     lv_obj_set_style_shadow_width(nav_buttons_[i], 0, 0);
-    lv_obj_add_event_cb(nav_buttons_[i], event_handler, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(nav_buttons_[i], event_handler, LV_EVENT_PRESSED, this);
     lv_obj_t *label = make_label(nav_buttons_[i], labels[i], &lv_font_montserrat_14,
                                  i == 0 ? color(kAccent) : color(kMuted));
+    lv_obj_set_clickable(label, false);
     lv_obj_center(label);
   }
 }
@@ -227,29 +234,29 @@ void MusicUi::create_now_page() {
   lv_obj_set_size(album_label_, 286, 18);
   lv_label_set_long_mode(album_label_, LV_LABEL_LONG_DOT);
 
-  shuffle_button_ = make_button(page, LV_SYMBOL_SHUFFLE, 44, 42);
+  shuffle_button_ = make_button(page, LV_SYMBOL_SHUFFLE, 48, 48);
   lv_obj_set_pos(shuffle_button_, 176, 112);
-  repeat_button_ = make_button(page, LV_SYMBOL_LOOP, 44, 42);
-  lv_obj_set_pos(repeat_button_, 228, 112);
+  repeat_button_ = make_button(page, LV_SYMBOL_LOOP, 48, 48);
+  lv_obj_set_pos(repeat_button_, 232, 112);
   lv_obj_add_flag(shuffle_button_, LV_OBJ_FLAG_CHECKABLE);
   lv_obj_add_flag(repeat_button_, LV_OBJ_FLAG_CHECKABLE);
   lv_obj_add_event_cb(shuffle_button_, event_handler, LV_EVENT_CLICKED, this);
   lv_obj_add_event_cb(repeat_button_, event_handler, LV_EVENT_CLICKED, this);
 
-  lv_obj_t *previous = make_button(page, LV_SYMBOL_PREV, 50, 42);
-  play_button_ = make_button(page, LV_SYMBOL_PLAY, 64, 50);
+  lv_obj_t *previous = make_button(page, LV_SYMBOL_PREV, 54, 48);
+  play_button_ = make_button(page, LV_SYMBOL_PLAY, 68, 54);
   play_icon_ = lv_obj_get_child(play_button_, 0);
-  lv_obj_t *next = make_button(page, LV_SYMBOL_NEXT, 50, 42);
-  lv_obj_set_pos(previous, 304, 110);
-  lv_obj_set_pos(play_button_, 360, 106);
-  lv_obj_set_pos(next, 430, 110);
+  lv_obj_t *next = make_button(page, LV_SYMBOL_NEXT, 54, 48);
+  lv_obj_set_pos(previous, 290, 112);
+  lv_obj_set_pos(play_button_, 352, 106);
+  lv_obj_set_pos(next, 426, 112);
   lv_obj_add_event_cb(previous, event_handler, LV_EVENT_CLICKED, this);
   lv_obj_add_event_cb(play_button_, event_handler, LV_EVENT_CLICKED, this);
   lv_obj_add_event_cb(play_button_, event_handler, LV_EVENT_LONG_PRESSED, this);
   lv_obj_add_event_cb(next, event_handler, LV_EVENT_CLICKED, this);
 
   progress_slider_ = lv_slider_create(page);
-  lv_obj_set_pos(progress_slider_, 14, 172);
+  lv_obj_set_pos(progress_slider_, 14, 166);
   lv_obj_set_size(progress_slider_, 452, 18);
   lv_slider_set_range(progress_slider_, 0, 1);
   lv_obj_set_style_bg_color(progress_slider_, color(0x28303D), LV_PART_MAIN);
@@ -257,7 +264,18 @@ void MusicUi::create_now_page() {
   lv_obj_set_style_bg_color(progress_slider_, color(kText), LV_PART_KNOB);
   lv_obj_add_event_cb(progress_slider_, event_handler, LV_EVENT_RELEASED, this);
   time_label_ = make_label(page, "0:00  /  0:00", &lv_font_montserrat_14, color(kMuted));
-  lv_obj_align(time_label_, LV_ALIGN_BOTTOM_RIGHT, -14, -12);
+  lv_obj_set_pos(time_label_, 14, 189);
+
+  lv_obj_t *volume_text = make_label(page, "VOL", &lv_font_montserrat_14, color(kMuted));
+  lv_obj_set_pos(volume_text, 14, 212);
+  main_volume_slider_ = lv_slider_create(page);
+  lv_obj_set_pos(main_volume_slider_, 58, 209);
+  lv_obj_set_size(main_volume_slider_, 408, 22);
+  lv_slider_set_range(main_volume_slider_, 0, 100);
+  lv_obj_set_style_bg_color(main_volume_slider_, color(0x28303D), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(main_volume_slider_, color(kAccent), LV_PART_INDICATOR);
+  lv_obj_set_style_bg_color(main_volume_slider_, color(kText), LV_PART_KNOB);
+  lv_obj_add_event_cb(main_volume_slider_, event_handler, LV_EVENT_RELEASED, this);
 }
 
 void MusicUi::create_queue_page() {
@@ -270,7 +288,7 @@ void MusicUi::create_queue_page() {
   lv_obj_set_pos(queue_title_, 14, 4);
   lv_obj_set_width(queue_title_, 330);
   lv_label_set_long_mode(queue_title_, LV_LABEL_LONG_SCROLL_CIRCULAR);
-  lv_obj_t *clear = make_button(page, "CLEAR", 82, 34);
+  lv_obj_t *clear = make_button(page, "CLEAR", 88, 42);
   lv_obj_align(clear, LV_ALIGN_TOP_RIGHT, -14, 0);
   lv_obj_add_event_cb(clear, event_handler, LV_EVENT_LONG_PRESSED, this);
 
@@ -290,11 +308,17 @@ void MusicUi::create_playlists_page() {
   lv_obj_remove_style_all(page);
   lv_obj_set_pos(page, 0, 40);
   lv_obj_set_size(page, 480, 234);
-  lv_obj_t *title = make_label(page, "PLAYLISTS", &lv_font_montserrat_22, color(kText));
-  lv_obj_set_pos(title, 14, 4);
-  lv_obj_t *new_playlist = make_button(page, "+ ESP REMOTE", 146, 34);
-  lv_obj_align(new_playlist, LV_ALIGN_TOP_RIGHT, -14, 0);
-  lv_obj_add_event_cb(new_playlist, event_handler, LV_EVENT_LONG_PRESSED, this);
+  playlist_title_ = make_label(page, "PLAYLISTS", &lv_font_montserrat_22, color(kText));
+  lv_obj_set_pos(playlist_title_, 14, 4);
+  lv_obj_set_size(playlist_title_, 270, 30);
+  lv_label_set_long_mode(playlist_title_, LV_LABEL_LONG_DOT);
+  new_playlist_button_ = make_button(page, "+ ESP REMOTE", 154, 42);
+  lv_obj_align(new_playlist_button_, LV_ALIGN_TOP_RIGHT, -14, 0);
+  lv_obj_add_event_cb(new_playlist_button_, event_handler, LV_EVENT_LONG_PRESSED, this);
+  playlist_back_button_ = make_button(page, LV_SYMBOL_LEFT " BACK", 112, 42);
+  lv_obj_align(playlist_back_button_, LV_ALIGN_TOP_RIGHT, -14, 0);
+  lv_obj_add_flag(playlist_back_button_, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_event_cb(playlist_back_button_, event_handler, LV_EVENT_CLICKED, this);
   playlist_list_ = lv_obj_create(page);
   lv_obj_set_pos(playlist_list_, 8, 42);
   lv_obj_set_size(playlist_list_, 464, 188);
@@ -338,7 +362,7 @@ void MusicUi::create_more_page() {
   lv_obj_set_style_bg_color(volume_slider_, color(kAccent), LV_PART_INDICATOR);
   lv_obj_set_style_bg_color(volume_slider_, color(kText), LV_PART_KNOB);
   lv_obj_add_event_cb(volume_slider_, event_handler, LV_EVENT_RELEASED, this);
-  lv_obj_t *refresh = make_button(page, "REFRESH FROM AIMP", 220, 38);
+  lv_obj_t *refresh = make_button(page, "REFRESH FROM AIMP", 230, 44);
   lv_obj_align(refresh, LV_ALIGN_BOTTOM_MID, 0, -4);
   lv_obj_add_event_cb(refresh, event_handler, LV_EVENT_CLICKED, this);
 }
@@ -397,6 +421,8 @@ void MusicUi::update(const Snapshot &snapshot) {
   lv_label_set_text(time_label_, times.c_str());
   lv_slider_set_value(volume_slider_, (static_cast<uint32_t>(snapshot.volume) * 100) / 65535,
                       LV_ANIM_OFF);
+  lv_slider_set_value(main_volume_slider_,
+                      (static_cast<uint32_t>(snapshot.volume) * 100) / 65535, LV_ANIM_OFF);
 
   auto apply_toggle = [](lv_obj_t *object, bool checked) {
     if (checked) {
@@ -410,26 +436,37 @@ void MusicUi::update(const Snapshot &snapshot) {
   apply_toggle(repeat_button_, snapshot.repeat != 0);
   apply_toggle(more_repeat_, snapshot.repeat != 0);
   lv_label_set_text(queue_title_, snapshot.active_playlist_name.c_str());
-  if (snapshot.queue.size() != rendered_queue_size_) {
+  if (snapshot.queue_revision != rendered_queue_revision_ ||
+      snapshot.queue.size() != rendered_queue_size_) {
     rebuild_queue(snapshot);
     rendered_queue_size_ = snapshot.queue.size();
+    rendered_queue_revision_ = snapshot.queue_revision;
   }
-  if (snapshot.playlists.size() != rendered_playlist_size_) {
+  if (snapshot.playlists_revision != rendered_playlist_revision_ ||
+      snapshot.playlists.size() != rendered_playlist_size_) {
     rebuild_playlists(snapshot);
     rendered_playlist_size_ = snapshot.playlists.size();
+    rendered_playlist_revision_ = snapshot.playlists_revision;
   }
 }
 
 void MusicUi::rebuild_queue(const Snapshot &snapshot) {
   lv_obj_clean(queue_list_);
-  const size_t visible_count = std::min<size_t>(snapshot.queue.size(), 200);
-  for (size_t i = 0; i < visible_count; ++i) {
+  queue_build_index_ = 0;
+  queue_build_limit_ = std::min<size_t>(snapshot.queue.size(), 200);
+}
+
+void MusicUi::append_queue_rows(const Snapshot &snapshot) {
+  // Constructing hundreds of LVGL objects in one pass starves the idle task on
+  // the ESP32-S3. Eight rows per frame keeps input and the watchdog responsive.
+  const size_t end = std::min(queue_build_index_ + 8, queue_build_limit_);
+  for (size_t i = queue_build_index_; i < end; ++i) {
     const Track &track = snapshot.queue[i];
     lv_obj_t *row = lv_button_create(queue_list_);
     lv_obj_set_width(row, lv_pct(100));
     lv_obj_set_height(row, 48);
     lv_obj_set_style_radius(row, 2, 0);
-    lv_obj_set_style_bg_color(row, i == static_cast<size_t>(snapshot.now_playing.index)
+    lv_obj_set_style_bg_color(row, i == static_cast<size_t>(snapshot.active_queue_index)
                                       ? color(0x154344)
                                       : color(kPanel),
                               0);
@@ -452,6 +489,7 @@ void MusicUi::rebuild_queue(const Snapshot &snapshot) {
     lv_obj_t *time = make_label(row, duration.c_str(), &lv_font_montserrat_14, color(kMuted));
     lv_obj_align(time, LV_ALIGN_RIGHT_MID, -2, 0);
   }
+  queue_build_index_ = end;
 }
 
 void MusicUi::rebuild_playlists(const Snapshot &snapshot) {
@@ -471,7 +509,8 @@ void MusicUi::rebuild_playlists(const Snapshot &snapshot) {
     lv_obj_set_width(name, 350);
     lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
     lv_obj_align(name, LV_ALIGN_LEFT_MID, 2, 0);
-    const std::string count = std::to_string(playlist.count) + " TRACKS";
+    const std::string count = std::to_string(playlist.count) +
+                              (playlist.folder ? " ITEMS  " LV_SYMBOL_RIGHT : " TRACKS");
     lv_obj_t *details = make_label(row, count.c_str(), &lv_font_montserrat_14, color(kMuted));
     lv_obj_align(details, LV_ALIGN_RIGHT_MID, -2, 0);
   }
@@ -495,7 +534,10 @@ void MusicUi::queue_row_handler(lv_event_t *event) {
     ui->client_.enqueue({CommandType::delete_index, ui->snapshot_.active_playlist_id,
                          ui->snapshot_.queue[index].index});
   } else {
-    ui->client_.enqueue({CommandType::play_index, ui->snapshot_.queue[index].index});
+    // AIMP's play command takes the zero-based queue row. The item ID carried
+    // in playlist metadata is for mutations/details and may legitimately be -1.
+    ui->client_.enqueue({CommandType::play_index, index});
+    ui->show_page(Page::now);
   }
 }
 
@@ -507,7 +549,15 @@ void MusicUi::playlist_row_handler(lv_event_t *event) {
     return;
   }
   const Playlist &playlist = ui->snapshot_.playlists[index];
-  if (lv_event_get_code(event) == LV_EVENT_LONG_PRESSED && !playlist.active) {
+  if (playlist.folder && lv_event_get_code(event) != LV_EVENT_LONG_PRESSED) {
+    ui->playlist_folder_ids_.push_back(playlist.id);
+    ui->playlist_folder_names_.push_back(playlist.name);
+    lv_label_set_text(ui->playlist_title_, playlist.name.c_str());
+    lv_obj_add_flag(ui->new_playlist_button_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(ui->playlist_back_button_, LV_OBJ_FLAG_HIDDEN);
+    ui->client_.enqueue({CommandType::request_playlists, playlist.id});
+  } else if (lv_event_get_code(event) == LV_EVENT_LONG_PRESSED && !playlist.folder &&
+             !playlist.read_only && !playlist.active) {
     ui->client_.enqueue({CommandType::delete_playlist, playlist.id});
   } else if (!playlist.folder) {
     ui->client_.enqueue({CommandType::activate_playlist, playlist.id});
@@ -538,13 +588,29 @@ void MusicUi::handle_event(lv_event_t *event) {
     client_.enqueue({CommandType::rating, (snapshot_.now_playing.rating + 1) % 6});
     return;
   }
+  if (target == playlist_back_button_) {
+    if (!playlist_folder_ids_.empty()) {
+      playlist_folder_ids_.pop_back();
+      playlist_folder_names_.pop_back();
+    }
+    const int32_t folder_id = playlist_folder_ids_.empty() ? -1 : playlist_folder_ids_.back();
+    lv_label_set_text(playlist_title_,
+                      playlist_folder_names_.empty() ? "PLAYLISTS"
+                                                     : playlist_folder_names_.back().c_str());
+    if (playlist_folder_ids_.empty()) {
+      lv_obj_clear_flag(new_playlist_button_, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_add_flag(playlist_back_button_, LV_OBJ_FLAG_HIDDEN);
+    }
+    client_.enqueue({CommandType::request_playlists, folder_id});
+    return;
+  }
   const char *text = lv_obj_check_type(target, &lv_button_class) && lv_obj_get_child_count(target)
                          ? lv_label_get_text(lv_obj_get_child(target, 0))
                          : "";
   if (target == progress_slider_) {
     client_.enqueue({CommandType::seek, lv_slider_get_value(progress_slider_) * 1000});
-  } else if (target == volume_slider_) {
-    client_.enqueue({CommandType::volume, lv_slider_get_value(volume_slider_) * 65535 / 100});
+  } else if (target == volume_slider_ || target == main_volume_slider_) {
+    client_.enqueue({CommandType::volume, lv_slider_get_value(target) * 65535 / 100});
   } else if (target == shuffle_button_ || target == more_shuffle_) {
     client_.enqueue({CommandType::shuffle, snapshot_.shuffle ? 0 : 1});
   } else if (target == repeat_button_ || target == more_repeat_) {

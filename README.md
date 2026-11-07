@@ -18,6 +18,10 @@ the clarity of Microsoft Zune.
 - Long-press `+ ESP REMOTE` to create a playlist named `ESP Remote`.
 - Automatic Wi-Fi and AIMP reconnection with `.local` host resolution.
 
+Current cover artwork is not downloaded: the large blue music tile is the
+intentional fallback and doubles as the rating control. A bounded cover-art
+fetch/cache implementation is tracked in GitHub issue #2.
+
 Destructive actions deliberately require a long press. The firmware is an
 independent interoperable client and is not affiliated with MonkeyMote or AIMP.
 
@@ -53,9 +57,13 @@ never publish a binary built with real credentials.
 | Main play button | Play/pause | Stop |
 | Progress / volume | Set value on release | — |
 | Queue row | Play track | Remove track |
-| Playlist row | Activate | Delete when inactive |
+| Playlist row | Activate, or open folder | Delete when inactive and writable |
 | `CLEAR` | — | Clear active playlist |
 | `+ ESP REMOTE` | — | Create playlist |
+
+The four bottom destinations divide the entire navigation bar into contiguous
+120×46 hit regions. Other buttons include an additional four-pixel touch margin
+outside their visible bounds to tolerate finger movement on release.
 
 ## Validation and diagnostics
 

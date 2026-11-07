@@ -5,7 +5,7 @@ Date: 2026-11-07 (Australia/Melbourne)
 ## Build and hardware
 
 - ESP-IDF 5.5.4 build passed for `esp32s3`.
-- Firmware: `0x1b0f90` bytes (approximately 1.77 MB).
+- Firmware: `0x1b18a0` bytes (approximately 1.78 MB).
 - App partition: `0x3f0000`; 57% remained free.
 - Flashed and hash-verified over `/dev/ttyACM0`.
 - Boot identified ESP32-S3 revision 0.2, 2 MB PSRAM, and 16 MB physical flash
@@ -25,6 +25,16 @@ Date: 2026-11-07 (Australia/Melbourne)
   after discovering that AIMP uses `-1` only as a read-current sentinel.
 - A 45-second reset-to-online serial trace completed without panic after the
   LVGL transition regression found during the preceding soak was fixed.
+- A second live trace exposed queue construction starving the CPU 1 idle task;
+  queue rows now render in eight-row batches. Two subsequent online soaks ran
+  beyond the prior watchdog point without a watchdog report or panic.
+- Live type 41 evidence confirmed playlist flag bit 0 means folder and bit 1
+  means protected/read-only. Activating the protected `Lossless` playlist was
+  accepted and returned playlist ID 6 with 184 entries.
+- Live queue testing confirmed playback subcommand 10 takes a zero-based row,
+  not the metadata item ID (which was `-1` for this AIMP playlist). The exact
+  prior track, 351,750 ms position, playback state, repeat, shuffle, and volume
+  were restored after the activation test.
 
 ## Visual inspection
 
@@ -37,4 +47,5 @@ board, not desktop mockups:
 ![More controls](../artifacts/device-more.png)
 
 Inspection covered orientation, navigation selection, clipping, list text,
-live state, theme-state colours, and touch target size.
+live state, theme-state colours, the right-aligned connection indicator, main
+volume control, and contiguous full-height bottom touch targets.

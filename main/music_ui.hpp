@@ -43,6 +43,7 @@ private:
   void show_page(Page page);
   void update(const Snapshot &snapshot);
   void rebuild_queue(const Snapshot &snapshot);
+  void append_queue_rows(const Snapshot &snapshot);
   void rebuild_playlists(const Snapshot &snapshot);
   void handle_event(lv_event_t *event);
 
@@ -59,11 +60,18 @@ private:
   uint64_t rendered_revision_{UINT64_MAX};
   size_t rendered_queue_size_{SIZE_MAX};
   size_t rendered_playlist_size_{SIZE_MAX};
+  uint64_t rendered_queue_revision_{UINT64_MAX};
+  uint64_t rendered_playlist_revision_{UINT64_MAX};
+  size_t queue_build_index_{0};
+  size_t queue_build_limit_{0};
+  std::vector<int32_t> playlist_folder_ids_;
+  std::vector<std::string> playlist_folder_names_;
 
   lv_obj_t *root_{nullptr};
   lv_obj_t *status_dot_{nullptr};
   lv_obj_t *status_label_{nullptr};
   lv_obj_t *volume_slider_{nullptr};
+  lv_obj_t *main_volume_slider_{nullptr};
   lv_obj_t *pages_[4]{};
   lv_obj_t *nav_buttons_[4]{};
 
@@ -82,6 +90,9 @@ private:
   lv_obj_t *queue_title_{nullptr};
   lv_obj_t *queue_list_{nullptr};
   lv_obj_t *playlist_list_{nullptr};
+  lv_obj_t *playlist_title_{nullptr};
+  lv_obj_t *playlist_back_button_{nullptr};
+  lv_obj_t *new_playlist_button_{nullptr};
   lv_obj_t *more_status_{nullptr};
   lv_obj_t *more_shuffle_{nullptr};
   lv_obj_t *more_repeat_{nullptr};

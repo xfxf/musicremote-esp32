@@ -394,7 +394,12 @@ bool MonkeyMoteClient::process_frame(uint32_t type, const std::vector<uint8_t> &
   case 11:
     if (payload.size() >= 4) {
       const int32_t index = read_i32(payload.data());
-      model_.update([index](Snapshot &state) { state.now_playing.index = index; });
+      model_.update([index](Snapshot &state) {
+        if (state.active_queue_index != index) {
+          state.active_queue_index = index;
+          ++state.queue_revision;
+        }
+      });
       return true;
     }
     return false;
@@ -403,7 +408,7 @@ bool MonkeyMoteClient::process_frame(uint32_t type, const std::vector<uint8_t> &
   case 30:
   case 35:
     enqueue({CommandType::request_playlist, -1});
-    enqueue({CommandType::request_playlists});
+    enqueue({CommandType::request_playlists, -1});
     return true;
   case 23:
     send_packet(23);
@@ -508,7 +513,7 @@ void MonkeyMoteClient::send_command(const Command &command) {
     break;
   case CommandType::request_playlists:
     payload.push_back(13);
-    append_i32(payload, -1);
+    append_i32(payload, command.first);
     send_packet(4, payload.data(), payload.size());
     break;
   case CommandType::request_playlist:
@@ -538,7 +543,7 @@ void MonkeyMoteClient::send_command(const Command &command) {
     break;
   case CommandType::delete_playlist:
     simple(16, command.first);
-    enqueue({CommandType::request_playlists});
+    enqueue({CommandType::request_playlists, -1});
     break;
   case CommandType::create_playlist: {
     const size_t name_size = std::min<size_t>(command.text.size(), 255);
@@ -548,14 +553,14 @@ void MonkeyMoteClient::send_command(const Command &command) {
     payload.insert(payload.end(), command.text.begin(), command.text.begin() + name_size);
     payload.push_back(0);
     send_packet(42, payload.data(), payload.size());
-    enqueue({CommandType::request_playlists});
+    enqueue({CommandType::request_playlists, -1});
     break;
   }
   }
 }
 
 void MonkeyMoteClient::request_initial_state() {
-  enqueue({CommandType::request_playlists});
+  enqueue({CommandType::request_playlists, -1});
   enqueue({CommandType::request_playlist, -1});
 }
 
@@ -626,8 +631,8 @@ void MonkeyMoteClient::parse_playlists(const std::vector<uint8_t> &payload) {
     playlist.id = read_i32(payload.data() + offset);
     playlist.count = read_i32(payload.data() + offset + 4);
     const uint16_t flags = read_u16(payload.data() + offset + 8);
-    playlist.active = (flags & 1) != 0;
-    playlist.folder = (flags & 2) != 0;
+    playlist.folder = (flags & 1) != 0;
+    playlist.read_only = (flags & 2) != 0;
     offset += 12;
     if (!read_cstring(payload, offset, playlist.name)) {
       return;
@@ -635,12 +640,19 @@ void MonkeyMoteClient::parse_playlists(const std::vector<uint8_t> &payload) {
     playlists.push_back(std::move(playlist));
   }
   model_.update([playlists = std::move(playlists)](Snapshot &state) mutable {
-    state.playlists = std::move(playlists);
-    for (const auto &playlist : state.playlists) {
-      if (playlist.active) {
-        state.active_playlist_id = playlist.id;
-        state.active_playlist_name = playlist.name;
-      }
+    for (auto &playlist : playlists) {
+      playlist.active = playlist.id == state.active_playlist_id;
+    }
+    const bool changed = playlists.size() != state.playlists.size() ||
+                         !std::equal(playlists.begin(), playlists.end(), state.playlists.begin(),
+                                     [](const Playlist &a, const Playlist &b) {
+                                       return a.id == b.id && a.count == b.count &&
+                                              a.active == b.active && a.folder == b.folder &&
+                                              a.read_only == b.read_only && a.name == b.name;
+                                     });
+    if (changed) {
+      state.playlists = std::move(playlists);
+      ++state.playlists_revision;
     }
   });
 }
@@ -696,7 +708,29 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
     if (!name.empty()) {
       state.active_playlist_name = std::move(name);
     }
-    state.queue = std::move(tracks);
+    const bool queue_changed = tracks.size() != state.queue.size() ||
+                               !std::equal(tracks.begin(), tracks.end(), state.queue.begin(),
+                                           [](const Track &a, const Track &b) {
+                                             return a.index == b.index &&
+                                                    a.duration_ms == b.duration_ms &&
+                                                    a.bitrate == b.bitrate && a.rating == b.rating &&
+                                                    a.year == b.year && a.title == b.title &&
+                                                    a.artist == b.artist && a.album == b.album &&
+                                                    a.codec == b.codec;
+                                           });
+    if (queue_changed) {
+      state.queue = std::move(tracks);
+      ++state.queue_revision;
+    }
+    bool playlist_state_changed = false;
+    for (auto &playlist : state.playlists) {
+      const bool active = playlist.id == playlist_id;
+      playlist_state_changed = playlist_state_changed || playlist.active != active;
+      playlist.active = active;
+    }
+    if (playlist_state_changed) {
+      ++state.playlists_revision;
+    }
     (void)flags;
   });
 }

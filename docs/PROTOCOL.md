@@ -47,7 +47,14 @@ values are a following `int32_t`:
 
 Other implemented operations:
 
-- Type 4 subcommand 13 requests playlists.
+The play value for subcommand 10 is the zero-based row in the current queue,
+not the per-item ID in playlist metadata (which AIMP may report as `-1`). Type
+11 publishes the current zero-based queue row.
+
+- Type 4 subcommand 13 requests playlists. Its `int32_t` argument is `-1` for
+  the root or a playlist-folder ID for that folder's children. In each type 41
+  entry, flag bit 0 means folder and bit 1 means protected/read-only; neither
+  bit indicates the active playlist.
 - Type 4 subcommand 10 requests a playlist and queue.
 - Type 10 sets a one-byte rating from 0 through 5.
 - Type 20 clears a playlist.

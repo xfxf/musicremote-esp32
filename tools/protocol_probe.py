@@ -297,10 +297,20 @@ def describe(frame: Frame) -> str:
         return f"capabilities=0x{struct.unpack('<Q', p)[0]:016x}"
     if frame.message_type == 41 and len(p) >= 12:
         count = struct.unpack_from("<I", p)[0]
-        return f"playlists count={count} raw={p.hex()}"
+        folder_id = struct.unpack_from("<i", p, 4)[0]
+        entries = parse_playlists([frame])
+        summary = ", ".join(
+            f"{playlist_id}:{name!r}{' [folder]' if folder else ''}{' [read-only]' if read_only else ''}"
+            for playlist_id, name, folder, read_only in entries
+        )
+        return f"playlists folder_id={folder_id} count={count} entries=[{summary}]"
     if frame.message_type in (9, 31, 50):
         count = struct.unpack_from("<I", p)[0] if len(p) >= 4 else -1
-        return f"playlist type={frame.message_type} count={count} bytes={len(p)}"
+        playlist_id = struct.unpack_from("<i", p, 4)[0] if len(p) >= 8 else -1
+        return (
+            f"playlist type={frame.message_type} id={playlist_id} "
+            f"count={count} bytes={len(p)}"
+        )
     if frame.message_type == 23:
         return "keepalive"
     return f"type={frame.message_type} bytes={len(p)} payload={p.hex()}"
@@ -310,7 +320,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", type=Path, default=Path(".env"))
     parser.add_argument(
-        "command", choices=("state", "playlists", "playlist", "ping", "exercise")
+        "command",
+        choices=("state", "playlists", "playlist", "ping", "exercise"),
     )
     parser.add_argument("--playlist-id", type=int, default=-1)
     args = parser.parse_args()
@@ -328,7 +339,7 @@ def main() -> int:
                 print(note)
             return 0
         if args.command == "playlists":
-            client.send(4, struct.pack("<Bi", 13, -1))
+            client.send(4, struct.pack("<Bi", 13, args.playlist_id))
         elif args.command == "playlist":
             client.send(4, struct.pack("<Bii", 10, args.playlist_id, 1))
         elif args.command == "ping":
