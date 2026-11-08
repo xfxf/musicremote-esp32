@@ -947,8 +947,16 @@ void MusicUi::create_settings_overlays() {
                                 &lv_font_montserrat_14, color(kMuted));
   lv_obj_set_width(advanced_status_, 430);
   lv_label_set_long_mode(advanced_status_, LV_LABEL_LONG_WRAP);
-  equalizer_enable_button_ = make_button(advanced_panel, "EQUALIZER", 440, 52);
-  lv_obj_t *eq_name = lv_obj_get_child(equalizer_enable_button_, 0);
+  equalizer_enable_button_ = lv_obj_create(advanced_panel);
+  lv_obj_set_size(equalizer_enable_button_, 440, 52);
+  lv_obj_set_style_radius(equalizer_enable_button_, 4, 0);
+  lv_obj_set_style_bg_color(equalizer_enable_button_, color(kPanel), 0);
+  lv_obj_set_style_border_width(equalizer_enable_button_, 0, 0);
+  lv_obj_set_style_pad_all(equalizer_enable_button_, 0, 0);
+  lv_obj_set_clickable(equalizer_enable_button_, false);
+  lv_obj_set_scrollable(equalizer_enable_button_, false);
+  lv_obj_t *eq_name = make_label(equalizer_enable_button_, "EQUALIZER STATUS",
+                                 &lv_font_montserrat_18, color(kText));
   lv_obj_set_width(eq_name, 250);
   lv_obj_set_style_text_align(eq_name, LV_TEXT_ALIGN_LEFT, 0);
   lv_obj_align(eq_name, LV_ALIGN_LEFT_MID, 4, 0);
@@ -958,7 +966,6 @@ void MusicUi::create_settings_overlays() {
   lv_obj_set_style_text_align(equalizer_enable_value_, LV_TEXT_ALIGN_RIGHT, 0);
   lv_obj_align(equalizer_enable_value_, LV_ALIGN_RIGHT_MID, -4, 0);
   lv_obj_set_clickable(equalizer_enable_value_, false);
-  lv_obj_add_event_cb(equalizer_enable_button_, event_handler, LV_EVENT_CLICKED, this);
   equalizer_edit_button_ = make_button(advanced_panel, "ADJUST EQUALIZER", 440, 48);
   lv_obj_add_event_cb(equalizer_edit_button_, event_handler, LV_EVENT_CLICKED, this);
 
@@ -1041,9 +1048,11 @@ void MusicUi::create_equalizer_overlay() {
   lv_obj_t *title = make_label(equalizer_overlay_, "EQUALIZER", &lv_font_montserrat_22,
                                color(kText));
   lv_obj_set_pos(title, 14, 14);
-  equalizer_overlay_toggle_ = make_button(equalizer_overlay_, "OFF", 96, 48);
-  lv_obj_set_pos(equalizer_overlay_toggle_, 252, 4);
-  lv_obj_add_event_cb(equalizer_overlay_toggle_, event_handler, LV_EVENT_CLICKED, this);
+  equalizer_overlay_toggle_ = make_label(equalizer_overlay_, "OFF",
+                                         &lv_font_montserrat_18, color(kAccent));
+  lv_obj_set_pos(equalizer_overlay_toggle_, 260, 17);
+  lv_obj_set_width(equalizer_overlay_toggle_, 80);
+  lv_obj_set_style_text_align(equalizer_overlay_toggle_, LV_TEXT_ALIGN_RIGHT, 0);
   equalizer_close_button_ = make_button(equalizer_overlay_, "CLOSE", 112, 48);
   lv_obj_set_pos(equalizer_close_button_, 356, 4);
   lv_obj_add_event_cb(equalizer_close_button_, event_handler, LV_EVENT_CLICKED, this);
@@ -1220,12 +1229,8 @@ void MusicUi::update_advanced_controls(const Snapshot &snapshot) {
                             ? (snapshot.equalizer.enabled ? "ON" : "OFF")
                             : "LOADING";
     lv_label_set_text(equalizer_enable_value_, state);
-    lv_label_set_text(lv_obj_get_child(equalizer_overlay_toggle_, 0), state);
-    lv_obj_set_state(equalizer_enable_button_, LV_STATE_DISABLED,
-                     !snapshot.equalizer.known);
+    lv_label_set_text(equalizer_overlay_toggle_, state);
     lv_obj_set_state(equalizer_edit_button_, LV_STATE_DISABLED,
-                     !snapshot.equalizer.known);
-    lv_obj_set_state(equalizer_overlay_toggle_, LV_STATE_DISABLED,
                      !snapshot.equalizer.known);
   }
 
@@ -1894,14 +1899,6 @@ void MusicUi::handle_event(lv_event_t *event) {
       rebuild_equalizer(snapshot_);
       lv_obj_remove_flag(equalizer_overlay_, LV_OBJ_FLAG_HIDDEN);
       lv_obj_move_foreground(equalizer_overlay_);
-    }
-    return;
-  }
-  if (target == equalizer_enable_button_ || target == equalizer_overlay_toggle_) {
-    if (!advanced_demo_active_ && snapshot_.connection == ConnectionState::online &&
-        snapshot_.equalizer.known) {
-      client_.enqueue(
-          {CommandType::equalizer_enable, snapshot_.equalizer.enabled ? 0 : 1});
     }
     return;
   }

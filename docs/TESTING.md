@@ -225,23 +225,25 @@ pending because the configured Windows host did not accept TCP connections.
   structurally prevents the first wake press from reaching an underlying
   control. A literal finger-driven timeout/wake/second-touch sequence was not
   performed during this unattended run and remains a manual hardware check.
-- The advanced-controls implementation was statically qualified against the
-  official AIMP 5 MonkeyMote plug-in DLL and the reference Android client. It
-  adds strict bounded parsers for equalizer state, preset names, and sleep
-  state; it mutates only a previously validated complete equalizer body. The
-  focused host test covers valid bodies, malformed lengths and fixed fields,
-  out-of-range bands, preset termination, timer bounds, state requests, and
-  power-action bounds.
+- The advanced-controls implementation was initially qualified against the
+  official AIMP 5 MonkeyMote plug-in DLL, then its type-48 response and setter
+  layouts were confirmed against the configured live AIMP 5 host during issue
+  #17. It adds strict bounded parsers for equalizer state, preset names, and
+  sleep state; it mutates only a previously validated complete equalizer body.
+  The focused host test covers valid bodies, malformed lengths and fixed
+  fields, out-of-range bands, preset termination, timer bounds, state requests,
+  exact setter confirmation, and power-action bounds.
 - The issue #4 advanced build passed ESP-IDF 5.5.4 `make check`: all 13 Python
   protocol tests, the settings-policy host test, and the new advanced-controls
   host test passed. The 1,993,584-byte image left 52% of the configured app
   partition free and was hash-verified after flashing over `/dev/ttyACM0`.
   Boot again passed the 2 MB PSRAM memory test, loaded NVS settings, mounted the
   60,786 MB microSD card, and joined Wi-Fi at `192.168.227.64` without a panic.
-- The board resolved `aerocore.local` to `192.168.227.178`, but TCP port 19371
-  timed out from both the read-only host probe and device. Live equalizer and
-  sleep-timer mutation therefore remain explicitly unclaimed. No computer
-  sleep, restart, or shutdown packet was sent.
+- During the earlier issue #4 qualification the board resolved
+  `aerocore.local` to `192.168.227.178`, but TCP port 19371 timed out from both
+  the read-only host probe and device. No live advanced mutation was claimed
+  for that earlier run, and no computer sleep, restart, or shutdown packet was
+  sent.
 - Physical framebuffer inspection covered the capability-gated advanced menu,
   complete scrollable equalizer, full-screen shutdown confirmation, and real
   offline state. A view-only diagnostic fixture renders supported controls
@@ -262,11 +264,17 @@ pending because the configured Windows host did not accept TCP connections.
   `192.168.227.178`, but returned no ping replies and TCP 19371 timed out from
   both the host probe and device.
 - Issue #17 adds a read-only advanced-state probe and a separately confirmed
-  reversible matrix. Host fixtures validate strict EQ/preset/timer parsing,
-  capability selection, EQ enable/preamp changes, timer enable/disable, exact
-  baseline restoration, and the invariant that no type-4/subcommand-14 power
-  packet is emitted. The expanded suite passes all 21 Python protocol tests;
-  live mutation remains deferred until the Windows host accepts connections.
+  reversible matrix. On 2026-11-08 the live host reported capability mask
+  `0x000000000077ffff`, enabled EQ at -2.6 dB with 20 bands, and 25 preset
+  names. A guarded type-48 write changed preamp to -1.6 dB, AIMP returned the
+  exact requested body, and the exact -2.6 dB baseline was restored. Static
+  inspection of the official AIMP 5 plug-in confirmed its setter applies
+  preamp and band gains but not the response's enabled byte, so the UI presents
+  enabled as static status rather than a false control. The host advertises a
+  sleep-timer capability but returned no state baseline; the probe reports that
+  control unavailable and deliberately refuses to mutate it. No
+  type-4/subcommand-14 power packet was emitted. The expanded suite passes all
+  23 Python protocol tests.
 - The issue #17 adversarial review found three P2 restoration-safety and
   documentation gaps. Mutation bookkeeping now precedes ambiguous socket
   writes, restoration retries once after reconnect, timer restoration requires

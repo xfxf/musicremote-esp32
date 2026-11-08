@@ -26,7 +26,7 @@ session. Passwords and digests must never be logged.
 | 36 | Current-track lyrics response |
 | 41 | Playlist collection |
 | 45 | LZ4-compressed inner message |
-| 48 | Equalizer state and manual-band setter |
+| 48 | Equalizer state and preamp/manual-band setter |
 | 49 | Equalizer preset-name collection |
 | 51 | Sleep-timer state and setter |
 | 9 / 31 / 50 | Playlist name and queue contents |
@@ -154,20 +154,20 @@ result.
 
 ## Advanced controls
 
-The following layouts were statically qualified against the official AIMP 5
-MonkeyMote plug-in DLL and the reference Android client. The configured live
-AIMP host was unavailable during implementation, so live host confirmation is
-recorded separately rather than inferred from this static evidence.
+The following layouts were qualified against the official AIMP 5 MonkeyMote
+plug-in DLL and the configured live AIMP 5 host.
 
 Type 48 has exactly `10 + band_count * 4` bytes. Byte 0 is the band count,
-bytes 1 and 2 are the fixed `+15` and `0` range markers, and flag bit 0 at byte
-3 is equalizer enabled. The little-endian words at offsets 4, 6, and 8 are the
+byte 1 is equalizer enabled (`0` or `1`), and bytes 2 and 3 are the fixed `+15`
+and `0` range markers. The little-endian words at offsets 4, 6, and 8 are the
 fixed range span `300`, preamp gain, and reserved zero. Each band is a
 little-endian frequency/gain word pair. Gain values encode `-15.0 .. +15.0 dB`
 as `0 .. 300`, with `150` representing `0.0 dB`. AIMP accepts the complete
-validated type-48 body as the manual-band setter. The firmware never constructs
-one from partial state: it mutates only the enable bit or one gain in the last
-strictly validated response, then requests authoritative state again.
+validated type-48 body as the preamp/manual-band setter. Its AIMP 5 command
+handler does not apply byte 1, so enabled is display-only rather than a false
+toggle. The firmware never constructs a setter from partial state: it mutates
+only one gain in the last strictly validated response, then requests
+authoritative state again.
 
 Type 49 starts with a little-endian `uint16_t` count and a reserved zero word,
 followed by that many NUL-terminated preset names. The firmware bounds this to
@@ -232,10 +232,16 @@ playlist before clearing and deleting it.
 The read-only `advanced` command requests only the state advertised by the
 server capability mask and summarizes equalizer, preset-count, and sleep-timer
 responses without printing raw payloads. The separately guarded
-`validate-advanced --confirm-live-mutations` command toggles equalizer enable,
-adjusts preamp by 1.0 dB, and—only when no timer is already active—briefly sets
+`validate-advanced --confirm-live-mutations` command adjusts the equalizer
+preamp by 1.0 dB and—only when no timer is already active—briefly sets
 a 15-minute stop-playback timer. In `finally` it makes a best-effort exact
 restore of the equalizer body and disabled timer baseline, retrying once after
 reconnection. It contains no computer-power packet. Do not interrupt the
 command: a process kill or persistent connection loss can prevent restoration
 and leave EQ changed or a stop-playback timer active.
+
+`--advanced-scope equalizer` and `--advanced-scope sleep-timer` qualify either
+control independently when a server advertises both but does not return one
+state. A missing baseline is never guessed, and that control is not mutated.
+The read-only command reports such a missing state as unavailable while still
+printing independently valid advanced state.

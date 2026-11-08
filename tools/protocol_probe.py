@@ -388,12 +388,13 @@ def parse_equalizer_frame(frame: Frame) -> EqualizerState | None:
     payload = frame.payload
     if len(payload) < 10:
         raise ValueError("truncated equalizer response")
-    count, upper, lower, flags, span, preamp, reserved = struct.unpack_from(
+    count, enabled, upper, lower, span, preamp, reserved = struct.unpack_from(
         "<BBBBHHH", payload
     )
     if (
         count > 32
         or len(payload) != 10 + count * 4
+        or enabled > 1
         or upper != 15
         or lower != 0
         or span != 300
@@ -407,7 +408,7 @@ def parse_equalizer_frame(frame: Frame) -> EqualizerState | None:
         if frequency_hz == 0 or gain > 300:
             raise ValueError("invalid equalizer band")
         bands.append(EqualizerBand(frequency_hz, gain))
-    return EqualizerState(bool(flags & 1), preamp, tuple(bands), payload)
+    return EqualizerState(bool(enabled), preamp, tuple(bands), payload)
 
 
 def parse_equalizer_presets_frame(frame: Frame) -> tuple[str, ...] | None:
@@ -1246,7 +1247,13 @@ def exercise_and_restore(client: Client, initial: list[Frame]) -> list[str]:
     return notes
 
 
-def validate_advanced_and_restore(client: Client, initial: list[Frame]) -> list[str]:
+def validate_advanced_and_restore(
+    client: Client,
+    initial: list[Frame],
+    *,
+    validate_equalizer: bool = True,
+    validate_timer: bool = True,
+) -> list[str]:
     """Exercise only reversible EQ/timer state and restore exact baselines.
 
     Computer power is deliberately absent. A sleep timer is tested only when
@@ -1256,16 +1263,25 @@ def validate_advanced_and_restore(client: Client, initial: list[Frame]) -> list[
     capabilities = latest_capabilities(initial)
     if capabilities is None:
         raise RuntimeError("AIMP did not publish a capability mask")
-    supported = capabilities & (EQUALIZER_CAPABILITY | SLEEP_TIMER_CAPABILITY)
+    requested = 0
+    if validate_equalizer:
+        requested |= EQUALIZER_CAPABILITY
+    if validate_timer:
+        requested |= SLEEP_TIMER_CAPABILITY
+    supported = capabilities & requested
     if not supported:
-        raise RuntimeError("AIMP advertises no reversible advanced controls")
+        raise RuntimeError("AIMP advertises none of the selected advanced controls")
 
-    baseline_frames = request_advanced_state(client, capabilities)
-    baseline_eq = latest_equalizer(baseline_frames)
-    baseline_timer = latest_sleep_timer(baseline_frames)
-    if capabilities & EQUALIZER_CAPABILITY and baseline_eq is None:
+    baseline_frames = request_advanced_state(client, supported)
+    baseline_eq = (
+        latest_equalizer(baseline_frames) if validate_equalizer else None
+    )
+    baseline_timer = (
+        latest_sleep_timer(baseline_frames) if validate_timer else None
+    )
+    if supported & EQUALIZER_CAPABILITY and baseline_eq is None:
         raise RuntimeError("AIMP did not return equalizer state")
-    if capabilities & SLEEP_TIMER_CAPABILITY and baseline_timer is None:
+    if supported & SLEEP_TIMER_CAPABILITY and baseline_timer is None:
         raise RuntimeError("AIMP did not return sleep timer state")
 
     notes = [
@@ -1305,36 +1321,19 @@ def validate_advanced_and_restore(client: Client, initial: list[Frame]) -> list[
 
     try:
         if baseline_eq is not None:
-            toggled = bytearray(baseline_eq.payload)
-            toggled[3] = (
-                toggled[3] & ~1 if baseline_eq.enabled else toggled[3] | 1
-            )
-            equalizer_touched = True
-            client.send(48, bytes(toggled))
-            target_enabled = not baseline_eq.enabled
-            changed, _ = wait_for(
-                client,
-                lambda frames: (
-                    state
-                    if (state := latest_equalizer(frames)) is not None
-                    and state.enabled == target_enabled
-                    else None
-                ),
-                request=lambda: client.send(4, struct.pack("<Bi", 17, 0)),
-            )
-            notes.append(f"equalizer enable confirmed={changed.enabled}")
-
             adjusted = bytearray(baseline_eq.payload)
             baseline_preamp = baseline_eq.preamp_tenths_offset
             target_preamp = baseline_preamp + 10 if baseline_preamp <= 290 else baseline_preamp - 10
             struct.pack_into("<H", adjusted, 6, target_preamp)
-            client.send(48, bytes(adjusted))
+            expected_equalizer = bytes(adjusted)
+            equalizer_touched = True
+            client.send(48, expected_equalizer)
             changed, _ = wait_for(
                 client,
                 lambda frames: (
                     state
                     if (state := latest_equalizer(frames)) is not None
-                    and state.preamp_tenths_offset == target_preamp
+                    and state.payload == expected_equalizer
                     else None
                 ),
                 request=lambda: client.send(4, struct.pack("<Bi", 17, 0)),
@@ -1561,6 +1560,12 @@ def main() -> int:
         action="store_true",
         help="allow guarded mutation matrices that restore captured state",
     )
+    parser.add_argument(
+        "--advanced-scope",
+        choices=("all", "equalizer", "sleep-timer"),
+        default="all",
+        help="limit validate-advanced to one independently restorable control",
+    )
     args = parser.parse_args()
     env = load_env(args.env)
     client = Client(
@@ -1607,14 +1612,28 @@ def main() -> int:
                 None,
             )
             if capabilities & EQUALIZER_CAPABILITY:
-                if equalizer is None or presets is None:
-                    raise RuntimeError("AIMP did not return complete equalizer state")
-                print(describe(Frame(48, equalizer.payload)))
-                print(f"equalizer-presets count={len(presets)}")
+                if equalizer is None:
+                    print(
+                        "equalizer state unavailable: plug-in advertised the "
+                        "capability but returned no baseline"
+                    )
+                else:
+                    print(describe(Frame(48, equalizer.payload)))
+                if presets is None:
+                    print(
+                        "equalizer presets unavailable: plug-in advertised the "
+                        "capability but returned no collection"
+                    )
+                else:
+                    print(f"equalizer-presets count={len(presets)}")
             if capabilities & SLEEP_TIMER_CAPABILITY:
                 if timer is None:
-                    raise RuntimeError("AIMP did not return sleep timer state")
-                print(describe(Frame(51, timer.payload)))
+                    print(
+                        "sleep-timer state unavailable: plug-in advertised the "
+                        "capability but returned no baseline"
+                    )
+                else:
+                    print(describe(Frame(51, timer.payload)))
             if not capabilities & (EQUALIZER_CAPABILITY | SLEEP_TIMER_CAPABILITY):
                 print("advanced state unavailable: plug-in advertises no EQ or sleep timer")
             return 0
@@ -1623,7 +1642,12 @@ def main() -> int:
                 raise RuntimeError(
                     "validate-advanced requires --confirm-live-mutations"
                 )
-            for note in validate_advanced_and_restore(client, initial):
+            for note in validate_advanced_and_restore(
+                client,
+                initial,
+                validate_equalizer=args.advanced_scope in ("all", "equalizer"),
+                validate_timer=args.advanced_scope in ("all", "sleep-timer"),
+            ):
                 print(note)
             return 0
         if args.command in ("library", "library-browse", "library-search"):

@@ -45,7 +45,6 @@ enum class CommandType {
   enqueue_library_item,
   request_lyrics,
   request_advanced_controls,
-  equalizer_enable,
   equalizer_gain,
   sleep_timer,
   computer_power,
