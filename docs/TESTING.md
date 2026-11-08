@@ -181,7 +181,7 @@ Date: 2026-11-08 (Australia/Melbourne)
   test, mounted the 60,786 MB microSD card, joined Wi-Fi, resolved the AIMP host,
   and authenticated. Physical framebuffer diagnostics then loaded all four live
   media-library roots without a panic: 3,358 artists, 5,647 albums, 338 genres,
-  and 383 composers. The first two visibly reported the intentional 2,000-row
+  and 383 composers. The first two visibly reported the intentional bounded-row
   retained-result limit while paging the first 25 rows.
 
 ## Visual inspection

@@ -89,19 +89,44 @@ not the per-item ID in playlist metadata (which AIMP may report as `-1`). Type
 - Type 39 browses a media-library path. Its body is an `int32_t` request ID,
   an `int32_t` selector mask, then the selected genre (bit 0), artist (bit 1),
   album (bit 2), and composer (bit 3) strings in bit order. Results are type
-  19. Node rows are NUL strings; album and track rows are bounded variable-size
-  records. The implementation validates every record boundary before retaining
-  data and caps retained results/text independently of the server count.
+  19. Every type-19 response starts with `uint32_t request_id`, `uint32_t
+  count`, and `uint8_t kind`: 0 is artist, 2 genre, 4 composer, 6 album, and
+  7/8 track. Kinds 0/2/4 are one NUL-terminated UTF-8 string per row. An album
+  row has a 12-byte header (`uint16_t album_length`, `uint16_t artist_length`,
+  `uint16_t year`, reserved `uint16_t`, and `uint32_t record_size`) followed by
+  album and artist strings, each with its declared bytes plus a NUL. A track
+  row has a 20-byte header (`uint16_t` artist/title/album lengths, `uint16_t
+  year`, `uint32_t record_size`, `int32_t duration_ms`, `uint16_t bitrate`,
+  `uint8_t rating`, and `uint8_t flags`) followed by artist, title, and album
+  strings in that order, again NUL-terminated. The implementation rejects
+  counts above 100,000, fields above 1,024 bytes, inconsistent record sizes,
+  trailing bytes, or any boundary violation before publishing results. It
+  retains at most 1,000 rows and 128 KiB of row text.
 - Type 40 adds a browsed library result. It carries destination playlist ID,
-  selector flags, the result row index, and the selected path strings.
+  selector flags, and result row as `int32_t`, `uint32_t`, and `int32_t`, then
+  the selected NUL-terminated path strings. The production UI sends only a
+  concrete track row; the unvalidated `-1` whole-node form is intentionally not
+  exposed.
 - Type 44 adds a type-24 search result. Its body is search request ID,
   destination playlist ID, selected result row, insertion position (`-2` for
   the end), and a reserved zero `uint16_t`.
 
 For immediate playback, the firmware appends only the selected type-40 or
-type-44 result to the active playlist, then selects the prior playlist count
-with type 7/subcommand 10 and sends play. It never clears the user's current
-playlist as a side effect of tapping a library result.
+type-44 result to the active playlist, requests that playlist on the same TCP
+stream, and pairs responses with explicit request tokens in FIFO order. It
+selects the prior authoritative playlist count with type 7/subcommand 10 and
+sends play only after the decoded response identifies the requested playlist
+and contains more rows than that prior count. Large compressed responses are
+confirmed only after their on-card decoder has produced the playlist metadata;
+arrival or request ordering alone is not treated as proof of an append. Invalid,
+discarded, and failed responses still consume their request token so later
+responses cannot become mis-correlated. The token FIFO is capped, duplicate
+refreshes are coalesced, and a missing head response or unclassifiable envelope
+forces a bounded reconnect rather than shifting correlation. Streamed index
+results also carry a monotonic generation, so a newer playlist response
+invalidates an older completion before it can authorize playback. The firmware
+never clears the user's current playlist as a side effect of tapping a library
+result.
 - Type 10 sets a one-byte rating from 0 through 5.
 - Type 20 clears a playlist.
 - Type 21 asks AIMP's media-library delegate to add a matching item to a

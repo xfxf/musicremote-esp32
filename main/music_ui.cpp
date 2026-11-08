@@ -562,7 +562,9 @@ void MusicUi::rebuild_library(const Snapshot &snapshot) {
   const size_t end = std::min(library_page_start_ + kPageSize, items.size());
   char count[64];
   if (items.empty()) {
-    std::snprintf(count, sizeof(count), "NO RESULTS");
+    std::snprintf(count, sizeof(count), "%s",
+                  snapshot.library_message.empty() ? "NO RESULTS"
+                                                   : snapshot.library_message.c_str());
   } else {
     std::snprintf(count, sizeof(count), "%u-%u OF %u%s",
                   static_cast<unsigned>(library_page_start_ + 1),
@@ -610,6 +612,15 @@ void MusicUi::update_lyrics(const Snapshot &snapshot) {
                                 ? "LYRICS"
                                 : "LYRICS / " + snapshot.now_playing.title;
   lv_label_set_text(lyrics_title_, title.c_str());
+  if (!lv_obj_is_hidden(lyrics_overlay_) &&
+      snapshot.connection == ConnectionState::online &&
+      !snapshot.artwork_track_key.empty() &&
+      lyrics_requested_key_ != snapshot.artwork_track_key) {
+    lyrics_requested_key_ = snapshot.artwork_track_key;
+    client_.enqueue({CommandType::request_lyrics});
+    lv_label_set_text(lyrics_text_, "REQUESTING LYRICS...");
+    return;
+  }
   switch (snapshot.lyrics_state) {
   case LyricsState::loading:
     lv_label_set_text(lyrics_text_, "REQUESTING LYRICS...");
@@ -825,9 +836,19 @@ void MusicUi::update(const Snapshot &snapshot) {
     rebuild_library(snapshot);
     rendered_library_revision_ = snapshot.library_revision;
   }
-  if (snapshot.lyrics_revision != rendered_lyrics_revision_) {
+  if (snapshot.connection == ConnectionState::online &&
+      snapshot.connection_generation != rendered_lyrics_connection_generation_) {
+    lyrics_requested_key_.clear();
+  }
+  if (snapshot.lyrics_revision != rendered_lyrics_revision_ ||
+      snapshot.connection != rendered_lyrics_connection_ ||
+      snapshot.connection_generation != rendered_lyrics_connection_generation_ ||
+      snapshot.artwork_track_key != rendered_lyrics_track_key_) {
     update_lyrics(snapshot);
     rendered_lyrics_revision_ = snapshot.lyrics_revision;
+    rendered_lyrics_connection_ = snapshot.connection;
+    rendered_lyrics_connection_generation_ = snapshot.connection_generation;
+    rendered_lyrics_track_key_ = snapshot.artwork_track_key;
   }
 }
 
@@ -1099,9 +1120,11 @@ void MusicUi::library_row_handler(lv_event_t *event) {
   const LibraryItem &item = items[index];
   if (lv_event_get_code(event) == LV_EVENT_LONG_PRESSED) {
     ui->suppress_library_click_ = true;
-    ui->client_.enqueue({CommandType::enqueue_library_item, item.selection_index,
-                         static_cast<int32_t>(item.selection_request_id), item.title,
-                         item.path});
+    if (item.kind == LibraryItemKind::track) {
+      ui->client_.enqueue({CommandType::enqueue_library_item, item.selection_index,
+                           static_cast<int32_t>(item.selection_request_id), item.title,
+                           item.path});
+    }
     return;
   }
   if (ui->suppress_library_click_) {
@@ -1195,6 +1218,8 @@ void MusicUi::handle_event(lv_event_t *event) {
         if (search_context_ == SearchContext::library) {
           library_root_visible_ = false;
           library_page_start_ = 0;
+          lv_label_set_text(library_count_, "SEARCHING...");
+          lv_obj_clean(library_list_);
           client_.enqueue({CommandType::search_library, 0, 0, query});
           lv_obj_remove_flag(library_overlay_, LV_OBJ_FLAG_HIDDEN);
           lv_obj_move_foreground(library_overlay_);
@@ -1219,6 +1244,7 @@ void MusicUi::handle_event(lv_event_t *event) {
     lv_obj_remove_flag(lyrics_overlay_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(lyrics_overlay_);
     if (snapshot_.connection == ConnectionState::online) {
+      lyrics_requested_key_ = snapshot_.artwork_track_key;
       client_.enqueue({CommandType::request_lyrics});
     }
     return;

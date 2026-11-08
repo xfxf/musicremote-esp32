@@ -77,6 +77,9 @@ private:
   uint64_t rendered_artwork_revision_{UINT64_MAX};
   uint64_t rendered_library_revision_{UINT64_MAX};
   uint64_t rendered_lyrics_revision_{UINT64_MAX};
+  ConnectionState rendered_lyrics_connection_{ConnectionState::offline};
+  uint64_t rendered_lyrics_connection_generation_{UINT64_MAX};
+  std::string rendered_lyrics_track_key_;
   size_t queue_build_index_{0};
   size_t queue_build_limit_{0};
   size_t queue_page_start_{0};
@@ -98,6 +101,7 @@ private:
   enum class SearchContext { queue, library };
   SearchContext search_context_{SearchContext::queue};
   size_t library_page_start_{0};
+  std::string lyrics_requested_key_;
   std::vector<int32_t> playlist_folder_ids_;
   std::vector<std::string> playlist_folder_names_;
 

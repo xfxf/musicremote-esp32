@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -43,6 +44,7 @@ enum class CommandType {
   play_library_item,
   enqueue_library_item,
   request_lyrics,
+  streamed_playlist_result,
 };
 
 struct Command {
@@ -51,6 +53,8 @@ struct Command {
   int32_t second{0};
   std::string text;
   LibraryPath library_path;
+  uint64_t request_token{0};
+  uint64_t stream_generation{0};
 };
 
 class MonkeyMoteClient {
@@ -84,23 +88,41 @@ private:
   bool connect_and_authenticate();
   void close_socket();
   bool process_socket(int timeout_ms);
-  bool process_frame(uint32_t type, const std::vector<uint8_t> &payload);
+  bool process_frame(uint32_t type, std::vector<uint8_t> &payload);
   bool send_packet(uint32_t type, const void *data = nullptr, size_t size = 0);
+  bool send_playlist_request(int32_t playlist_id, bool confirms_library_play = false);
   void send_command(const Command &command);
   void request_initial_state();
 
   void parse_track_info(const std::vector<uint8_t> &payload);
   void parse_playback(const std::vector<uint8_t> &payload);
   void parse_playlists(const std::vector<uint8_t> &payload);
-  void parse_playlist(const std::vector<uint8_t> &payload);
-  void parse_compressed(const std::vector<uint8_t> &payload);
+  bool parse_playlist(const std::vector<uint8_t> &payload);
+  void parse_compressed(std::vector<uint8_t> &payload);
   bool parse_library(const std::vector<uint8_t> &payload);
   bool parse_lyrics(const std::vector<uint8_t> &payload);
   void request_library(const LibraryPath &path, std::string title);
   void select_library_item(const Command &command, bool play);
+  void complete_pending_library_play();
+  void fail_pending_library_play(const char *message);
+  struct PlaylistRequestToken {
+    uint64_t id{0};
+    int32_t playlist_id{-1};
+    bool confirms_library_play{false};
+    int64_t deadline_us{0};
+  };
+  std::optional<PlaylistRequestToken> take_playlist_response_token();
+  void finish_playlist_response(const std::optional<PlaylistRequestToken> &token,
+                                bool valid, int32_t resolved_playlist_id = -1,
+                                uint32_t count = 0);
+  void consume_playlist_response(bool valid, int32_t resolved_playlist_id = -1,
+                                 uint32_t count = 0);
+  void expire_requests(int64_t now_us);
   std::string take_cover_request();
   void reject_cover_reply();
-  bool start_streamed_frame(uint32_t type, uint32_t length);
+  std::string take_lyrics_request();
+  void reject_lyrics_reply(const char *message);
+  bool start_streamed_frame(uint32_t type, uint32_t length, uint64_t generation);
   bool consume_streamed_frame();
   void finish_streamed_frame();
   void build_streamed_index();
@@ -126,11 +148,27 @@ private:
   std::string queue_filter_;
   std::string cover_track_key_;
   std::deque<std::string> cover_requests_;
-  std::string lyrics_request_track_key_;
+  struct PendingLyricsRequest {
+    std::string track_key;
+    int64_t deadline_us{0};
+  };
+  std::deque<PendingLyricsRequest> lyrics_requests_;
   uint32_t library_request_id_{0};
+  int64_t library_request_deadline_us_{0};
   LibraryPath pending_library_path_;
   std::string pending_library_title_;
   bool pending_library_search_{false};
+  int32_t pending_library_play_row_{-1};
+  int32_t pending_library_play_destination_{-1};
+  int64_t pending_library_play_deadline_us_{0};
+  uint64_t pending_library_play_token_{0};
+  uint64_t next_playlist_request_token_{1};
+  std::deque<PlaylistRequestToken> playlist_requests_;
+  std::optional<PlaylistRequestToken> streamed_playlist_request_;
+  std::mutex playlist_requests_mutex_;
+  std::atomic<uint64_t> playlist_stream_generation_{0};
+  uint64_t receiving_stream_generation_{0};
+  uint64_t streamed_playlist_generation_{0};
   int64_t last_receive_us_{0};
   int64_t last_ping_us_{0};
   std::mutex commands_mutex_;

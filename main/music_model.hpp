@@ -77,6 +77,7 @@ struct ArtworkBitmap {
 
 struct Snapshot {
   ConnectionState connection{ConnectionState::offline};
+  uint64_t connection_generation{0};
   PlaybackState playback{PlaybackState::unknown};
   bool shuffle{false};
   uint8_t repeat{0};
@@ -98,6 +99,8 @@ struct Snapshot {
   std::string active_playlist_name{"CURRENT PLAYLIST"};
   std::vector<Track> queue;
   uint32_t queue_total_count{0};
+  uint32_t active_playlist_track_count{0};
+  bool active_playlist_count_known{false};
   uint32_t queue_page_start{0};
   bool queue_index_ready{false};
   bool queue_indexing{false};
@@ -110,6 +113,7 @@ struct Snapshot {
   uint32_t library_total_count{0};
   bool library_loading{false};
   bool library_truncated{false};
+  std::string library_message;
   uint64_t library_revision{0};
   uint64_t queue_revision{0};
   uint64_t playlists_revision{0};
