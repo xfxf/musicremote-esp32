@@ -31,7 +31,8 @@ independent AIMP remote that interoperates with the MonkeyMote AIMP plugin.
    playlist edit against AIMP. Restore any deliberately changed volume or
    playback state when practical.
 6. Capture and visually inspect the UI diagnostic screenshot. Store reviewed
-   captures under `artifacts/`; only curated images belong in `docs/screenshots/`.
+   captures under `artifacts/`. Refresh affected README screenshots whenever a
+   shipped UI change makes them stale, then run `make check-visual`.
 
 ## Product conventions
 
@@ -45,6 +46,10 @@ independent AIMP remote that interoperates with the MonkeyMote AIMP plugin.
   document whenever behavior is learned from the live server.
 - Specifications are tracked as GitHub issues. Reference the issue in each PR
   and keep commits narrowly aligned with an acceptance criterion.
+- Every PR body must complete the Before and After sections in the repository
+  template. Visual changes require device-rendered images in both; non-visual
+  changes require an explicit `N/A:` explanation in both. UI-source changes
+  must commit refreshed PNG evidence under `artifacts/`.
 
 ## Code Review Rules
 
@@ -82,4 +87,7 @@ independent AIMP remote that interoperates with the MonkeyMote AIMP plugin.
 - Flag UI, display orientation, touch mapping, or memory-allocation changes that
   claim device readiness without a physical-board build/flash/soak and reviewed
   device-rendered screenshots. Safe path: record the evidence in `docs/TESTING.md`.
+- Flag visual PRs whose before/after evidence is missing, stale, simulated, or
+  inconsistent with the README gallery. CI validates evidence structure and
+  image integrity; the reviewer remains responsible for visual inspection.
 

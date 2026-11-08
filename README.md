@@ -5,7 +5,19 @@ ESP32-S3 touchscreen. It speaks the AIMP MonkeyMote plug-in protocol directly,
 uses LVGL 9, and presents a landscape, typography-first interface inspired by
 the clarity of Microsoft Zune.
 
-![Four live device-rendered pages](artifacts/device-pages.png)
+## Device UI
+
+These are framebuffer captures from the physical 480x320 device, not desktop
+mockups. CI validates every image referenced here and requires UI-changing pull
+requests to include refreshed device evidence.
+
+| Now playing | 48,321-track queue |
+|---|---|
+| ![Now-playing screen connected to AIMP](artifacts/issue20-now.png) | ![Paged queue from a 48,321-track playlist](artifacts/device-large-queue.png) |
+| Playlists | Media library |
+| ![AIMP playlist browser](artifacts/device-playlists.png) | ![AIMP media-library browser](artifacts/device-library-root.png) |
+| Display settings | Advanced AIMP controls |
+| ![Brightness and screen-off settings](artifacts/device-settings-display.png) | ![Advanced controls with unavailable sleep timer](artifacts/issue22-advanced-unavailable.png) |
 
 ## Implemented controls
 
@@ -87,6 +99,10 @@ authentication; use the firmware only on a trusted Wi-Fi network.
 
 See [the product specification](docs/SPEC.md), [protocol notes](docs/PROTOCOL.md),
 [UI rationale](docs/UI.md), and [test record](docs/TESTING.md).
+
+Run `make check-visual` to validate the README gallery and visual-evidence
+policy locally. Hardware screenshots are captured and reviewed by a person;
+CI verifies committed evidence but never fabricates a device capture.
 
 For read-only advanced-state qualification against a live AIMP host, run:
 
