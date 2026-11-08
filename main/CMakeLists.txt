@@ -39,6 +39,32 @@ if(NOT LOCAL_AIMP_PORT MATCHES "^[0-9]+$" OR LOCAL_AIMP_PORT LESS 1 OR LOCAL_AIM
     message(FATAL_ERROR "AIMP_PORT must be an integer from 1 through 65535")
 endif()
 
+string(LENGTH "${LOCAL_WIFI_SSID}" wifi_ssid_length)
+string(LENGTH "${LOCAL_WIFI_PASSWORD}" wifi_password_length)
+string(LENGTH "${LOCAL_AIMP_HOST}" aimp_host_length)
+string(LENGTH "${LOCAL_AIMP_PASSWORD}" aimp_password_length)
+if(wifi_ssid_length LESS 1 OR wifi_ssid_length GREATER 32)
+    message(FATAL_ERROR "WIFI_SSID must contain 1 through 32 bytes")
+endif()
+if(wifi_password_length GREATER 0 AND wifi_password_length LESS 8)
+    message(FATAL_ERROR "WIFI_PASSWORD must be empty or contain 8 through 63 printable ASCII bytes, or 64 hexadecimal digits")
+endif()
+if(wifi_password_length GREATER 64)
+    message(FATAL_ERROR "WIFI_PASSWORD must be empty or contain 8 through 63 printable ASCII bytes, or 64 hexadecimal digits")
+endif()
+if(wifi_password_length GREATER 0 AND wifi_password_length LESS 64 AND NOT LOCAL_WIFI_PASSWORD MATCHES "^[ -~]+$")
+    message(FATAL_ERROR "A Wi-Fi passphrase must contain only printable ASCII bytes")
+endif()
+if(wifi_password_length EQUAL 64 AND NOT LOCAL_WIFI_PASSWORD MATCHES "^[0-9A-Fa-f]+$")
+    message(FATAL_ERROR "A 64-byte WIFI_PASSWORD must contain only hexadecimal digits")
+endif()
+if(aimp_host_length LESS 1 OR aimp_host_length GREATER 127)
+    message(FATAL_ERROR "AIMP_HOST must contain 1 through 127 bytes")
+endif()
+if(aimp_password_length GREATER 127)
+    message(FATAL_ERROR "AIMP_PASSWORD must contain at most 127 bytes")
+endif()
+
 function(escape_c_string input output)
     set(value "${input}")
     string(REPLACE "\\" "\\\\" value "${value}")
@@ -66,6 +92,7 @@ idf_component_register(
     SRCS
         "app_main.cpp"
         "artwork_decoder.cpp"
+        "device_settings.cpp"
         "monkeymote_client.cpp"
         "playlist_index.cpp"
         "music_ui.cpp"

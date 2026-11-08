@@ -78,6 +78,8 @@ struct ArtworkBitmap {
 struct Snapshot {
   ConnectionState connection{ConnectionState::offline};
   uint64_t connection_generation{0};
+  bool capabilities_known{false};
+  uint64_t server_capabilities{0};
   PlaybackState playback{PlaybackState::unknown};
   bool shuffle{false};
   uint8_t repeat{0};

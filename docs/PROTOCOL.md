@@ -29,6 +29,13 @@ session. Passwords and digests must never be logged.
 | 9 / 31 / 50 | Playlist name and queue contents |
 | 43 | Command result; a non-zero first byte means failure |
 
+The type-28 capability mask is retained as raw diagnostic state and cleared on
+disconnect. Reference-client behavior maps bit 17 (`0x00020000`) to computer
+power availability, bit 21 (`0x00200000`) to equalizer availability, and bit 22
+(`0x00400000`) to sleep-timer availability. These bits gate visibility only;
+they do not establish a safe command wire format, so the production firmware
+does not expose those actions yet.
+
 Type 8 starts with the JPEG byte length (`uint32_t`), followed by a 16-byte
 server artwork identity and the JPEG bytes. The length must exactly match the
 remaining bytes. A type 13 empty response means no artwork was available for
