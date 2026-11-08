@@ -1,5 +1,7 @@
 #include "monkeymote_client.hpp"
 
+#include "index_worker_policy.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -12,6 +14,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -24,6 +27,7 @@ namespace {
 
 constexpr char kTag[] = "monkeymote";
 constexpr int64_t kAdvancedRequestTimeoutUs = 5'000'000;
+constexpr uint32_t kIndexTaskStackBytes = 8 * 1024;
 
 uint16_t read_u16(const uint8_t *p) {
   return static_cast<uint16_t>(p[0]) | static_cast<uint16_t>(p[1] << 8);
@@ -240,10 +244,44 @@ MonkeyMoteClient::MonkeyMoteClient(Model &model, Config config)
 
 MonkeyMoteClient::~MonkeyMoteClient() { stop(); }
 
+bool MonkeyMoteClient::prepare_index_worker() {
+  if (index_task_ != nullptr) {
+    return true;
+  }
+  const size_t internal_free =
+      heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  const size_t internal_largest =
+      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  const bool use_psram_stack = !config_.storage_internal_flash;
+  ESP_LOGI(kTag,
+           "Reserving index worker: stack=%u memory=%s, internal free=%u largest=%u",
+           static_cast<unsigned>(kIndexTaskStackBytes), use_psram_stack ? "PSRAM" : "internal",
+           static_cast<unsigned>(internal_free), static_cast<unsigned>(internal_largest));
+  TaskHandle_t handle = nullptr;
+  const BaseType_t created =
+      use_psram_stack
+          ? xTaskCreatePinnedToCoreWithCaps(index_task_entry, "playlist_index",
+                                            kIndexTaskStackBytes, this, 4, &handle, 1,
+                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+          : xTaskCreatePinnedToCore(index_task_entry, "playlist_index", kIndexTaskStackBytes,
+                                    this, 4, &handle, 1);
+  if (created != pdPASS) {
+    ESP_LOGE(kTag, "Index worker reservation failed: internal free=%u largest=%u",
+             static_cast<unsigned>(
+                 heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(
+                 MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
+    return false;
+  }
+  index_task_ = handle;
+  return true;
+}
+
 void MonkeyMoteClient::start() {
   if (running_.exchange(true)) {
     return;
   }
+  prepare_index_worker();
   if (!artwork_decoder_.start()) {
     running_ = false;
     model_.update([](Snapshot &state) {
@@ -285,8 +323,29 @@ void MonkeyMoteClient::task_entry(void *context) {
 }
 
 void MonkeyMoteClient::index_task_entry(void *context) {
-  static_cast<MonkeyMoteClient *>(context)->build_streamed_index();
-  vTaskDelete(nullptr);
+  auto *client = static_cast<MonkeyMoteClient *>(context);
+  while (true) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    const bool previously_superseded = client->build_streamed_index();
+    const bool retry = index_worker_policy::finish(
+        client->index_building_, client->index_superseded_, previously_superseded);
+    if (retry) {
+      client->model_.update([](Snapshot &state) {
+        if (state.queue_indexing) {
+          state.queue.clear();
+          state.queue_total_count = 0;
+          state.active_playlist_count_known = false;
+          state.queue_page_start = 0;
+          state.queue_index_ready = false;
+          ++state.queue_revision;
+          state.status = "REFRESHING LIBRARY";
+        }
+      });
+      client->enqueue({CommandType::request_playlist, -1});
+    }
+    ESP_LOGI(kTag, "Index worker minimum free stack: %u bytes",
+             static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+  }
 }
 
 void MonkeyMoteClient::run() {
@@ -844,9 +903,7 @@ void MonkeyMoteClient::finish_streamed_frame() {
     }
   }
   model_.update([](Snapshot &state) { state.status = "INDEXING LIBRARY"; });
-  TaskHandle_t handle = nullptr;
-  if (xTaskCreatePinnedToCore(index_task_entry, "playlist_index", 12 * 1024, this, 4, &handle,
-                              1) != pdPASS) {
+  if (index_task_ == nullptr && !prepare_index_worker()) {
     index_building_ = false;
     unlink(playlist_index_.incoming_path().c_str());
     std::optional<PlaylistRequestToken> token;
@@ -862,10 +919,12 @@ void MonkeyMoteClient::finish_streamed_frame() {
       state.active_playlist_name = "PLAYLIST UNAVAILABLE";
       state.status = "INDEX TASK FAILED";
     });
+    return;
   }
+  xTaskNotifyGive(index_task_);
 }
 
-void MonkeyMoteClient::build_streamed_index() {
+bool MonkeyMoteClient::build_streamed_index() {
   std::optional<PlaylistRequestToken> response_token;
   uint64_t response_generation = 0;
   {
@@ -928,7 +987,6 @@ void MonkeyMoteClient::build_streamed_index() {
       state.active_playlist_name = "PLAYLIST TOO LARGE";
       state.status = message;
     });
-    index_building_ = false;
   } else {
     ESP_LOGI(kTag, "Indexed %" PRIu32 " tracks for playlist %" PRId32, result.count,
              result.playlist_id);
@@ -938,23 +996,8 @@ void MonkeyMoteClient::build_streamed_index() {
         model_.update([](Snapshot &state) { state.status = "INDEX STALE - RETRY LATER"; });
       }
     }
-    index_building_ = false;
   }
-  superseded = index_superseded_.exchange(false) || superseded;
-  if (superseded) {
-    model_.update([](Snapshot &state) {
-      if (state.queue_indexing) {
-        state.queue.clear();
-        state.queue_total_count = 0;
-        state.active_playlist_count_known = false;
-        state.queue_page_start = 0;
-        state.queue_index_ready = false;
-        ++state.queue_revision;
-        state.status = "REFRESHING LIBRARY";
-      }
-    });
-    enqueue({CommandType::request_playlist, -1});
-  }
+  return superseded;
 }
 
 void MonkeyMoteClient::abort_streamed_frame(const char *status) {

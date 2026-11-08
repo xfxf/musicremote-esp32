@@ -86,6 +86,33 @@ pending because the configured Windows host did not accept TCP connections.
   substring matches for `Mars` at global rows including 483 and 5,258. This
   confirms page/search results do not substitute local result positions for the
   AIMP queue row.
+- Issue #27 reproduced `INDEX TASK FAILED` on the physical board after the
+  screenshot, Wi-Fi, LVGL, and artwork services were active. At failure time,
+  internal RAM had 12,699 bytes free but its largest contiguous block was only
+  3,584 bytes, so the transient 12 KiB index-task stack could not be allocated.
+  The production fix reserves one persistent 8 KiB worker before LVGL and
+  Wi-Fi can fragment the heap, then wakes that same worker for every build. Its
+  stack is in PSRAM when the backend is microSD, preserving the internal/DMA
+  pool the SD driver needs; the SPIFFS fallback instead uses an internal stack
+  because a flash-backed worker cannot safely run from PSRAM. It never creates
+  or self-deletes a task in the low-memory path and cannot overlap a successor
+  with the prior worker's tail state. The worker opens its build gate before
+  consuming the final supersession marker and enqueueing any retry; a host test
+  covers the marker-at-finish race that previously could lose a refresh. The
+  initial qualification build indexed the same 48,321-row `NAS:Music` response
+  twice in one boot; the second began with only a 2,688-byte largest internal
+  block, directly exercising the condition that previously failed. The final
+  persistent-worker build was then requalified against the same playlist. Two
+  temporary qualification boots removed `INDEX.DAT` before connection (that
+  hook is not in production), forcing the full LZ4 decode, index/search-key
+  construction, and SD promotion path. Both rebuilt all 48,321 rows; their
+  minimum-free-stack readings were 4,404 and 4,420 bytes. Thus the worst run
+  used at most 3,788 bytes of the 8 KiB stack and retained about 4.3 KiB of
+  headroom. The cached path retained 4,884 bytes. The screenshot framebuffer
+  payload remains PSRAM-backed, while the HTTP task keeps ESP-IDF's safer
+  default internal stack. Physical diagnostics after the forced rebuild loaded
+  global row 10,001 and returned the expected A-prefix rows 6, 30, 35, and 86
+  while the UI and network remained responsive.
 - A temporary flash-only qualification build mounted the 4 MB `storage` SPIFFS
   partition with 3,757 KiB usable. It rejected `NAS:Music` as
   `FLASH INDEX TOO LARGE` without a reset, then—using a lowered streaming
