@@ -87,6 +87,8 @@ private:
   void parse_playlists(const std::vector<uint8_t> &payload);
   void parse_playlist(const std::vector<uint8_t> &payload);
   void parse_compressed(const std::vector<uint8_t> &payload);
+  std::string take_cover_request();
+  void reject_cover_reply();
   bool start_streamed_frame(uint32_t type, uint32_t length);
   bool consume_streamed_frame();
   void finish_streamed_frame();

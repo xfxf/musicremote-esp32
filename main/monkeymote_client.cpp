@@ -500,6 +500,11 @@ bool MonkeyMoteClient::process_socket(int timeout_ms) {
         (length > kMaxPayload || advertised_size > kMaxPayload);
     if (stream_playlist || length > kMaxPayload) {
       receive_buffer_.erase(receive_buffer_.begin(), receive_buffer_.begin() + 12);
+      if (type == 8 || type == 13 ||
+          (compressed_envelope_ready &&
+           (inner_type == 8 || inner_type == 13))) {
+        reject_cover_reply();
+      }
       if (stream_playlist && index_building_) {
         index_superseded_ = true;
         if (index_building_) {
@@ -856,12 +861,11 @@ bool MonkeyMoteClient::process_frame(uint32_t type, const std::vector<uint8_t> &
     return true;
   case 8: {
     // Cover reply: uint32 JPEG size, 16-byte server identity, then JPEG bytes.
-    if (cover_requests_.empty()) {
+    std::string response_track_key = take_cover_request();
+    if (response_track_key.empty()) {
       ESP_LOGW(kTag, "Ignoring cover reply without a matching request");
       return true;
     }
-    std::string response_track_key = std::move(cover_requests_.front());
-    cover_requests_.pop_front();
     if (payload.size() < 24) {
       if (response_track_key == cover_track_key_) {
         artwork_decoder_.mark_unavailable(response_track_key);
@@ -902,19 +906,13 @@ bool MonkeyMoteClient::process_frame(uint32_t type, const std::vector<uint8_t> &
     return true;
   case 13: {
     // Type 13 is the empty response to a cover query when the current item has
-    // no embedded or folder artwork.
-    if (!payload.empty()) {
-      return false;
-    }
-    if (cover_requests_.empty()) {
-      return true;
-    }
-    std::string response_track_key = std::move(cover_requests_.front());
-    cover_requests_.pop_front();
-    if (response_track_key == cover_track_key_) {
+    // no embedded or folder artwork. A malformed reply still consumes its
+    // request so later replies stay matched.
+    std::string response_track_key = take_cover_request();
+    if (!response_track_key.empty() && response_track_key == cover_track_key_) {
       artwork_decoder_.mark_unavailable(response_track_key);
     }
-    return true;
+    return payload.empty();
   }
   case 23:
     send_packet(23);
@@ -1365,6 +1363,10 @@ void MonkeyMoteClient::parse_compressed(const std::vector<uint8_t> &payload) {
     return;
   }
   if (uncompressed_size > kMaxPayload) {
+    if (inner_type == 8 || inner_type == 13) {
+      reject_cover_reply();
+      return;
+    }
     queue_filter_active_ = false;
     queue_filter_.clear();
     model_.update([](Snapshot &state) {
@@ -1385,9 +1387,28 @@ void MonkeyMoteClient::parse_compressed(const std::vector<uint8_t> &payload) {
   if (!lz4_decompress(payload.data() + 10, payload.size() - 10, uncompressed.data(),
                       uncompressed.size())) {
     ESP_LOGW(kTag, "LZ4 payload failed to decompress");
+    if (inner_type == 8 || inner_type == 13) {
+      reject_cover_reply();
+    }
     return;
   }
   process_frame(inner_type, uncompressed);
+}
+
+std::string MonkeyMoteClient::take_cover_request() {
+  if (cover_requests_.empty()) {
+    return {};
+  }
+  std::string track_key = std::move(cover_requests_.front());
+  cover_requests_.pop_front();
+  return track_key;
+}
+
+void MonkeyMoteClient::reject_cover_reply() {
+  std::string track_key = take_cover_request();
+  if (!track_key.empty() && track_key == cover_track_key_) {
+    artwork_decoder_.mark_unavailable(track_key);
+  }
 }
 
 } // namespace musicremote
