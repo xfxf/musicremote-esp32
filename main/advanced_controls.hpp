@@ -69,13 +69,14 @@ inline bool parse_equalizer(const std::vector<uint8_t> &payload,
   }
   const size_t count = payload[0];
   if (count > kMaximumEqualizerBands || payload.size() != 10 + count * 4 ||
-      payload[1] != 15 || payload[2] != 0 || read_u16(payload.data() + 4) != 300 ||
+      payload[1] > 1 || payload[2] != 15 || payload[3] != 0 ||
+      read_u16(payload.data() + 4) != 300 ||
       read_u16(payload.data() + 8) != 0) {
     return false;
   }
   EqualizerState parsed;
   parsed.known = true;
-  parsed.enabled = (payload[3] & 1U) != 0;
+  parsed.enabled = payload[1] != 0;
   parsed.preamp_tenths_offset = read_u16(payload.data() + 6);
   if (parsed.preamp_tenths_offset > 300) {
     return false;
@@ -91,16 +92,6 @@ inline bool parse_equalizer(const std::vector<uint8_t> &payload,
     parsed.bands.push_back(band);
   }
   state = std::move(parsed);
-  return true;
-}
-
-inline bool set_equalizer_enabled(std::vector<uint8_t> &payload, bool enabled) {
-  EqualizerState ignored;
-  if (!parse_equalizer(payload, ignored)) {
-    return false;
-  }
-  payload[3] = enabled ? static_cast<uint8_t>(payload[3] | 1U)
-                       : static_cast<uint8_t>(payload[3] & ~1U);
   return true;
 }
 

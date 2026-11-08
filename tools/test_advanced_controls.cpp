@@ -9,7 +9,7 @@ using namespace musicremote::advanced;
 
 int main() {
   std::vector<uint8_t> equalizer{
-      2, 15, 0, 1, 44, 1, 150, 0, 0, 0,
+      2, 1, 15, 0, 44, 1, 150, 0, 0, 0,
       70, 0, 150, 0, 232, 3, 120, 0,
   };
   EqualizerState eq;
@@ -17,8 +17,6 @@ int main() {
   assert(eq.enabled && eq.bands.size() == 2);
   assert(eq.bands[1].frequency_hz == 1000);
   assert(eq.bands[1].gain_tenths_offset == 120);
-  assert(set_equalizer_enabled(equalizer, false));
-  assert((equalizer[3] & 1U) == 0);
   assert(set_equalizer_gain(equalizer, -1, 200));
   assert(set_equalizer_gain(equalizer, 1, 175));
   assert(read_u16(equalizer.data() + 6) == 200);
@@ -28,7 +26,10 @@ int main() {
   malformed_equalizer.pop_back();
   assert(!parse_equalizer(malformed_equalizer, eq));
   malformed_equalizer = equalizer;
-  malformed_equalizer[1] = 12;
+  malformed_equalizer[2] = 12;
+  assert(!parse_equalizer(malformed_equalizer, eq));
+  malformed_equalizer = equalizer;
+  malformed_equalizer[1] = 2;
   assert(!parse_equalizer(malformed_equalizer, eq));
   malformed_equalizer = equalizer;
   malformed_equalizer[8] = 1;

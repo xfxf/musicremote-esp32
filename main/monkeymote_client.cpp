@@ -1602,17 +1602,6 @@ void MonkeyMoteClient::send_command(const Command &command) {
     }
     break;
   }
-  case CommandType::equalizer_enable: {
-    const Snapshot state = model_.copy();
-    std::vector<uint8_t> updated = equalizer_payload_;
-    if ((state.server_capabilities & advanced::kEqualizerCapability) != 0 &&
-        advanced::set_equalizer_enabled(updated, command.first != 0) &&
-        send_packet(48, updated.data(), updated.size())) {
-      equalizer_payload_ = std::move(updated);
-      enqueue({CommandType::request_advanced_controls});
-    }
-    break;
-  }
   case CommandType::equalizer_gain: {
     const Snapshot state = model_.copy();
     std::vector<uint8_t> updated = equalizer_payload_;
