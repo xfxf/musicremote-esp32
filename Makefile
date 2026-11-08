@@ -1,4 +1,4 @@
-.PHONY: configure build flash monitor probe check
+.PHONY: configure build flash monitor probe check check-visual
 
 PORT ?= /dev/ttyACM0
 
@@ -17,7 +17,11 @@ monitor:
 probe:
 	python3 tools/protocol_probe.py --env .env playlists
 
-check: build
+check-visual:
+	python3 tools/check_visual_evidence.py
+	PYTHONPATH=tools python3 -m unittest tools/test_visual_evidence.py
+
+check: build check-visual
 	python3 -m py_compile tools/protocol_probe.py
 	PYTHONPATH=tools python3 -m unittest tools/test_protocol_probe.py
 	c++ -std=c++20 -Wall -Wextra -Werror -Imain tools/test_settings_policy.cpp -o /tmp/musicremote-settings-policy-test

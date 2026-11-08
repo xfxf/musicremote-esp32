@@ -1,0 +1,21 @@
+name: Visual evidence
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate screenshots and pull-request evidence
+        run: python3 tools/check_visual_evidence.py --event "$GITHUB_EVENT_PATH"
+      - name: Test the evidence validator
+        run: PYTHONPATH=tools python3 -m unittest tools/test_visual_evidence.py
