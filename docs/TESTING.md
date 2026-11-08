@@ -282,6 +282,34 @@ pending because the configured Windows host did not accept TCP connections.
   injection covers an applied-then-failed write and disabled-but-different
   timer responses. The permitted focused re-review found all three resolved
   with no remaining blocker, P1, or P2 in scope.
+- Issue #20 reproduced the framebuffer failure on merged commit `463f456`:
+  response headers reached the host, but the first image-body write eventually
+  returned `EAGAIN`. A packet trace confirmed the host acknowledged every
+  received byte immediately and kept an open receive window. Together with the
+  successful PSRAM-backed configuration, the behavior is consistent with
+  device-side internal lwIP transmit-memory exhaustion rather than a WLAN or
+  HTTP-client failure. The production configuration now
+  lets Wi-Fi/lwIP prefer the board's 2 MB PSRAM, while retaining six static TX
+  buffers and eight cache entries so the screenshot server still has enough
+  internal RAM for its task stack. The handler builds the 460,815-byte PPM in
+  PSRAM and uses ESP-IDF's ordinary fixed-length response API.
+- The final issue #20 qualification build passed the PSRAM test, mounted the
+  60,786 MB microSD card, joined Wi-Fi, started the screenshot server, and
+  authenticated to live AIMP. Four consecutive physical captures of the main
+  and Advanced Controls screens each returned HTTP 200 with exactly 460,815
+  bytes in 0.52-1.05 seconds. Visual inspection confirmed the right-aligned
+  `AIMP ONLINE` indicator, main progress/volume layout, enabled equalizer
+  status, capability-gated sleep-timer row, and confirmation-gated computer
+  power action; the device remained online and responsive throughout.
+- A temporary, uncommitted qualification hook exercised the same command queue
+  used by the touch UI while every request simultaneously returned a complete
+  framebuffer. Live AIMP confirmed volume 100% to 98%, shuffle off to on,
+  repeat mode 2 to off, stopped to playing, and a five-second seek; elapsed
+  time advanced from 0:03 to 0:09. A full active-playlist refresh then ran
+  alongside ten consecutive 460,815-byte captures, all HTTP 200 in
+  0.99-1.14 seconds, while playback advanced to 0:21. Restoration returned
+  volume, shuffle, repeat, and playback to the captured baseline. The hook was
+  removed before the production build.
 
 ## Visual inspection
 
@@ -360,3 +388,9 @@ layout inspection; the fourth proves the real offline capability gate:
 ![Scrollable manual equalizer](../artifacts/device-equalizer.png)
 ![Explicit computer-action confirmation](../artifacts/device-power-confirm.png)
 ![Advanced controls hidden while offline](../artifacts/device-advanced-offline.png)
+
+The issue #20 captures below were taken from the physical board after the
+PSRAM-backed framebuffer-response fix:
+
+![Issue #20 main screen](../artifacts/issue20-now.png)
+![Issue #20 advanced controls](../artifacts/issue20-advanced.png)
