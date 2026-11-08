@@ -113,6 +113,10 @@ pending because the configured Windows host did not accept TCP connections.
   default internal stack. Physical diagnostics after the forced rebuild loaded
   global row 10,001 and returned the expected A-prefix rows 6, 30, 35, and 86
   while the UI and network remained responsive.
+- Reboot qualification confirmed that the index files persist, but the current
+  initial-state flow still transfers the complete active playlist and validates
+  or rebuilds the index on every connection. Avoiding that transfer with a
+  bounded cache-invalidation policy is tracked separately in issue #28.
 - A temporary flash-only qualification build mounted the 4 MB `storage` SPIFFS
   partition with 3,757 KiB usable. It rejected `NAS:Music` as
   `FLASH INDEX TOO LARGE` without a reset, then—using a lowered streaming
