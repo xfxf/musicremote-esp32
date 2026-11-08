@@ -1,6 +1,7 @@
 #include "music_ui.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <cstdio>
 
@@ -92,16 +93,23 @@ bool MusicUi::select_page_for_diagnostics(uint8_t page) {
 }
 
 bool MusicUi::select_overlay_for_diagnostics(uint8_t overlay) {
-  if (overlay > 2) {
+  if (overlay > 4) {
     return false;
   }
   std::lock_guard lock(mutex_);
   lv_obj_set_hidden(filter_overlay_, overlay != 1);
   lv_obj_set_hidden(search_overlay_, overlay != 2);
+  lv_obj_set_hidden(library_overlay_, overlay != 3);
+  lv_obj_set_hidden(lyrics_overlay_, overlay != 4);
   if (overlay == 1) {
     lv_obj_move_foreground(filter_overlay_);
   } else if (overlay == 2) {
     lv_obj_move_foreground(search_overlay_);
+  } else if (overlay == 3) {
+    show_library_root();
+    lv_obj_move_foreground(library_overlay_);
+  } else if (overlay == 4) {
+    lv_obj_move_foreground(lyrics_overlay_);
   }
   return true;
 }
@@ -165,6 +173,8 @@ void MusicUi::create_ui() {
   create_more_page();
   create_navigation();
   create_filter_overlays();
+  create_library_overlay();
+  create_lyrics_overlay();
   show_page(Page::now);
 }
 
@@ -404,9 +414,196 @@ void MusicUi::create_filter_overlays() {
     auto *ui = static_cast<MusicUi *>(lv_event_get_user_data(event));
     if (ui != nullptr) {
       lv_obj_add_flag(ui->search_overlay_, LV_OBJ_FLAG_HIDDEN);
-      lv_obj_remove_flag(ui->filter_overlay_, LV_OBJ_FLAG_HIDDEN);
+      if (ui->search_context_ == SearchContext::library) {
+        lv_obj_remove_flag(ui->library_overlay_, LV_OBJ_FLAG_HIDDEN);
+      } else {
+        lv_obj_remove_flag(ui->filter_overlay_, LV_OBJ_FLAG_HIDDEN);
+      }
     }
   }, LV_EVENT_CLICKED, this);
+}
+
+void MusicUi::create_library_overlay() {
+  library_overlay_ = lv_obj_create(root_);
+  lv_obj_remove_style_all(library_overlay_);
+  lv_obj_set_size(library_overlay_, 480, 320);
+  lv_obj_set_pos(library_overlay_, 0, 0);
+  lv_obj_set_style_bg_color(library_overlay_, color(kBackground), 0);
+  lv_obj_set_style_bg_opa(library_overlay_, LV_OPA_COVER, 0);
+  lv_obj_add_flag(library_overlay_, LV_OBJ_FLAG_HIDDEN);
+
+  library_title_ = make_label(library_overlay_, "MEDIA LIBRARY", &lv_font_montserrat_22,
+                              color(kText));
+  lv_obj_set_pos(library_title_, 14, 8);
+  lv_obj_set_size(library_title_, 210, 28);
+  lv_label_set_long_mode(library_title_, LV_LABEL_LONG_DOT);
+  library_count_ = make_label(library_overlay_, "SELECT A VIEW", &lv_font_montserrat_14,
+                              color(kMuted));
+  lv_obj_set_pos(library_count_, 14, 37);
+
+  library_search_button_ = make_button(library_overlay_, "SEARCH", 100, 48);
+  lv_obj_set_pos(library_search_button_, 258, 4);
+  library_back_button_ = make_button(library_overlay_, "CLOSE", 100, 48);
+  lv_obj_set_pos(library_back_button_, 368, 4);
+  lv_obj_add_event_cb(library_search_button_, event_handler, LV_EVENT_CLICKED, this);
+  lv_obj_add_event_cb(library_back_button_, event_handler, LV_EVENT_CLICKED, this);
+
+  library_list_ = lv_obj_create(library_overlay_);
+  lv_obj_set_pos(library_list_, 8, 58);
+  lv_obj_set_size(library_list_, 464, 210);
+  lv_obj_set_style_bg_opa(library_list_, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(library_list_, 0, 0);
+  lv_obj_set_style_pad_all(library_list_, 0, 0);
+  lv_obj_set_style_pad_row(library_list_, 3, 0);
+  lv_obj_set_flex_flow(library_list_, LV_FLEX_FLOW_COLUMN);
+
+  library_previous_page_ = make_button(library_overlay_, LV_SYMBOL_LEFT " PREV", 112, 44);
+  library_next_page_ = make_button(library_overlay_, "NEXT " LV_SYMBOL_RIGHT, 112, 44);
+  lv_obj_set_pos(library_previous_page_, 122, 272);
+  lv_obj_set_pos(library_next_page_, 246, 272);
+  lv_obj_add_event_cb(library_previous_page_, event_handler, LV_EVENT_CLICKED, this);
+  lv_obj_add_event_cb(library_next_page_, event_handler, LV_EVENT_CLICKED, this);
+  show_library_root();
+}
+
+void MusicUi::create_lyrics_overlay() {
+  lyrics_overlay_ = lv_obj_create(root_);
+  lv_obj_remove_style_all(lyrics_overlay_);
+  lv_obj_set_size(lyrics_overlay_, 480, 320);
+  lv_obj_set_pos(lyrics_overlay_, 0, 0);
+  lv_obj_set_style_bg_color(lyrics_overlay_, color(kBackground), 0);
+  lv_obj_set_style_bg_opa(lyrics_overlay_, LV_OPA_COVER, 0);
+  lv_obj_add_flag(lyrics_overlay_, LV_OBJ_FLAG_HIDDEN);
+
+  lyrics_title_ = make_label(lyrics_overlay_, "LYRICS", &lv_font_montserrat_22, color(kText));
+  lv_obj_set_pos(lyrics_title_, 14, 12);
+  lv_obj_set_size(lyrics_title_, 330, 28);
+  lv_label_set_long_mode(lyrics_title_, LV_LABEL_LONG_DOT);
+  lv_obj_t *close = make_button(lyrics_overlay_, "CLOSE", 100, 48);
+  lv_obj_set_pos(close, 368, 4);
+  lv_obj_add_event_cb(close, [](lv_event_t *event) {
+    auto *ui = static_cast<MusicUi *>(lv_event_get_user_data(event));
+    if (ui != nullptr) {
+      lv_obj_add_flag(ui->lyrics_overlay_, LV_OBJ_FLAG_HIDDEN);
+    }
+  }, LV_EVENT_CLICKED, this);
+
+  lv_obj_t *scroll = lv_obj_create(lyrics_overlay_);
+  lv_obj_set_pos(scroll, 10, 58);
+  lv_obj_set_size(scroll, 460, 252);
+  lv_obj_set_style_bg_color(scroll, color(kPanel), 0);
+  lv_obj_set_style_border_width(scroll, 0, 0);
+  lv_obj_set_style_radius(scroll, 3, 0);
+  lv_obj_set_style_pad_all(scroll, 12, 0);
+  lyrics_text_ = make_label(scroll, "REQUESTING LYRICS...", &lv_font_montserrat_18,
+                            color(kText));
+  lv_obj_set_width(lyrics_text_, 424);
+  lv_label_set_long_mode(lyrics_text_, LV_LABEL_LONG_WRAP);
+}
+
+void MusicUi::show_library_root() {
+  library_root_visible_ = true;
+  library_page_start_ = 0;
+  lv_obj_clean(library_list_);
+  lv_label_set_text(library_title_, "MEDIA LIBRARY");
+  lv_label_set_text(library_count_, "SELECT A VIEW");
+  lv_label_set_text(lv_obj_get_child(library_back_button_, 0), "CLOSE");
+  static constexpr std::array<const char *, 4> kLabels{
+      "ARTISTS", "ALBUMS", "GENRES", "COMPOSERS"};
+  for (const char *label : kLabels) {
+    lv_obj_t *row = make_button(library_list_, label, 448, 48);
+    lv_obj_add_event_cb(row, library_row_handler, LV_EVENT_CLICKED, this);
+  }
+  lv_obj_add_state(library_previous_page_, LV_STATE_DISABLED);
+  lv_obj_add_state(library_next_page_, LV_STATE_DISABLED);
+}
+
+void MusicUi::rebuild_library(const Snapshot &snapshot) {
+  constexpr size_t kPageSize = 25;
+  if (library_root_visible_) {
+    return;
+  }
+  lv_obj_clean(library_list_);
+  lv_label_set_text(library_title_, snapshot.library_title.c_str());
+  lv_label_set_text(lv_obj_get_child(library_back_button_, 0), "BACK");
+  if (snapshot.library_loading) {
+    lv_label_set_text(library_count_, "LOADING...");
+    lv_obj_t *loading = make_label(library_list_, "ASKING AIMP FOR LIBRARY DATA",
+                                   &lv_font_montserrat_18, color(kMuted));
+    lv_obj_set_style_pad_all(loading, 16, 0);
+    return;
+  }
+  if (library_page_start_ >= snapshot.library_items.size()) {
+    library_page_start_ = snapshot.library_items.empty()
+                              ? 0
+                              : (snapshot.library_items.size() - 1) / kPageSize * kPageSize;
+  }
+  const size_t end = std::min(library_page_start_ + kPageSize,
+                              snapshot.library_items.size());
+  char count[64];
+  if (snapshot.library_items.empty()) {
+    std::snprintf(count, sizeof(count), "NO RESULTS");
+  } else {
+    std::snprintf(count, sizeof(count), "%u-%u OF %u%s",
+                  static_cast<unsigned>(library_page_start_ + 1),
+                  static_cast<unsigned>(end),
+                  static_cast<unsigned>(snapshot.library_total_count),
+                  snapshot.library_truncated ? " (LIMITED)" : "");
+  }
+  lv_label_set_text(library_count_, count);
+  for (size_t index = library_page_start_; index < end; ++index) {
+    const LibraryItem &item = snapshot.library_items[index];
+    lv_obj_t *row = lv_button_create(library_list_);
+    lv_obj_set_width(row, lv_pct(100));
+    lv_obj_set_height(row, 50);
+    lv_obj_set_style_radius(row, 2, 0);
+    lv_obj_set_style_bg_color(row, color(kPanel), 0);
+    lv_obj_set_style_bg_color(row, color(0x174148), LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_width(row, 0, 0);
+    lv_obj_add_event_cb(row, library_row_handler, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(row, library_row_handler, LV_EVENT_LONG_PRESSED, this);
+    lv_obj_t *name = make_label(row, item.title.empty() ? "UNKNOWN" : item.title.c_str(),
+                                &lv_font_montserrat_18, color(kText));
+    lv_obj_set_size(name, 360, 22);
+    lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+    lv_obj_align(name, LV_ALIGN_LEFT_MID, 2, item.subtitle.empty() ? 0 : -9);
+    if (!item.subtitle.empty()) {
+      lv_obj_t *details = make_label(row, item.subtitle.c_str(), &lv_font_montserrat_14,
+                                     color(kMuted));
+      lv_obj_set_size(details, 360, 18);
+      lv_label_set_long_mode(details, LV_LABEL_LONG_DOT);
+      lv_obj_align(details, LV_ALIGN_LEFT_MID, 2, 11);
+    }
+    lv_obj_t *action = make_label(row,
+                                  item.kind == LibraryItemKind::track ? LV_SYMBOL_PLAY
+                                                                      : LV_SYMBOL_RIGHT,
+                                  &lv_font_montserrat_18, color(kAccent));
+    lv_obj_align(action, LV_ALIGN_RIGHT_MID, -4, 0);
+  }
+  lv_obj_set_state(library_previous_page_, LV_STATE_DISABLED, library_page_start_ == 0);
+  lv_obj_set_state(library_next_page_, LV_STATE_DISABLED,
+                   end >= snapshot.library_items.size());
+}
+
+void MusicUi::update_lyrics(const Snapshot &snapshot) {
+  const std::string title = snapshot.now_playing.title.empty()
+                                ? "LYRICS"
+                                : "LYRICS / " + snapshot.now_playing.title;
+  lv_label_set_text(lyrics_title_, title.c_str());
+  switch (snapshot.lyrics_state) {
+  case LyricsState::loading:
+    lv_label_set_text(lyrics_text_, "REQUESTING LYRICS...");
+    break;
+  case LyricsState::ready:
+  case LyricsState::unavailable:
+  case LyricsState::failed:
+    lv_label_set_text(lyrics_text_, snapshot.lyrics.c_str());
+    break;
+  case LyricsState::none:
+  default:
+    lv_label_set_text(lyrics_text_, "OPEN LYRICS TO REQUEST THEM FROM AIMP.");
+    break;
+  }
 }
 
 void MusicUi::create_playlists_page() {
@@ -442,17 +639,24 @@ void MusicUi::create_more_page() {
   lv_obj_remove_style_all(page);
   lv_obj_set_pos(page, 0, 40);
   lv_obj_set_size(page, 480, 234);
-  lv_obj_t *title = make_label(page, "PLAYBACK", &lv_font_montserrat_28, color(kText));
+  lv_obj_t *title = make_label(page, "DISCOVER", &lv_font_montserrat_28, color(kText));
   lv_obj_set_pos(title, 14, 4);
   more_status_ = make_label(page, "OFFLINE", &lv_font_montserrat_14, color(kMuted));
   lv_obj_set_pos(more_status_, 16, 42);
 
-  more_shuffle_ = make_button(page, "SHUFFLE", 132, 52);
-  more_repeat_ = make_button(page, "REPEAT", 132, 52);
-  lv_obj_t *stop = make_button(page, "STOP", 132, 52);
-  lv_obj_set_pos(more_shuffle_, 14, 72);
-  lv_obj_set_pos(more_repeat_, 174, 72);
-  lv_obj_set_pos(stop, 334, 72);
+  library_button_ = make_button(page, "MEDIA LIBRARY", 214, 50);
+  lyrics_button_ = make_button(page, "LYRICS", 214, 50);
+  lv_obj_set_pos(library_button_, 14, 64);
+  lv_obj_set_pos(lyrics_button_, 252, 64);
+  lv_obj_add_event_cb(library_button_, event_handler, LV_EVENT_CLICKED, this);
+  lv_obj_add_event_cb(lyrics_button_, event_handler, LV_EVENT_CLICKED, this);
+
+  more_shuffle_ = make_button(page, "SHUFFLE", 132, 44);
+  more_repeat_ = make_button(page, "REPEAT", 132, 44);
+  lv_obj_t *stop = make_button(page, "STOP", 132, 44);
+  lv_obj_set_pos(more_shuffle_, 14, 124);
+  lv_obj_set_pos(more_repeat_, 174, 124);
+  lv_obj_set_pos(stop, 334, 124);
   lv_obj_add_flag(more_shuffle_, LV_OBJ_FLAG_CHECKABLE);
   lv_obj_add_flag(more_repeat_, LV_OBJ_FLAG_CHECKABLE);
   lv_obj_add_event_cb(more_shuffle_, event_handler, LV_EVENT_CLICKED, this);
@@ -460,19 +664,16 @@ void MusicUi::create_more_page() {
   lv_obj_add_event_cb(stop, event_handler, LV_EVENT_CLICKED, this);
 
   lv_obj_t *volume_text = make_label(page, "VOLUME", &lv_font_montserrat_18, color(kMuted));
-  lv_obj_set_pos(volume_text, 14, 156);
+  lv_obj_set_pos(volume_text, 14, 183);
   volume_slider_ = lv_slider_create(page);
-  lv_obj_set_pos(volume_slider_, 110, 157);
-  lv_obj_set_size(volume_slider_, 356, 22);
+  lv_obj_set_pos(volume_slider_, 110, 184);
+  lv_obj_set_size(volume_slider_, 356, 12);
   lv_obj_set_ext_click_area(volume_slider_, 16);
   lv_slider_set_range(volume_slider_, 0, 100);
   lv_obj_set_style_bg_color(volume_slider_, color(0x28303D), LV_PART_MAIN);
   lv_obj_set_style_bg_color(volume_slider_, color(kAccent), LV_PART_INDICATOR);
   lv_obj_set_style_bg_color(volume_slider_, color(kText), LV_PART_KNOB);
   lv_obj_add_event_cb(volume_slider_, event_handler, LV_EVENT_RELEASED, this);
-  lv_obj_t *refresh = make_button(page, "REFRESH FROM AIMP", 230, 44);
-  lv_obj_align(refresh, LV_ALIGN_BOTTOM_MID, 0, -4);
-  lv_obj_add_event_cb(refresh, event_handler, LV_EVENT_CLICKED, this);
 }
 
 void MusicUi::show_page(Page page) {
@@ -596,6 +797,14 @@ void MusicUi::update(const Snapshot &snapshot) {
     rebuild_playlists(snapshot);
     rendered_playlist_size_ = snapshot.playlists.size();
     rendered_playlist_revision_ = snapshot.playlists_revision;
+  }
+  if (snapshot.library_revision != rendered_library_revision_) {
+    rebuild_library(snapshot);
+    rendered_library_revision_ = snapshot.library_revision;
+  }
+  if (snapshot.lyrics_revision != rendered_lyrics_revision_) {
+    update_lyrics(snapshot);
+    rendered_lyrics_revision_ = snapshot.lyrics_revision;
   }
 }
 
@@ -841,6 +1050,52 @@ void MusicUi::playlist_row_handler(lv_event_t *event) {
   }
 }
 
+void MusicUi::library_row_handler(lv_event_t *event) {
+  auto *ui = static_cast<MusicUi *>(lv_event_get_user_data(event));
+  lv_obj_t *row = static_cast<lv_obj_t *>(lv_event_get_target(event));
+  const int32_t local_index = lv_obj_get_index(row);
+  if (ui == nullptr || local_index < 0 ||
+      ui->snapshot_.connection != ConnectionState::online) {
+    return;
+  }
+  if (ui->library_root_visible_) {
+    if (local_index < 4) {
+      ui->library_root_visible_ = false;
+      ui->library_page_start_ = 0;
+      ui->client_.enqueue({CommandType::request_library_root, local_index});
+      lv_label_set_text(ui->library_count_, "LOADING...");
+      lv_obj_clean(ui->library_list_);
+    }
+    return;
+  }
+  const size_t index = ui->library_page_start_ + static_cast<size_t>(local_index);
+  if (index >= ui->snapshot_.library_items.size()) {
+    return;
+  }
+  const LibraryItem &item = ui->snapshot_.library_items[index];
+  if (lv_event_get_code(event) == LV_EVENT_LONG_PRESSED) {
+    ui->suppress_library_click_ = true;
+    ui->client_.enqueue({CommandType::enqueue_library_item, item.selection_index,
+                         static_cast<int32_t>(item.selection_request_id), item.title,
+                         item.path});
+    return;
+  }
+  if (ui->suppress_library_click_) {
+    ui->suppress_library_click_ = false;
+    return;
+  }
+  if (item.kind == LibraryItemKind::track) {
+    ui->client_.enqueue({CommandType::play_library_item, item.selection_index,
+                         static_cast<int32_t>(item.selection_request_id), item.title,
+                         item.path});
+    lv_obj_add_flag(ui->library_overlay_, LV_OBJ_FLAG_HIDDEN);
+    ui->show_page(Page::now);
+  } else {
+    ui->library_page_start_ = 0;
+    ui->client_.enqueue({CommandType::browse_library, 0, 0, item.title, item.path});
+  }
+}
+
 void MusicUi::handle_event(lv_event_t *event) {
   lv_obj_t *target = static_cast<lv_obj_t *>(lv_event_get_target(event));
   const lv_event_code_t code = lv_event_get_code(event);
@@ -877,6 +1132,7 @@ void MusicUi::handle_event(lv_event_t *event) {
     return;
   }
   if (target == filter_search_button_) {
+    search_context_ = SearchContext::queue;
     lv_obj_add_flag(filter_overlay_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_remove_flag(search_overlay_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(search_overlay_);
@@ -904,17 +1160,70 @@ void MusicUi::handle_event(lv_event_t *event) {
   if (target == search_keyboard_) {
     if (code == LV_EVENT_CANCEL) {
       lv_obj_add_flag(search_overlay_, LV_OBJ_FLAG_HIDDEN);
-      lv_obj_remove_flag(filter_overlay_, LV_OBJ_FLAG_HIDDEN);
+      if (search_context_ == SearchContext::library) {
+        lv_obj_remove_flag(library_overlay_, LV_OBJ_FLAG_HIDDEN);
+      } else {
+        lv_obj_remove_flag(filter_overlay_, LV_OBJ_FLAG_HIDDEN);
+      }
     } else if (code == LV_EVENT_READY) {
       const char *query = lv_textarea_get_text(search_textarea_);
       if (query != nullptr && query[0] != '\0') {
-        client_.enqueue({CommandType::filter_queue,
-                         static_cast<int32_t>(PlaylistIndex::SearchMode::contains), 0,
-                         query});
+        if (search_context_ == SearchContext::library) {
+          library_root_visible_ = false;
+          library_page_start_ = 0;
+          client_.enqueue({CommandType::search_library, 0, 0, query});
+          lv_obj_remove_flag(library_overlay_, LV_OBJ_FLAG_HIDDEN);
+          lv_obj_move_foreground(library_overlay_);
+        } else {
+          client_.enqueue({CommandType::filter_queue,
+                           static_cast<int32_t>(PlaylistIndex::SearchMode::contains), 0,
+                           query});
+        }
         lv_textarea_set_text(search_textarea_, "");
         lv_obj_add_flag(search_overlay_, LV_OBJ_FLAG_HIDDEN);
       }
     }
+    return;
+  }
+  if (target == library_button_) {
+    show_library_root();
+    lv_obj_remove_flag(library_overlay_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(library_overlay_);
+    return;
+  }
+  if (target == lyrics_button_) {
+    lv_obj_remove_flag(lyrics_overlay_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(lyrics_overlay_);
+    if (snapshot_.connection == ConnectionState::online) {
+      client_.enqueue({CommandType::request_lyrics});
+    }
+    return;
+  }
+  if (target == library_back_button_) {
+    if (library_root_visible_) {
+      lv_obj_add_flag(library_overlay_, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      show_library_root();
+    }
+    return;
+  }
+  if (target == library_search_button_) {
+    search_context_ = SearchContext::library;
+    lv_obj_add_flag(library_overlay_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(search_overlay_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(search_overlay_);
+    lv_obj_send_event(search_textarea_, LV_EVENT_FOCUSED, nullptr);
+    return;
+  }
+  if (target == library_previous_page_ || target == library_next_page_) {
+    constexpr size_t kLibraryPageSize = 25;
+    if (target == library_previous_page_ && library_page_start_ >= kLibraryPageSize) {
+      library_page_start_ -= kLibraryPageSize;
+    } else if (target == library_next_page_ &&
+               library_page_start_ + kLibraryPageSize < snapshot_.library_items.size()) {
+      library_page_start_ += kLibraryPageSize;
+    }
+    rebuild_library(snapshot_);
     return;
   }
   if (snapshot_.connection != ConnectionState::online) {

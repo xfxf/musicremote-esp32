@@ -83,6 +83,46 @@ bool read_cstring(const std::vector<uint8_t> &data, size_t &offset, std::string 
   return true;
 }
 
+bool read_string_field(const std::vector<uint8_t> &data, size_t &offset, size_t end,
+                       uint16_t length, std::string &out, size_t max_length = 1024) {
+  const size_t field_size = static_cast<size_t>(length) + 1;
+  if (length > max_length || offset > end || field_size > end - offset || end > data.size() ||
+      data[offset + length] != 0) {
+    return false;
+  }
+  out.assign(reinterpret_cast<const char *>(data.data() + offset), length);
+  offset += field_size;
+  return true;
+}
+
+bool read_bounded_cstring(const std::vector<uint8_t> &data, size_t &offset, std::string &out,
+                          size_t max_length = 1024) {
+  if (offset >= data.size()) {
+    return false;
+  }
+  const auto begin = data.begin() + static_cast<ptrdiff_t>(offset);
+  const auto end = std::find(begin, data.end(), 0);
+  if (end == data.end() || static_cast<size_t>(end - begin) > max_length) {
+    return false;
+  }
+  out.assign(reinterpret_cast<const char *>(data.data() + offset),
+             static_cast<size_t>(end - begin));
+  offset = static_cast<size_t>(end - data.begin()) + 1;
+  return true;
+}
+
+void append_optional_string(std::vector<uint8_t> &payload, const std::string &value) {
+  if (!value.empty()) {
+    payload.insert(payload.end(), value.begin(), value.end());
+    payload.push_back(0);
+  }
+}
+
+uint32_t library_path_flags(const LibraryPath &path) {
+  return (path.genre.empty() ? 0u : 1u) | (path.artist.empty() ? 0u : 2u) |
+         (path.album.empty() ? 0u : 4u) | (path.composer.empty() ? 0u : 8u);
+}
+
 std::string artwork_track_key(const Track &track) {
   if (track.title.empty()) {
     return {};
@@ -415,6 +455,7 @@ bool MonkeyMoteClient::connect_and_authenticate() {
   discard_remaining_ = 0;
   cover_requests_.clear();
   cover_track_key_.clear();
+  lyrics_request_track_key_.clear();
   artwork_decoder_.select_track({});
   last_receive_us_ = esp_timer_get_time();
   last_ping_us_ = last_receive_us_;
@@ -917,11 +958,15 @@ bool MonkeyMoteClient::process_frame(uint32_t type, const std::vector<uint8_t> &
     }
     return payload.empty();
   }
+  case 19:
+    return parse_library(payload);
   case 23:
     send_packet(23);
     return true;
   case 28:
     return payload.size() == 8;
+  case 36:
+    return parse_lyrics(payload);
   case 41:
     parse_playlists(payload);
     return true;
@@ -1095,12 +1140,337 @@ void MonkeyMoteClient::send_command(const Command &command) {
       load_index_page(0);
     }
     break;
+  case CommandType::request_library_root: {
+    static constexpr std::array<uint8_t, 4> kSubcommands{7, 16, 9, 12};
+    static constexpr std::array<const char *, 4> kTitles{"ARTISTS", "ALBUMS", "GENRES",
+                                                        "COMPOSERS"};
+    const size_t category = static_cast<size_t>(std::clamp<int32_t>(command.first, 0, 3));
+    library_request_id_ = library_request_id_ == UINT32_MAX ? 1 : library_request_id_ + 1;
+    pending_library_path_ = {};
+    pending_library_title_ = kTitles[category];
+    pending_library_search_ = false;
+    payload.push_back(kSubcommands[category]);
+    append_u32(payload, library_request_id_);
+    model_.update([title = pending_library_title_](Snapshot &state) {
+      state.library_loading = true;
+      state.library_items.clear();
+      state.library_total_count = 0;
+      state.library_title = title;
+      state.status = "LOADING LIBRARY";
+      ++state.library_revision;
+    });
+    if (!send_packet(4, payload.data(), payload.size())) {
+      model_.update([](Snapshot &state) {
+        state.library_loading = false;
+        state.status = "LIBRARY REQUEST FAILED";
+        ++state.library_revision;
+      });
+    }
+    break;
   }
+  case CommandType::browse_library:
+    request_library(command.library_path, command.text);
+    break;
+  case CommandType::search_library: {
+    const size_t query_size = std::min<size_t>(command.text.size(), 128);
+    if (query_size == 0) {
+      break;
+    }
+    library_request_id_ = library_request_id_ == UINT32_MAX ? 1 : library_request_id_ + 1;
+    pending_library_path_ = {};
+    pending_library_title_ = "SEARCH: " + command.text.substr(0, query_size);
+    pending_library_search_ = true;
+    append_u32(payload, library_request_id_);
+    payload.insert(payload.end(), command.text.begin(), command.text.begin() + query_size);
+    payload.push_back(0);
+    model_.update([title = pending_library_title_](Snapshot &state) {
+      state.library_loading = true;
+      state.library_items.clear();
+      state.library_total_count = 0;
+      state.library_title = title;
+      state.status = "SEARCHING LIBRARY";
+      ++state.library_revision;
+    });
+    send_packet(24, payload.data(), payload.size());
+    break;
+  }
+  case CommandType::play_library_item:
+    select_library_item(command, true);
+    break;
+  case CommandType::enqueue_library_item:
+    select_library_item(command, false);
+    break;
+  case CommandType::request_lyrics:
+    lyrics_request_track_key_ = cover_track_key_;
+    payload.push_back(11);
+    append_i32(payload, 0);
+    model_.update([key = lyrics_request_track_key_](Snapshot &state) {
+      state.lyrics_state = LyricsState::loading;
+      state.lyrics.clear();
+      state.lyrics_track_key = key;
+      ++state.lyrics_revision;
+    });
+    send_packet(4, payload.data(), payload.size());
+    break;
+  }
+}
+
+void MonkeyMoteClient::request_library(const LibraryPath &path, std::string title) {
+  const uint32_t flags = library_path_flags(path);
+  if (flags == 0) {
+    return;
+  }
+  library_request_id_ = library_request_id_ == UINT32_MAX ? 1 : library_request_id_ + 1;
+  pending_library_path_ = path;
+  pending_library_title_ = title.empty() ? "BROWSING" : std::move(title);
+  pending_library_search_ = false;
+  std::vector<uint8_t> payload;
+  append_u32(payload, library_request_id_);
+  append_u32(payload, flags);
+  append_optional_string(payload, path.genre);
+  append_optional_string(payload, path.artist);
+  append_optional_string(payload, path.album);
+  append_optional_string(payload, path.composer);
+  model_.update([path, title = pending_library_title_](Snapshot &state) {
+    state.library_loading = true;
+    state.library_items.clear();
+    state.library_total_count = 0;
+    state.library_path = path;
+    state.library_title = title;
+    state.status = "BROWSING LIBRARY";
+    ++state.library_revision;
+  });
+  send_packet(39, payload.data(), payload.size());
+}
+
+void MonkeyMoteClient::select_library_item(const Command &command, bool play) {
+  const int32_t destination = play ? -1 : model_.copy().active_playlist_id;
+  const auto playback = [this](uint8_t subcommand, int32_t value) {
+    std::vector<uint8_t> body{subcommand};
+    append_i32(body, value);
+    return send_packet(7, body.data(), body.size());
+  };
+  if (command.library_path.empty() && command.second > 0 && command.first >= 0) {
+    std::vector<uint8_t> payload;
+    append_i32(payload, command.second);
+    append_i32(payload, destination);
+    append_i32(payload, command.first);
+    append_i32(payload, -2);
+    append_u16(payload, 0);
+    if (play) {
+      playback(15, 0);
+      std::vector<uint8_t> clear;
+      append_i32(clear, -1);
+      send_packet(20, clear.data(), clear.size());
+    }
+    send_packet(44, payload.data(), payload.size());
+    if (play) {
+      playback(10, command.first);
+      playback(1, 0);
+    }
+    model_.update([play](Snapshot &state) {
+      state.status = play ? "PLAYING SEARCH RESULT" : "ENQUEUED SEARCH RESULT";
+    });
+    return;
+  }
+  const uint32_t path_flags = library_path_flags(command.library_path);
+  if (path_flags == 0) {
+    return;
+  }
+  const uint32_t flags = path_flags | (play ? 0x10000000u : 0u);
+  std::vector<uint8_t> payload;
+  append_i32(payload, destination);
+  append_u32(payload, flags);
+  append_i32(payload, play ? -1 : command.first);
+  append_optional_string(payload, command.library_path.genre);
+  append_optional_string(payload, command.library_path.artist);
+  append_optional_string(payload, command.library_path.album);
+  append_optional_string(payload, command.library_path.composer);
+  if (play) {
+    append_i32(payload, 0);
+    playback(15, 0);
+    std::vector<uint8_t> clear;
+    append_i32(clear, -1);
+    send_packet(20, clear.data(), clear.size());
+    send_packet(40, payload.data(), payload.size());
+    playback(10, std::max<int32_t>(command.first, 0));
+    playback(1, 0);
+  } else {
+    send_packet(40, payload.data(), payload.size());
+  }
+  model_.update([play](Snapshot &state) {
+    state.status = play ? "PLAYING LIBRARY ITEM" : "ENQUEUED LIBRARY ITEM";
+  });
 }
 
 void MonkeyMoteClient::request_initial_state() {
   enqueue({CommandType::request_playlists, -1});
   enqueue({CommandType::request_playlist, -1});
+}
+
+bool MonkeyMoteClient::parse_library(const std::vector<uint8_t> &payload) {
+  constexpr uint32_t kMaxRecords = 100'000;
+  constexpr size_t kMaxRetainedRecords = 10'000;
+  constexpr size_t kMaxRetainedText = 384 * 1024;
+  if (payload.size() < 9) {
+    return false;
+  }
+  const uint32_t request_id = read_u32(payload.data());
+  if (request_id != library_request_id_) {
+    ESP_LOGI(kTag, "Ignoring stale library response id=%" PRIu32, request_id);
+    return true;
+  }
+  const uint32_t count = read_u32(payload.data() + 4);
+  const uint8_t wire_kind = payload[8];
+  if (count > kMaxRecords || (wire_kind != 0 && wire_kind != 2 && wire_kind != 4 &&
+                             wire_kind != 6 && wire_kind != 7 && wire_kind != 8)) {
+    return false;
+  }
+
+  size_t offset = 9;
+  size_t retained_text = 0;
+  bool truncated = false;
+  std::vector<LibraryItem> items;
+  items.reserve(std::min<size_t>(count, kMaxRetainedRecords));
+  auto retain = [&](LibraryItem item) {
+    const size_t text_size = item.title.size() + item.subtitle.size() +
+                             item.path.genre.size() + item.path.artist.size() +
+                             item.path.album.size() + item.path.composer.size();
+    if (items.size() >= kMaxRetainedRecords || text_size > kMaxRetainedText - retained_text) {
+      truncated = true;
+      return;
+    }
+    retained_text += text_size;
+    items.push_back(std::move(item));
+  };
+
+  for (uint32_t index = 0; index < count; ++index) {
+    LibraryItem item;
+    item.selection_index = wire_kind == 7 || wire_kind == 8
+                               ? static_cast<int32_t>(index)
+                               : -1;
+    item.selection_request_id = pending_library_search_ ? request_id : 0;
+    item.path = pending_library_path_;
+    if (wire_kind == 0 || wire_kind == 2 || wire_kind == 4) {
+      if (!read_bounded_cstring(payload, offset, item.title)) {
+        return false;
+      }
+      if (wire_kind == 0) {
+        item.path.artist = item.title;
+      } else if (wire_kind == 2) {
+        item.path.genre = item.title;
+      } else {
+        item.path.composer = item.title;
+      }
+      retain(std::move(item));
+      continue;
+    }
+
+    if (wire_kind == 6) {
+      if (offset > payload.size() || payload.size() - offset < 12) {
+        return false;
+      }
+      const uint16_t album_length = read_u16(payload.data() + offset);
+      const uint16_t artist_length = read_u16(payload.data() + offset + 2);
+      item.year = read_u16(payload.data() + offset + 4);
+      const uint32_t record_size = read_u32(payload.data() + offset + 8);
+      offset += 12;
+      if (record_size > payload.size() - offset) {
+        return false;
+      }
+      const size_t record_end = offset + record_size;
+      if (!read_string_field(payload, offset, record_end, album_length, item.title) ||
+          !read_string_field(payload, offset, record_end, artist_length, item.subtitle)) {
+        return false;
+      }
+      offset = record_end;
+      item.kind = LibraryItemKind::album;
+      item.path.album = item.title;
+      if (!item.subtitle.empty()) {
+        item.path.artist = item.subtitle;
+      }
+      retain(std::move(item));
+      continue;
+    }
+
+    if (offset > payload.size() || payload.size() - offset < 20) {
+      return false;
+    }
+    const uint16_t artist_length = read_u16(payload.data() + offset);
+    const uint16_t title_length = read_u16(payload.data() + offset + 2);
+    const uint16_t album_length = read_u16(payload.data() + offset + 4);
+    item.year = read_u16(payload.data() + offset + 6);
+    const uint32_t record_size = read_u32(payload.data() + offset + 8);
+    item.duration_ms = read_i32(payload.data() + offset + 12);
+    offset += 20;
+    if (record_size > payload.size() - offset) {
+      return false;
+    }
+    const size_t record_end = offset + record_size;
+    std::string artist;
+    std::string album;
+    if (!read_string_field(payload, offset, record_end, artist_length, artist) ||
+        !read_string_field(payload, offset, record_end, title_length, item.title) ||
+        !read_string_field(payload, offset, record_end, album_length, album)) {
+      return false;
+    }
+    offset = record_end;
+    item.kind = LibraryItemKind::track;
+    item.subtitle = artist.empty() ? album : artist;
+    // Browsed rows are selected by their parent path plus result index (type
+    // 40). Search rows retain no path and use their request ID plus result
+    // index (type 44). The display metadata must not overwrite either key.
+    retain(std::move(item));
+  }
+  if (offset != payload.size()) {
+    return false;
+  }
+
+  model_.update([items = std::move(items), path = pending_library_path_,
+                 title = pending_library_title_, count, truncated](Snapshot &state) mutable {
+    state.library_items = std::move(items);
+    state.library_path = std::move(path);
+    state.library_title = std::move(title);
+    state.library_total_count = count;
+    state.library_loading = false;
+    state.library_truncated = truncated || state.library_items.size() != count;
+    state.status = count == 0 ? "NO LIBRARY MATCHES" : "LIBRARY READY";
+    ++state.library_revision;
+  });
+  return true;
+}
+
+bool MonkeyMoteClient::parse_lyrics(const std::vector<uint8_t> &payload) {
+  constexpr uint32_t kMaxLyricsBytes = 24 * 1024;
+  if (payload.size() < 20) {
+    return false;
+  }
+  const uint32_t length = read_u32(payload.data());
+  if (length != payload.size() - 20) {
+    return false;
+  }
+  if (lyrics_request_track_key_.empty() || lyrics_request_track_key_ != cover_track_key_) {
+    return true;
+  }
+  if (length > kMaxLyricsBytes) {
+    model_.update([key = lyrics_request_track_key_](Snapshot &state) {
+      state.lyrics_state = LyricsState::failed;
+      state.lyrics = "Lyrics exceed the 24 KiB display limit.";
+      state.lyrics_track_key = key;
+      ++state.lyrics_revision;
+    });
+    return true;
+  }
+  std::string lyrics(reinterpret_cast<const char *>(payload.data() + 20), length);
+  std::replace(lyrics.begin(), lyrics.end(), '\0', ' ');
+  model_.update([key = lyrics_request_track_key_, lyrics = std::move(lyrics)](
+                    Snapshot &state) mutable {
+    state.lyrics_state = lyrics.empty() ? LyricsState::unavailable : LyricsState::ready;
+    state.lyrics = lyrics.empty() ? "No lyrics are available for this track." : std::move(lyrics);
+    state.lyrics_track_key = key;
+    ++state.lyrics_revision;
+  });
+  return true;
 }
 
 void MonkeyMoteClient::parse_track_info(const std::vector<uint8_t> &payload) {
@@ -1127,9 +1497,15 @@ void MonkeyMoteClient::parse_track_info(const std::vector<uint8_t> &payload) {
   const std::string track_key = artwork_track_key(track);
   const bool is_now_playing = (flags & 2) != 0 || track.index >= 0;
   model_.update(
-      [track = std::move(track), is_now_playing](Snapshot &state) mutable {
+      [track = std::move(track), is_now_playing, track_key](Snapshot &state) mutable {
         if (is_now_playing) {
           state.now_playing = std::move(track);
+          if (state.lyrics_track_key != track_key) {
+            state.lyrics_state = LyricsState::none;
+            state.lyrics.clear();
+            state.lyrics_track_key = track_key;
+            ++state.lyrics_revision;
+          }
         }
       });
   if (is_now_playing && track_key != cover_track_key_) {

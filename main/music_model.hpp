@@ -36,6 +36,32 @@ struct Playlist {
 
 enum class ArtworkState : uint8_t { none, loading, ready, unavailable, failed };
 
+enum class LyricsState : uint8_t { none, loading, ready, unavailable, failed };
+
+struct LibraryPath {
+  std::string genre;
+  std::string artist;
+  std::string album;
+  std::string composer;
+
+  bool empty() const {
+    return genre.empty() && artist.empty() && album.empty() && composer.empty();
+  }
+};
+
+enum class LibraryItemKind : uint8_t { node, album, track };
+
+struct LibraryItem {
+  LibraryItemKind kind{LibraryItemKind::node};
+  int32_t selection_index{-1};
+  uint32_t selection_request_id{0};
+  std::string title;
+  std::string subtitle;
+  LibraryPath path;
+  int32_t duration_ms{0};
+  uint16_t year{0};
+};
+
 struct ArtworkBitmap {
   uint16_t width{0};
   uint16_t height{0};
@@ -58,6 +84,10 @@ struct Snapshot {
   std::shared_ptr<const ArtworkBitmap> artwork;
   std::string artwork_track_key;
   uint64_t artwork_revision{0};
+  LyricsState lyrics_state{LyricsState::none};
+  std::string lyrics;
+  std::string lyrics_track_key;
+  uint64_t lyrics_revision{0};
   int32_t active_queue_index{-1};
   int32_t active_playlist_id{-1};
   std::string active_playlist_name{"CURRENT PLAYLIST"};
@@ -69,6 +99,13 @@ struct Snapshot {
   bool queue_filter_active{false};
   std::string queue_filter_label;
   std::vector<Playlist> playlists;
+  std::vector<LibraryItem> library_items;
+  LibraryPath library_path;
+  std::string library_title{"MEDIA LIBRARY"};
+  uint32_t library_total_count{0};
+  bool library_loading{false};
+  bool library_truncated{false};
+  uint64_t library_revision{0};
   uint64_t queue_revision{0};
   uint64_t playlists_revision{0};
   uint64_t revision{0};

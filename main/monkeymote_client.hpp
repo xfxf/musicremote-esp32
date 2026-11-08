@@ -37,6 +37,12 @@ enum class CommandType {
   request_queue_page,
   filter_queue,
   clear_queue_filter,
+  request_library_root,
+  browse_library,
+  search_library,
+  play_library_item,
+  enqueue_library_item,
+  request_lyrics,
 };
 
 struct Command {
@@ -44,6 +50,7 @@ struct Command {
   int32_t first{0};
   int32_t second{0};
   std::string text;
+  LibraryPath library_path;
 };
 
 class MonkeyMoteClient {
@@ -87,6 +94,10 @@ private:
   void parse_playlists(const std::vector<uint8_t> &payload);
   void parse_playlist(const std::vector<uint8_t> &payload);
   void parse_compressed(const std::vector<uint8_t> &payload);
+  bool parse_library(const std::vector<uint8_t> &payload);
+  bool parse_lyrics(const std::vector<uint8_t> &payload);
+  void request_library(const LibraryPath &path, std::string title);
+  void select_library_item(const Command &command, bool play);
   std::string take_cover_request();
   void reject_cover_reply();
   bool start_streamed_frame(uint32_t type, uint32_t length);
@@ -115,6 +126,11 @@ private:
   std::string queue_filter_;
   std::string cover_track_key_;
   std::deque<std::string> cover_requests_;
+  std::string lyrics_request_track_key_;
+  uint32_t library_request_id_{0};
+  LibraryPath pending_library_path_;
+  std::string pending_library_title_;
+  bool pending_library_search_{false};
   int64_t last_receive_us_{0};
   int64_t last_ping_us_{0};
   std::mutex commands_mutex_;

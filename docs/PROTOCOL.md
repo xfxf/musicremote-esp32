@@ -20,8 +20,10 @@ session. Passwords and digests must never be logged.
 | 8 | Current-track cover-art response |
 | 11 | Current queue index |
 | 12 / 17 / 30 / 35 | Queue/playlist changed notification; request the current queue again |
+| 19 | Media-library node, album, or track result |
 | 23 | Keepalive (echoed) |
 | 28 | Eight-byte capability mask |
+| 36 | Current-track lyrics response |
 | 41 | Playlist collection |
 | 45 | LZ4-compressed inner message |
 | 9 / 31 / 50 | Playlist name and queue contents |
@@ -74,6 +76,30 @@ not the per-item ID in playlist metadata (which AIMP may report as `-1`). Type
 - Type 4 subcommand 3 requests current-track artwork. Two following `int32_t`
   values are the maximum width and height. The production UI requests 144 by
   144 pixels and receives type 8 or the empty type 13 result.
+- Type 4 subcommands 7, 16, 9, and 12 request the media-library artist,
+  album, genre, and composer roots respectively. Each carries an `int32_t`
+  request ID and receives type 19.
+- Type 4 subcommand 11 plus an `int32_t` zero requests current-track lyrics.
+  Type 36 contains a `uint32_t` UTF-8 byte length, a 16-byte track identity,
+  and the text. The firmware rejects inconsistent lengths and displays at most
+  24 KiB.
+- Type 24 searches the complete media library. Its body is the `int32_t`
+  request ID followed by a NUL-terminated UTF-8 query. Search result rows are
+  subsequently addressed through type 44 using the same request ID.
+- Type 39 browses a media-library path. Its body is an `int32_t` request ID,
+  an `int32_t` selector mask, then the selected genre (bit 0), artist (bit 1),
+  album (bit 2), and composer (bit 3) strings in bit order. Results are type
+  19. Node rows are NUL strings; album and track rows are bounded variable-size
+  records. The implementation validates every record boundary before retaining
+  data and caps retained results/text independently of the server count.
+- Type 40 adds a browsed library result. It carries destination playlist ID,
+  selector flags, the result row index, and the selected path strings. For
+  immediate playback, flag bit 28 requests insertion at the appended `int32_t`
+  position after clearing the active scratch/current destination; the desired
+  imported row is then selected with type 7/subcommand 10.
+- Type 44 adds a type-24 search result. Its body is search request ID,
+  destination playlist ID, selected result row, insertion position (`-2` for
+  the end), and a reserved zero `uint16_t`.
 - Type 10 sets a one-byte rating from 0 through 5.
 - Type 20 clears a playlist.
 - Type 21 asks AIMP's media-library delegate to add a matching item to a
@@ -121,3 +147,8 @@ read-only probing.
 The probe's read-only `cover --cover-size 144` command validates the response
 length/signature and prints only the JPEG size, server identity, and SHA-256;
 it does not write or print the image body.
+
+The `library`, `library-browse`, `library-search`, and `lyrics` probe commands
+exercise these bounded parsers. The guarded mutation matrix validates both
+type-40 browse selection and type-44 search selection against its disposable
+playlist before clearing and deleting it.

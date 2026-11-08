@@ -69,12 +69,36 @@ class TrackInfo:
     rating: int
     title: str
     artist: str
+    album: str
 
 
 @dataclass(frozen=True)
 class CoverArt:
     identity: bytes
     jpeg: bytes
+
+
+@dataclass(frozen=True)
+class LibraryRecord:
+    title: str
+    subtitle: str = ""
+    duration_ms: int = 0
+    year: int = 0
+    album: str = ""
+
+
+@dataclass(frozen=True)
+class LibraryResult:
+    request_id: int
+    total_count: int
+    kind: int
+    records: tuple[LibraryRecord, ...]
+
+
+@dataclass(frozen=True)
+class LyricsResult:
+    identity: bytes
+    text: str
 
 
 class Client:
@@ -237,6 +261,100 @@ def parse_cover_frame(frame: Frame) -> CoverArt | None:
     return CoverArt(frame.payload[4:20], jpeg)
 
 
+def _library_field(payload: bytes, offset: int, length: int, end: int) -> tuple[str, int]:
+    if length > 1024 or offset + length + 1 > end or end > len(payload):
+        raise ValueError("invalid library string length")
+    if payload[offset + length] != 0:
+        raise ValueError("unterminated library string")
+    value = payload[offset : offset + length].decode("utf-8", errors="replace")
+    return value, offset + length + 1
+
+
+def parse_library_frame(frame: Frame, retain: int = 10_000) -> LibraryResult | None:
+    frame = expand_frame(frame)
+    if frame.message_type != 19:
+        return None
+    payload = frame.payload
+    if len(payload) < 9:
+        raise ValueError("truncated library response")
+    request_id, count = struct.unpack_from("<II", payload)
+    kind = payload[8]
+    if count > 100_000 or kind not in (0, 2, 4, 6, 7, 8):
+        raise ValueError("invalid library response header")
+    offset = 9
+    records: list[LibraryRecord] = []
+    for _ in range(count):
+        if kind in (0, 2, 4):
+            try:
+                value, offset = cstring(payload, offset)
+            except (ValueError, IndexError) as exc:
+                raise ValueError("invalid library node") from exc
+            if len(value.encode("utf-8")) > 1024:
+                raise ValueError("library node is too long")
+            if len(records) < retain:
+                records.append(LibraryRecord(value))
+            continue
+        if kind == 6:
+            if offset + 12 > len(payload):
+                raise ValueError("truncated library album")
+            album_length, artist_length, year, _reserved, record_size = struct.unpack_from(
+                "<HHHHI", payload, offset
+            )
+            offset += 12
+            record_end = offset + record_size
+            if record_end > len(payload):
+                raise ValueError("invalid library album size")
+            album, offset = _library_field(payload, offset, album_length, record_end)
+            artist, offset = _library_field(payload, offset, artist_length, record_end)
+            offset = record_end
+            if len(records) < retain:
+                records.append(LibraryRecord(album, artist, year=year))
+            continue
+        if offset + 20 > len(payload):
+            raise ValueError("truncated library track")
+        (
+            artist_length,
+            title_length,
+            album_length,
+            year,
+            record_size,
+            duration_ms,
+            _bitrate,
+            _rating,
+            _flags,
+        ) = struct.unpack_from("<HHHHIiHBB", payload, offset)
+        offset += 20
+        record_end = offset + record_size
+        if record_end > len(payload):
+            raise ValueError("invalid library track size")
+        artist, offset = _library_field(payload, offset, artist_length, record_end)
+        title, offset = _library_field(payload, offset, title_length, record_end)
+        album, offset = _library_field(payload, offset, album_length, record_end)
+        offset = record_end
+        if len(records) < retain:
+            records.append(
+                LibraryRecord(title, artist or album, duration_ms, year, album)
+            )
+    if offset != len(payload):
+        raise ValueError("library response has trailing data")
+    return LibraryResult(request_id, count, kind, tuple(records))
+
+
+def parse_lyrics_frame(frame: Frame, max_text: int = 24 * 1024) -> LyricsResult | None:
+    frame = expand_frame(frame)
+    if frame.message_type != 36:
+        return None
+    payload = frame.payload
+    if len(payload) < 20:
+        raise ValueError("truncated lyrics response")
+    length = struct.unpack_from("<I", payload)[0]
+    if length != len(payload) - 20:
+        raise ValueError("invalid lyrics response length")
+    if length > max_text:
+        raise ValueError("lyrics response exceeds display limit")
+    return LyricsResult(payload[4:20], payload[20:].decode("utf-8", errors="replace"))
+
+
 def latest_playback(frames: list[Frame]) -> PlaybackSnapshot | None:
     for raw in reversed(frames):
         frame = expand_frame(raw)
@@ -279,6 +397,7 @@ def latest_track_info(frames: list[Frame]) -> TrackInfo | None:
                 p[11],
                 fields[0],
                 fields[1],
+                fields[2],
             )
     return None
 
@@ -564,7 +683,7 @@ def validate_mutations_and_restore(
         matching_seek_updates = [
             state
             for state in seek_updates
-            if state.state == 1 and abs(state.position_ms - target_ms) < 2500
+            if state.state in (1, 2) and abs(state.position_ms - target_ms) < 2500
         ]
         if matching_seek_updates:
             first_position = matching_seek_updates[0].position_ms
@@ -575,7 +694,7 @@ def validate_mutations_and_restore(
                 lambda frames: (
                     state.position_ms
                     if (state := latest_playback(frames)) is not None
-                    and state.state == 1
+                    and state.state in (1, 2)
                     and abs(state.position_ms - target_ms) < 2500
                     else None
                 ),
@@ -659,14 +778,67 @@ def validate_mutations_and_restore(
         )
         notes.append("queue-item removal confirmed count=0")
 
-        client.send(21, add_payload)
-        client.collect(1.0)
+        def matching_library_row(
+            frames: list[Frame], request_id: int, title: str
+        ) -> int | None:
+            for frame in frames:
+                parsed = parse_library_frame(frame, retain=100_000)
+                if parsed is None or parsed.request_id != request_id:
+                    continue
+                for index, record in enumerate(parsed.records):
+                    if record.title == title:
+                        return index
+            return None
+
+        # Browsed library rows are addressed by a parent path and result index
+        # through type 40. Validate that form against the scratch playlist.
+        artist = track.artist.encode("utf-8")[:1024]
+        album = track.album.encode("utf-8")[:1024]
+        if not artist or not album:
+            raise RuntimeError("scratch item lacks artist/album for type-40 validation")
+        browse_request_id = int(time.time() * 1000) & 0x7FFFFFFF
+        browse_payload = (
+            struct.pack("<ii", browse_request_id, 2 | 4)
+            + artist
+            + b"\0"
+            + album
+            + b"\0"
+        )
+        client.send(39, browse_payload)
+        browse_row, browse_frames = wait_for(
+            client,
+            lambda frames: matching_library_row(
+                frames, browse_request_id, track.title
+            ),
+            timeout=10.0,
+        )
+        browse_row = int(browse_row)
+        notes.append(
+            packet_evidence(
+                "browse exact library parent", 39, len(browse_payload), browse_frames
+            )
+        )
+        select_payload = (
+            struct.pack("<iii", scratch_id, 2 | 4, browse_row)
+            + artist
+            + b"\0"
+            + album
+            + b"\0"
+        )
+        client.send(40, select_payload)
+        select_frames = client.collect(1.0)
+        notes.append(
+            packet_evidence(
+                "enqueue browsed library row", 40, len(select_payload), select_frames
+            )
+        )
         wait_for(
             client,
             lambda frames: True if playlist_count(frames, scratch_id) == 1 else None,
             timeout=10.0,
             request=lambda: client.send(4, struct.pack("<Bii", 10, scratch_id, 1)),
         )
+        notes.append("browsed library selection confirmed count=1")
         clear_payload = struct.pack("<i", scratch_id)
         client.send(20, clear_payload)
         clear_frames = client.collect(1.0)
@@ -677,6 +849,59 @@ def validate_mutations_and_restore(
             request=lambda: client.send(4, struct.pack("<Bii", 10, scratch_id, 1)),
         )
         notes.append("playlist clear confirmed count=0")
+
+        # Whole-library search rows are tied to the type-24 request ID and are
+        # selected through type 44, rather than by synthesizing a browse path.
+        search_request_id = (browse_request_id + 1) & 0x7FFFFFFF or 1
+        search_query = track.title.encode("utf-8")[:128]
+        search_payload = struct.pack("<i", search_request_id) + search_query + b"\0"
+        client.send(24, search_payload)
+        search_row, search_frames = wait_for(
+            client,
+            lambda frames: matching_library_row(
+                frames, search_request_id, track.title
+            ),
+            timeout=10.0,
+        )
+        search_row = int(search_row)
+        notes.append(
+            packet_evidence(
+                "search exact library row", 24, len(search_payload), search_frames
+            )
+        )
+        search_select_payload = struct.pack(
+            "<iiiiH", search_request_id, scratch_id, search_row, -2, 0
+        )
+        client.send(44, search_select_payload)
+        search_select_frames = client.collect(1.0)
+        notes.append(
+            packet_evidence(
+                "enqueue searched library row",
+                44,
+                len(search_select_payload),
+                search_select_frames,
+            )
+        )
+        wait_for(
+            client,
+            lambda frames: True if playlist_count(frames, scratch_id) == 1 else None,
+            timeout=10.0,
+            request=lambda: client.send(4, struct.pack("<Bii", 10, scratch_id, 1)),
+        )
+        notes.append("searched library selection confirmed count=1")
+        client.send(20, clear_payload)
+        final_clear_frames = client.collect(1.0)
+        notes.append(
+            packet_evidence(
+                "clear searched selection", 20, len(clear_payload), final_clear_frames
+            )
+        )
+        wait_for(
+            client,
+            lambda frames: True if playlist_count(frames, scratch_id) == 0 else None,
+            request=lambda: client.send(4, struct.pack("<Bii", 10, scratch_id, 1)),
+        )
+        notes.append("searched selection clear confirmed count=0")
 
     finally:
         if test_rating is not None and not rating_restored:
@@ -905,6 +1130,23 @@ def describe(frame: Frame) -> str:
         )
     if frame.message_type == 28 and len(p) == 8:
         return f"capabilities=0x{struct.unpack('<Q', p)[0]:016x}"
+    if frame.message_type == 19:
+        try:
+            result = parse_library_frame(frame, retain=0)
+        except ValueError:
+            return f"invalid library response bytes={len(p)}"
+        assert result is not None
+        return (
+            f"library request={result.request_id} kind={result.kind} "
+            f"count={result.total_count} bytes={len(p)}"
+        )
+    if frame.message_type == 36:
+        try:
+            lyrics = parse_lyrics_frame(frame)
+        except ValueError:
+            return f"invalid lyrics response bytes={len(p)}"
+        assert lyrics is not None
+        return f"lyrics text_bytes={len(lyrics.text.encode('utf-8'))} identity={lyrics.identity.hex()}"
     if frame.message_type == 41 and len(p) >= 12:
         count = struct.unpack_from("<I", p)[0]
         folder_id = struct.unpack_from("<i", p, 4)[0]
@@ -943,12 +1185,26 @@ def main() -> int:
             "cleanup-validation",
             "play-row",
             "cover",
+            "library",
+            "library-browse",
+            "library-search",
+            "lyrics",
             "stop",
         ),
     )
     parser.add_argument("--playlist-id", type=int, default=-1)
     parser.add_argument("--queue-row", type=int, default=0)
     parser.add_argument("--cover-size", type=int, default=144)
+    parser.add_argument(
+        "--library-category",
+        choices=("artists", "albums", "genres", "composers"),
+        default="artists",
+    )
+    parser.add_argument("--query", default="Beatles")
+    parser.add_argument("--genre", default="")
+    parser.add_argument("--artist", default="")
+    parser.add_argument("--album", default="")
+    parser.add_argument("--composer", default="")
     parser.add_argument(
         "--confirm-live-mutations",
         action="store_true",
@@ -964,6 +1220,69 @@ def main() -> int:
     try:
         client.connect()
         initial = client.collect(1.0)
+        if args.command in ("library", "library-browse", "library-search"):
+            request_id = int(time.time()) & 0x7FFFFFFF
+            if args.command == "library":
+                subcommand = {
+                    "artists": 7,
+                    "albums": 16,
+                    "genres": 9,
+                    "composers": 12,
+                }[args.library_category]
+                client.send(4, struct.pack("<Bi", subcommand, request_id))
+            elif args.command == "library-search":
+                query = args.query.encode("utf-8")[:128]
+                if not query:
+                    raise RuntimeError("--query must not be empty")
+                client.send(24, struct.pack("<i", request_id) + query + b"\0")
+            else:
+                values = (args.genre, args.artist, args.album, args.composer)
+                encoded = [value.encode("utf-8")[:1024] for value in values]
+                flags = sum(1 << index for index, value in enumerate(encoded) if value)
+                if flags == 0:
+                    raise RuntimeError(
+                        "library-browse needs --genre, --artist, --album, or --composer"
+                    )
+                payload = struct.pack("<ii", request_id, flags)
+                payload += b"".join(value + b"\0" for value in encoded if value)
+                client.send(39, payload)
+            frames = client.collect(2.5)
+            result = next(
+                (
+                    parsed
+                    for frame in frames
+                    if (parsed := parse_library_frame(frame, retain=10)) is not None
+                    and parsed.request_id == request_id
+                ),
+                None,
+            )
+            if result is None:
+                raise RuntimeError("AIMP did not return a matching library response")
+            print(
+                f"library request={result.request_id} kind={result.kind} "
+                f"count={result.total_count} retained={len(result.records)}"
+            )
+            for record in result.records:
+                print(f"item title={record.title!r} subtitle={record.subtitle!r}")
+            return 0
+        if args.command == "lyrics":
+            client.send(4, struct.pack("<Bi", 11, 0))
+            frames = client.collect(2.0)
+            lyrics = next(
+                (
+                    parsed
+                    for frame in frames
+                    if (parsed := parse_lyrics_frame(frame)) is not None
+                ),
+                None,
+            )
+            if lyrics is None:
+                raise RuntimeError("AIMP did not return a lyrics response")
+            print(
+                f"lyrics text_bytes={len(lyrics.text.encode('utf-8'))} "
+                f"identity={lyrics.identity.hex()}"
+            )
+            return 0
         if args.command == "exercise":
             for note in exercise_and_restore(client, initial):
                 print(note)
