@@ -236,9 +236,19 @@ void MusicUi::create_now_page() {
   lv_obj_clear_flag(art_, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_flag(art_, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(art_, event_handler, LV_EVENT_CLICKED, this);
-  lv_obj_t *note = make_label(art_, LV_SYMBOL_AUDIO, &lv_font_montserrat_48, color(kAccent));
-  lv_obj_center(note);
+  art_image_ = lv_image_create(art_);
+  lv_obj_set_clickable(art_image_, false);
+  lv_obj_add_flag(art_image_, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_center(art_image_);
+  art_fallback_ = make_label(art_, LV_SYMBOL_AUDIO, &lv_font_montserrat_48, color(kAccent));
+  lv_obj_set_clickable(art_fallback_, false);
+  lv_obj_center(art_fallback_);
   rating_label_ = make_label(art_, "RATING 0 / 5", &lv_font_montserrat_14, color(kText));
+  lv_obj_set_clickable(rating_label_, false);
+  lv_obj_set_style_bg_color(rating_label_, color(kBackground), 0);
+  lv_obj_set_style_bg_opa(rating_label_, LV_OPA_70, 0);
+  lv_obj_set_style_pad_hor(rating_label_, 4, 0);
+  lv_obj_set_style_pad_ver(rating_label_, 2, 0);
   lv_obj_align(rating_label_, LV_ALIGN_BOTTOM_MID, 0, -8);
 
   title_label_ = make_label(page, "NOTHING PLAYING", &lv_font_montserrat_28, color(kText));
@@ -499,6 +509,31 @@ void MusicUi::update(const Snapshot &snapshot) {
   lv_label_set_text(title_label_, title.c_str());
   lv_label_set_text(artist_label_, artist.c_str());
   lv_label_set_text(album_label_, album.c_str());
+  if (snapshot.artwork_revision != rendered_artwork_revision_) {
+    displayed_artwork_ = snapshot.artwork;
+    if (displayed_artwork_ != nullptr && !displayed_artwork_->pixels.empty() &&
+        displayed_artwork_->width <= 144 && displayed_artwork_->height <= 144 &&
+        displayed_artwork_->stride >= displayed_artwork_->width * 3) {
+      artwork_descriptor_ = {};
+      artwork_descriptor_.header.magic = LV_IMAGE_HEADER_MAGIC;
+      artwork_descriptor_.header.cf = LV_COLOR_FORMAT_RGB888;
+      artwork_descriptor_.header.w = displayed_artwork_->width;
+      artwork_descriptor_.header.h = displayed_artwork_->height;
+      artwork_descriptor_.header.stride = displayed_artwork_->stride;
+      artwork_descriptor_.data_size = displayed_artwork_->pixels.size();
+      artwork_descriptor_.data = displayed_artwork_->pixels.data();
+      lv_image_set_src(art_image_, nullptr);
+      lv_image_set_src(art_image_, &artwork_descriptor_);
+      lv_obj_center(art_image_);
+      lv_obj_clear_flag(art_image_, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_add_flag(art_fallback_, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_image_set_src(art_image_, nullptr);
+      lv_obj_add_flag(art_image_, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_clear_flag(art_fallback_, LV_OBJ_FLAG_HIDDEN);
+    }
+    rendered_artwork_revision_ = snapshot.artwork_revision;
+  }
   char rating[16];
   std::snprintf(rating, sizeof(rating), "RATING %u / 5", snapshot.now_playing.rating);
   lv_label_set_text(rating_label_, rating);

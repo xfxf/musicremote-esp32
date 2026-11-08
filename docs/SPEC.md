@@ -19,6 +19,8 @@ controls, state feedback, queue manipulation, and playlist management.
 
 - Reflect play/pause/stop, position, duration, volume, shuffle, repeat, and
   current-track metadata.
+- Retrieve, bound, decode, cache, and display current-track cover art without
+  blocking LVGL or socket processing; retain a clean fallback for missing art.
 - Control play, pause, stop, previous, next, seek, volume, shuffle, repeat, and
   rating from the touchscreen.
 
@@ -52,9 +54,8 @@ controls, state feedback, queue manipulation, and playlist management.
 
 ## Explicit follow-up scope
 
-This release uses a generated music tile rather than downloaded cover art and
-does not expose MonkeyMote's optional lyrics, library search, file browser,
-equalizer, or computer power commands. Those features require additional wire
-formats, storage/caching policy, and dedicated touchscreen flows; they should be
-tracked as separate issues rather than implied by the stable playback surface.
+Cover art is implemented. MonkeyMote's optional lyrics, library search, file
+browser, equalizer, and computer power commands remain tracked in issues #3
+and #4 until their wire formats and dedicated touchscreen flows are physically
+qualified.
 

@@ -19,6 +19,16 @@ accent colour, and information hierarchy—without copying branded assets.
   playlists remain selectable but cannot be deleted from the device.
 - Destructive operations use long press instead of confirmation dialogs to
   keep the small-screen flow predictable.
+- The now-playing tile displays AIMP's current cover at its returned aspect
+  ratio. A generated audio glyph remains visible while loading or when artwork
+  is absent, and the rating stays usable as an overlaid touch label.
+
+Cover JPEGs are decoded on a dedicated lower-priority task, never from the
+LVGL or socket loop. The 144 px decoded RGB888 surface uses PSRAM. Successful
+JPEGs are cached under the existing microSD-preferred storage directory; the
+cache is capped at 128 entries/16 MiB on SD and 16 entries/512 KiB on internal
+flash. Entries are evicted in approximate filesystem-timestamp order; the hard
+entry and byte limits do not depend on the device having a real-time clock.
 
 The physical panel is natively 320x480. LVGL rotates the display 90 degrees to
 480x320; the board support package applies the corresponding touch transform.

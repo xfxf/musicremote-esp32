@@ -134,6 +134,33 @@ Date: 2026-11-08 (Australia/Melbourne)
   suppression latch consumes the subsequent click; the queue and playlist
   delete latches use the same event pattern but were not directly injected in
   this run. The hook was removed before the production build.
+- Issue #2 protocol qualification requested type 4/subcommand 3 at 144 by 144
+  from a live Bandcamp track. AIMP returned type 8 with a 2,941-byte JPEG after
+  the four-byte length and 16-byte identity fields; a track without artwork
+  returned the empty type 13 response. The firmware build then booted with the
+  2 MB PSRAM test passing, mounted the 60,786 MB microSD card, authenticated to
+  AIMP, decoded the JPEG on its cover worker, and rendered it on the physical
+  SC01 Plus. The framebuffer below shows correct colour/order and aspect ratio,
+  while the live timeline advanced to 1:09 / 2:37 and volume remained 75%.
+  The first SD write exposed that this FatFS mount requires 8.3 names; the
+  cache now uses an eight-character digest filename and verifies the complete
+  128-bit track identity stored inside each entry, preventing truncated-name
+  collisions from displaying incorrect art. A reset then logged a 2,941-byte
+  cache hit and decoded it successfully before processing the fresh host reply.
+- Review qualification then drove 36 consecutive live track changes from the
+  physical panel firmware. For the first 24, a temporary two-entry threshold
+  forced the unchanged production pruning path on every over-capacity write;
+  uppercase FatFS 8.3 entries were counted and one entry was pruned after each
+  fresh 2,941-byte JPEG. A further 12 transitions recorded stable low-water
+  marks: internal RAM settled at 16,179 bytes and PSRAM at 1,201,084 bytes,
+  with no later decline, panic, reset, stale cover, or unresponsive capture.
+  The production thresholds (128 entries/16 MiB on SD) were restored afterward.
+- A separate `MUSICREMOTE_PLAYLIST_STORAGE_OVERRIDE=flash` build mounted the
+  3.7 MiB SPIFFS partition with the SD path disabled. It wrote a fresh
+  2,941-byte artwork entry for key `4cc712f2c3e1aed612e028c10ff0ec38`;
+  after a hardware reset the same key logged a cache hit and decoded before the
+  live host reply. The qualification-only storage override and diagnostics were
+  removed before the production build.
 
 ## Visual inspection
 
@@ -166,6 +193,7 @@ pair shows playback before the gesture and still stopped after release:
 ![Playing before long press](../artifacts/device-longpress-before.png)
 ![Still stopped after release](../artifacts/device-longpress-release.png)
 ![Final f8cedf8 production image online and stopped](../artifacts/device-issue8-final.png)
+![Live AIMP cover art](../artifacts/device-cover-art.png)
 
 The following two large-playlist captures come from commit `f7a2374`, before
 `f68297c` moved queue titles to x=48. They do not yet show the current row

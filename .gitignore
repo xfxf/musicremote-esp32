@@ -5,6 +5,7 @@
 
 # ESP-IDF generated output
 build/
+build-*/
 managed_components/
 dependencies.lock
 sdkconfig

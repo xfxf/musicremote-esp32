@@ -17,6 +17,7 @@ session. Passwords and digests must never be logged.
 |---:|---|
 | 5 | Current track metadata |
 | 6 | Position, playback, shuffle, repeat, and volume state |
+| 8 | Current-track cover-art response |
 | 11 | Current queue index |
 | 12 / 17 / 30 / 35 | Queue/playlist changed notification; request the current queue again |
 | 23 | Keepalive (echoed) |
@@ -25,6 +26,12 @@ session. Passwords and digests must never be logged.
 | 45 | LZ4-compressed inner message |
 | 9 / 31 / 50 | Playlist name and queue contents |
 | 43 | Command result; a non-zero first byte means failure |
+
+Type 8 starts with the JPEG byte length (`uint32_t`), followed by a 16-byte
+server artwork identity and the JPEG bytes. The length must exactly match the
+remaining bytes. A type 13 empty response means no artwork was available for
+the current item. The firmware rejects cover bodies above 256 KiB, non-JPEG
+signatures, and decoded dimensions above 256 pixels on either axis.
 
 Type 45 begins with the uncompressed size (`uint32_t`), inner type (`uint32_t`),
 two reserved bytes, then a raw LZ4 block. Normal messages reject output beyond
@@ -64,6 +71,9 @@ not the per-item ID in playlist metadata (which AIMP may report as `-1`). Type
 - Type 4 subcommand 10 requests a playlist and queue. Its payload is the
   subcommand byte, playlist ID (`int32_t`, with `-1` meaning current), and an
   observed constant `int32_t` value of 1.
+- Type 4 subcommand 3 requests current-track artwork. Two following `int32_t`
+  values are the maximum width and height. The production UI requests 144 by
+  144 pixels and receives type 8 or the empty type 13 result.
 - Type 10 sets a one-byte rating from 0 through 5.
 - Type 20 clears a playlist.
 - Type 21 asks AIMP's media-library delegate to add a matching item to a
@@ -107,3 +117,7 @@ therefore leave that track's rating changed. The command records only packet
 types and sizes and restores the observed AIMP state in a `finally` block. The
 explicit confirmation flag prevents accidental mutation during routine
 read-only probing.
+
+The probe's read-only `cover --cover-size 144` command validates the response
+length/signature and prints only the JPEG size, server identity, and SHA-256;
+it does not write or print the image body.

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "artwork_decoder.hpp"
 #include "music_model.hpp"
 #include "playlist_index.hpp"
 
@@ -86,6 +87,8 @@ private:
   void parse_playlists(const std::vector<uint8_t> &payload);
   void parse_playlist(const std::vector<uint8_t> &payload);
   void parse_compressed(const std::vector<uint8_t> &payload);
+  std::string take_cover_request();
+  void reject_cover_reply();
   bool start_streamed_frame(uint32_t type, uint32_t length);
   bool consume_streamed_frame();
   void finish_streamed_frame();
@@ -102,6 +105,7 @@ private:
   std::vector<uint8_t> receive_buffer_;
   size_t discard_remaining_{0};
   PlaylistIndex playlist_index_;
+  ArtworkDecoder artwork_decoder_;
   FILE *streamed_frame_{nullptr};
   size_t streamed_remaining_{0};
   std::atomic<bool> index_building_{false};
@@ -109,6 +113,8 @@ private:
   bool queue_filter_active_{false};
   PlaylistIndex::SearchMode queue_filter_mode_{PlaylistIndex::SearchMode::contains};
   std::string queue_filter_;
+  std::string cover_track_key_;
+  std::deque<std::string> cover_requests_;
   int64_t last_receive_us_{0};
   int64_t last_ping_us_{0};
   std::mutex commands_mutex_;
