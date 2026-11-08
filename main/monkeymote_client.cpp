@@ -83,6 +83,46 @@ bool read_cstring(const std::vector<uint8_t> &data, size_t &offset, std::string 
   return true;
 }
 
+bool read_string_field(const std::vector<uint8_t> &data, size_t &offset, size_t end,
+                       uint16_t length, std::string &out, size_t max_length = 1024) {
+  const size_t field_size = static_cast<size_t>(length) + 1;
+  if (length > max_length || offset > end || field_size > end - offset || end > data.size() ||
+      data[offset + length] != 0) {
+    return false;
+  }
+  out.assign(reinterpret_cast<const char *>(data.data() + offset), length);
+  offset += field_size;
+  return true;
+}
+
+bool read_bounded_cstring(const std::vector<uint8_t> &data, size_t &offset, std::string &out,
+                          size_t max_length = 1024) {
+  if (offset >= data.size()) {
+    return false;
+  }
+  const auto begin = data.begin() + static_cast<ptrdiff_t>(offset);
+  const auto end = std::find(begin, data.end(), 0);
+  if (end == data.end() || static_cast<size_t>(end - begin) > max_length) {
+    return false;
+  }
+  out.assign(reinterpret_cast<const char *>(data.data() + offset),
+             static_cast<size_t>(end - begin));
+  offset = static_cast<size_t>(end - data.begin()) + 1;
+  return true;
+}
+
+void append_optional_string(std::vector<uint8_t> &payload, const std::string &value) {
+  if (!value.empty()) {
+    payload.insert(payload.end(), value.begin(), value.end());
+    payload.push_back(0);
+  }
+}
+
+uint32_t library_path_flags(const LibraryPath &path) {
+  return (path.genre.empty() ? 0u : 1u) | (path.artist.empty() ? 0u : 2u) |
+         (path.album.empty() ? 0u : 4u) | (path.composer.empty() ? 0u : 8u);
+}
+
 std::string artwork_track_key(const Track &track) {
   if (track.title.empty()) {
     return {};
@@ -275,6 +315,14 @@ void MonkeyMoteClient::run() {
         break;
       }
       const int64_t now = esp_timer_get_time();
+      expire_requests(now);
+      if (socket_ < 0) {
+        break;
+      }
+      if (pending_library_play_row_ >= 0 &&
+          now >= pending_library_play_deadline_us_.load()) {
+        fail_pending_library_play("LIBRARY PLAY TIMED OUT");
+      }
       if (now - last_receive_us_ > 30'000'000) {
         ESP_LOGW(kTag, "AIMP connection timed out");
         break;
@@ -415,12 +463,37 @@ bool MonkeyMoteClient::connect_and_authenticate() {
   discard_remaining_ = 0;
   cover_requests_.clear();
   cover_track_key_.clear();
+  lyrics_requests_.clear();
+  library_request_deadline_us_ = 0;
+  pending_library_play_row_ = -1;
+  pending_library_play_destination_ = -1;
+  pending_library_play_deadline_us_ = 0;
+  pending_library_play_token_ = 0;
+  {
+    std::lock_guard lock(playlist_requests_mutex_);
+    playlist_requests_.clear();
+    streamed_playlist_request_.reset();
+    streamed_playlist_generation_ = 0;
+  }
   artwork_decoder_.select_track({});
   last_receive_us_ = esp_timer_get_time();
   last_ping_us_ = last_receive_us_;
   model_.update([](Snapshot &state) {
     state.connection = ConnectionState::online;
+    ++state.connection_generation;
+    state.active_playlist_count_known = false;
+    state.library_play_pending = false;
     state.status = "AIMP ONLINE";
+    if (state.library_loading) {
+      state.library_loading = false;
+      state.library_message = "LIBRARY REQUEST INTERRUPTED";
+      ++state.library_revision;
+    }
+    if (state.lyrics_state == LyricsState::loading) {
+      state.lyrics_state = LyricsState::failed;
+      state.lyrics = std::make_shared<const std::string>("Lyrics request interrupted.");
+      ++state.lyrics_revision;
+    }
   });
   ESP_LOGI(kTag, "Authenticated to %s:%u", config_.host.c_str(), config_.port);
   return true;
@@ -434,6 +507,42 @@ void MonkeyMoteClient::close_socket() {
     shutdown(old_socket, SHUT_RDWR);
     close(old_socket);
   }
+  lyrics_requests_.clear();
+  library_request_deadline_us_ = 0;
+  pending_library_play_row_ = -1;
+  pending_library_play_destination_ = -1;
+  pending_library_play_deadline_us_ = 0;
+  pending_library_play_token_ = 0;
+  {
+    std::lock_guard lock(playlist_requests_mutex_);
+    playlist_requests_.clear();
+    streamed_playlist_request_.reset();
+    streamed_playlist_generation_ = 0;
+  }
+  model_.update([](Snapshot &state) {
+    state.active_playlist_count_known = false;
+    state.library_play_pending = false;
+    bool library_changed = false;
+    bool lyrics_changed = false;
+    if (state.library_loading) {
+      state.library_loading = false;
+      state.library_message = "LIBRARY REQUEST INTERRUPTED";
+      library_changed = true;
+    }
+    if (state.lyrics_state == LyricsState::loading) {
+      // Returning to none permits the open overlay to request the current
+      // track again after the connection is re-established.
+      state.lyrics_state = LyricsState::none;
+      state.lyrics = std::make_shared<const std::string>();
+      lyrics_changed = true;
+    }
+    if (library_changed) {
+      ++state.library_revision;
+    }
+    if (lyrics_changed) {
+      ++state.lyrics_revision;
+    }
+  });
 }
 
 bool MonkeyMoteClient::process_socket(int timeout_ms) {
@@ -498,8 +607,35 @@ bool MonkeyMoteClient::process_socket(int timeout_ms) {
         compressed_envelope_ready && advertised_size <= kMaxStreamedDecoded &&
         (inner_type == 9 || inner_type == 31 || inner_type == 50) &&
         (length > kMaxPayload || advertised_size > kMaxPayload);
+    const uint64_t stream_generation =
+        stream_playlist ? playlist_stream_generation_.fetch_add(1) + 1 : 0;
     if (stream_playlist || length > kMaxPayload) {
       receive_buffer_.erase(receive_buffer_.begin(), receive_buffer_.begin() + 12);
+      const bool oversized_library =
+          type == 19 || (compressed_envelope_ready && inner_type == 19);
+      if (oversized_library) {
+        ESP_LOGW(kTag, "Draining oversized library reply: %" PRIu32, length);
+        discard_remaining_ = length;
+        library_request_deadline_us_ = 0;
+        model_.update([](Snapshot &state) {
+          state.library_loading = false;
+          state.library_items = std::make_shared<const LibraryItems>();
+          state.library_total_count = 0;
+          state.library_truncated = true;
+          state.library_message = "LIBRARY RESULT TOO LARGE";
+          state.status = "LIBRARY RESULT TOO LARGE";
+          ++state.library_revision;
+        });
+        continue;
+      }
+      const bool oversized_lyrics =
+          type == 36 || (compressed_envelope_ready && inner_type == 36);
+      if (oversized_lyrics) {
+        ESP_LOGW(kTag, "Draining oversized lyrics reply: %" PRIu32, length);
+        reject_lyrics_reply("Lyrics exceed the 24 KiB display limit.");
+        discard_remaining_ = length;
+        continue;
+      }
       if (type == 8 || type == 13 ||
           (compressed_envelope_ready &&
            (inner_type == 8 || inner_type == 13))) {
@@ -513,12 +649,14 @@ bool MonkeyMoteClient::process_socket(int timeout_ms) {
         if (index_building_) {
           ESP_LOGI(kTag, "Deferring large playlist received while index build is active");
           discard_remaining_ = length;
+          consume_playlist_response(false);
           // AIMP has already switched to the newer playlist. Hide rows from
           // any intervening queue until the worker can request this frame
           // again; otherwise a tap would play the same row in the new queue.
           model_.update([](Snapshot &state) {
             state.queue.clear();
             state.queue_total_count = 0;
+            state.active_playlist_count_known = false;
             state.queue_page_start = 0;
             state.queue_index_ready = false;
             state.queue_indexing = true;
@@ -529,16 +667,21 @@ bool MonkeyMoteClient::process_socket(int timeout_ms) {
           continue;
         }
       }
-      if (stream_playlist && length <= kMaxStreamedPayload && start_streamed_frame(type, length)) {
+      if (stream_playlist && length <= kMaxStreamedPayload &&
+          start_streamed_frame(type, length, stream_generation)) {
         continue;
       }
       const bool storage_failed = stream_playlist && length <= kMaxStreamedPayload &&
                                   playlist_index_.available();
       ESP_LOGW(kTag, "Draining oversized payload: %" PRIu32, length);
       discard_remaining_ = length;
+      if (stream_playlist || type == 9 || type == 31 || type == 50) {
+        consume_playlist_response(false);
+      }
       model_.update([storage_failed](Snapshot &state) {
         state.queue.clear();
         state.queue_total_count = 0;
+        state.active_playlist_count_known = false;
         state.queue_page_start = 0;
         state.queue_index_ready = false;
         state.queue_indexing = false;
@@ -552,9 +695,20 @@ bool MonkeyMoteClient::process_socket(int timeout_ms) {
     if (receive_buffer_.size() < 12 + length) {
       break;
     }
-    std::vector<uint8_t> payload(receive_buffer_.begin() + 12,
-                                 receive_buffer_.begin() + 12 + length);
-    receive_buffer_.erase(receive_buffer_.begin(), receive_buffer_.begin() + 12 + length);
+    std::vector<uint8_t> payload;
+    if (receive_buffer_.size() == 12 + length) {
+      receive_buffer_.erase(receive_buffer_.begin(), receive_buffer_.begin() + 12);
+      payload.swap(receive_buffer_);
+    } else {
+      payload.assign(receive_buffer_.begin() + 12,
+                     receive_buffer_.begin() + 12 + length);
+      receive_buffer_.erase(receive_buffer_.begin(),
+                            receive_buffer_.begin() + 12 + length);
+      if (receive_buffer_.capacity() > 64 * 1024 && receive_buffer_.size() < 8 * 1024) {
+        std::vector<uint8_t> compact(receive_buffer_);
+        receive_buffer_.swap(compact);
+      }
+    }
     if (!process_frame(type, payload)) {
       ESP_LOGW(kTag, "Malformed packet type=%" PRIu32 " bytes=%" PRIu32, type, length);
     }
@@ -562,7 +716,8 @@ bool MonkeyMoteClient::process_socket(int timeout_ms) {
   return true;
 }
 
-bool MonkeyMoteClient::start_streamed_frame(uint32_t type, uint32_t length) {
+bool MonkeyMoteClient::start_streamed_frame(uint32_t type, uint32_t length,
+                                            uint64_t generation) {
   if (type != 45 || !playlist_index_.available()) {
     return false;
   }
@@ -574,11 +729,26 @@ bool MonkeyMoteClient::start_streamed_frame(uint32_t type, uint32_t length) {
     return false;
   }
   streamed_remaining_ = length;
+  receiving_stream_generation_ = generation;
+  {
+    std::lock_guard lock(playlist_requests_mutex_);
+    if (!playlist_requests_.empty()) {
+      // Large frames must be written to storage before their token is popped;
+      // allow that bounded transfer for every playlist request.
+      const int64_t stream_deadline_us = esp_timer_get_time() + 120'000'000;
+      playlist_requests_.front().deadline_us = stream_deadline_us;
+      if (playlist_requests_.front().confirms_library_play &&
+          pending_library_play_token_ == playlist_requests_.front().id) {
+        pending_library_play_deadline_us_ = stream_deadline_us;
+      }
+    }
+  }
   queue_filter_active_ = false;
   queue_filter_.clear();
   model_.update([](Snapshot &state) {
     state.queue.clear();
     state.queue_total_count = 0;
+    state.active_playlist_count_known = false;
     state.queue_page_start = 0;
     state.queue_index_ready = false;
     state.queue_indexing = true;
@@ -602,6 +772,7 @@ bool MonkeyMoteClient::consume_streamed_frame() {
     streamed_remaining_ -= count;
     discard_remaining_ = streamed_remaining_;
     streamed_remaining_ = 0;
+    consume_playlist_response(false);
     model_.update([](Snapshot &state) {
       state.queue_indexing = false;
       state.active_playlist_name = "PLAYLIST UNAVAILABLE";
@@ -618,6 +789,7 @@ bool MonkeyMoteClient::consume_streamed_frame() {
     streamed_frame_ = nullptr;
     if (!flushed || !closed) {
       unlink(playlist_index_.incoming_path().c_str());
+      consume_playlist_response(false);
       model_.update([](Snapshot &state) {
         state.queue_indexing = false;
         state.active_playlist_name = "PLAYLIST UNAVAILABLE";
@@ -633,7 +805,25 @@ bool MonkeyMoteClient::consume_streamed_frame() {
 void MonkeyMoteClient::finish_streamed_frame() {
   if (index_building_.exchange(true)) {
     unlink(playlist_index_.incoming_path().c_str());
+    consume_playlist_response(false);
     return;
+  }
+  {
+    std::lock_guard lock(playlist_requests_mutex_);
+    if (!playlist_requests_.empty()) {
+      streamed_playlist_request_ = playlist_requests_.front();
+      playlist_requests_.pop_front();
+      streamed_playlist_generation_ = receiving_stream_generation_;
+      if (streamed_playlist_request_->confirms_library_play &&
+          pending_library_play_token_ == streamed_playlist_request_->id) {
+        // A changed source hash can require a full 48k-row rebuild. This
+        // bounds stalls while leaving margin over the measured ~110 s build.
+        pending_library_play_deadline_us_ = esp_timer_get_time() + 180'000'000;
+      }
+    } else {
+      streamed_playlist_request_.reset();
+      streamed_playlist_generation_ = 0;
+    }
   }
   model_.update([](Snapshot &state) { state.status = "INDEXING LIBRARY"; });
   TaskHandle_t handle = nullptr;
@@ -641,6 +831,14 @@ void MonkeyMoteClient::finish_streamed_frame() {
                               1) != pdPASS) {
     index_building_ = false;
     unlink(playlist_index_.incoming_path().c_str());
+    std::optional<PlaylistRequestToken> token;
+    {
+      std::lock_guard lock(playlist_requests_mutex_);
+      token = streamed_playlist_request_;
+      streamed_playlist_request_.reset();
+      streamed_playlist_generation_ = 0;
+    }
+    finish_playlist_response(token, false);
     model_.update([](Snapshot &state) {
       state.queue_indexing = false;
       state.active_playlist_name = "PLAYLIST UNAVAILABLE";
@@ -650,23 +848,52 @@ void MonkeyMoteClient::finish_streamed_frame() {
 }
 
 void MonkeyMoteClient::build_streamed_index() {
-  const auto result = playlist_index_.build_from_compressed([this](uint32_t completed,
-                                                                  uint32_t total) {
-    if (index_superseded_) {
-      return;
-    }
-    if (completed == total || completed % 4096 == 1) {
-      model_.update([completed, total](Snapshot &state) {
-        if (!state.queue_indexing) {
+  std::optional<PlaylistRequestToken> response_token;
+  uint64_t response_generation = 0;
+  {
+    std::lock_guard lock(playlist_requests_mutex_);
+    response_token = streamed_playlist_request_;
+    response_generation = streamed_playlist_generation_;
+    streamed_playlist_request_.reset();
+    streamed_playlist_generation_ = 0;
+  }
+  const bool refresh_confirmation_deadline =
+      response_token && response_token->confirms_library_play;
+  const auto result = playlist_index_.build_from_compressed(
+      [this, refresh_confirmation_deadline](uint32_t completed, uint32_t total) {
+        if (refresh_confirmation_deadline) {
+          // Measure a stalled build rather than total playlist size.
+          pending_library_play_deadline_us_ = esp_timer_get_time() + 60'000'000;
+        }
+        if (index_superseded_) {
           return;
         }
-        state.status = "INDEXING " +
-                       std::to_string(completed * 100 / std::max<uint32_t>(1, total)) + "%";
+        if (completed == total || completed % 4096 == 1) {
+          model_.update([completed, total](Snapshot &state) {
+            if (!state.queue_indexing) {
+              return;
+            }
+            state.status = "INDEXING " +
+                           std::to_string(completed * 100 /
+                                          std::max<uint32_t>(1, total)) +
+                           "%";
+          });
+        }
       });
-    }
-  });
   unlink(playlist_index_.incoming_path().c_str());
   bool superseded = index_superseded_.exchange(false);
+  if (response_token && response_token->confirms_library_play) {
+    Command completion{CommandType::streamed_playlist_result};
+    completion.first = result.playlist_id >= 0 ? result.playlist_id
+                                               : response_token->playlist_id;
+    completion.second = result.count <= static_cast<uint32_t>(INT32_MAX)
+                            ? static_cast<int32_t>(result.count)
+                            : -1;
+    completion.text = result.success && !superseded ? "valid" : "invalid";
+    completion.request_token = response_token->id;
+    completion.stream_generation = response_generation;
+    enqueue(std::move(completion));
+  }
   if (!result.success) {
     ESP_LOGW(kTag, "Large playlist index failed: %s", result.error.c_str());
     model_.update([this, message = result.error, superseded](Snapshot &state) {
@@ -675,6 +902,7 @@ void MonkeyMoteClient::build_streamed_index() {
       }
       state.queue.clear();
       state.queue_total_count = 0;
+      state.active_playlist_count_known = false;
       state.queue_page_start = 0;
       state.queue_index_ready = false;
       state.queue_indexing = false;
@@ -700,6 +928,7 @@ void MonkeyMoteClient::build_streamed_index() {
       if (state.queue_indexing) {
         state.queue.clear();
         state.queue_total_count = 0;
+        state.active_playlist_count_known = false;
         state.queue_page_start = 0;
         state.queue_index_ready = false;
         ++state.queue_revision;
@@ -718,9 +947,11 @@ void MonkeyMoteClient::abort_streamed_frame(const char *status) {
   streamed_frame_ = nullptr;
   streamed_remaining_ = 0;
   unlink(playlist_index_.incoming_path().c_str());
+  consume_playlist_response(false);
   model_.update([status](Snapshot &state) {
     state.queue.clear();
     state.queue_total_count = 0;
+    state.active_playlist_count_known = false;
     state.queue_page_start = 0;
     state.queue_index_ready = false;
     state.queue_indexing = false;
@@ -742,6 +973,7 @@ void MonkeyMoteClient::load_index_page(uint32_t start, bool require_indexing) {
       }
       state.queue.clear();
       state.queue_total_count = 0;
+      state.active_playlist_count_known = false;
       state.queue_page_start = 0;
       state.queue_indexing = false;
       state.queue_index_ready = false;
@@ -770,6 +1002,7 @@ void MonkeyMoteClient::load_index_page(uint32_t start, bool require_indexing) {
         state.active_playlist_id != resolved_playlist_id) {
       state.queue.clear();
       state.queue_total_count = 0;
+      state.active_playlist_count_known = false;
       state.queue_page_start = 0;
       state.queue_index_ready = false;
       ++state.queue_revision;
@@ -789,6 +1022,8 @@ void MonkeyMoteClient::load_index_page(uint32_t start, bool require_indexing) {
     }
     state.queue = std::move(tracks);
     state.queue_total_count = total;
+    state.active_playlist_track_count = total;
+    state.active_playlist_count_known = true;
     state.queue_page_start = start;
     state.queue_indexing = false;
     state.queue_index_ready = true;
@@ -854,7 +1089,7 @@ void MonkeyMoteClient::search_index_page(uint32_t start, bool require_indexing) 
   });
 }
 
-bool MonkeyMoteClient::process_frame(uint32_t type, const std::vector<uint8_t> &payload) {
+bool MonkeyMoteClient::process_frame(uint32_t type, std::vector<uint8_t> &payload) {
   switch (type) {
   case 5:
     parse_track_info(payload);
@@ -905,6 +1140,11 @@ bool MonkeyMoteClient::process_frame(uint32_t type, const std::vector<uint8_t> &
   case 17:
   case 30:
   case 35:
+    playlist_stream_generation_.fetch_add(1);
+    if (index_building_) {
+      index_superseded_ = true;
+    }
+    model_.update([](Snapshot &state) { state.active_playlist_count_known = false; });
     enqueue({CommandType::request_playlist, -1});
     return true;
   case 13: {
@@ -917,11 +1157,24 @@ bool MonkeyMoteClient::process_frame(uint32_t type, const std::vector<uint8_t> &
     }
     return payload.empty();
   }
+  case 19:
+    if (!parse_library(payload)) {
+      model_.update([](Snapshot &state) {
+        state.library_loading = false;
+        state.library_message = "LIBRARY RESPONSE INVALID";
+        state.status = "LIBRARY RESPONSE INVALID";
+        ++state.library_revision;
+      });
+      return false;
+    }
+    return true;
   case 23:
     send_packet(23);
     return true;
   case 28:
     return payload.size() == 8;
+  case 36:
+    return parse_lyrics(payload);
   case 41:
     parse_playlists(payload);
     return true;
@@ -930,12 +1183,23 @@ bool MonkeyMoteClient::process_frame(uint32_t type, const std::vector<uint8_t> &
     return true;
   case 9:
   case 31:
-  case 50:
-    parse_playlist(payload);
-    return true;
+  case 50: {
+    const bool valid = parse_playlist(payload);
+    if (!valid) {
+      consume_playlist_response(false);
+    }
+    return valid;
+  }
   case 43:
     if (!payload.empty() && payload[0] != 0) {
+      const bool library_play_pending = pending_library_play_row_ >= 0;
+      fail_pending_library_play("LIBRARY SELECTION FAILED");
       model_.update([](Snapshot &state) { state.status = "AIMP COMMAND FAILED"; });
+      // A rejection does not identify which later queue response, if any,
+      // belongs to the already-sent confirmation request. Reset the stream.
+      if (library_play_pending) {
+        close_socket();
+      }
     }
     return true;
   default:
@@ -969,12 +1233,58 @@ bool MonkeyMoteClient::send_packet(uint32_t type, const void *data, size_t size)
   return true;
 }
 
+bool MonkeyMoteClient::send_playlist_request(int32_t playlist_id,
+                                             bool confirms_library_play) {
+  {
+    std::lock_guard lock(playlist_requests_mutex_);
+    if (!confirms_library_play && playlist_id == -1 &&
+        std::any_of(playlist_requests_.begin(), playlist_requests_.end(),
+                    [playlist_id](const PlaylistRequestToken &token) {
+                      return !token.confirms_library_play &&
+                             token.playlist_id == playlist_id;
+                    })) {
+      return true;
+    }
+    if (playlist_requests_.size() >= 8) {
+      ESP_LOGW(kTag, "Playlist response queue is full");
+      return false;
+    }
+  }
+  std::vector<uint8_t> payload{10};
+  append_i32(payload, playlist_id);
+  append_i32(payload, 1);
+  if (!send_packet(4, payload.data(), payload.size())) {
+    return false;
+  }
+  const uint64_t token_id = next_playlist_request_token_++;
+  {
+    std::lock_guard lock(playlist_requests_mutex_);
+    const bool becomes_head = playlist_requests_.empty();
+    playlist_requests_.push_back({.id = token_id,
+                                  .playlist_id = playlist_id,
+                                  .confirms_library_play = confirms_library_play,
+                                  .deadline_us = becomes_head
+                                                     ? esp_timer_get_time() + 15'000'000
+                                                     : 0});
+  }
+  if (confirms_library_play) {
+    pending_library_play_token_ = token_id;
+  }
+  return true;
+}
+
 void MonkeyMoteClient::send_command(const Command &command) {
   std::vector<uint8_t> payload;
   auto simple = [this](uint8_t code, int32_t value) {
     std::vector<uint8_t> bytes{code};
     append_i32(bytes, value);
     return send_packet(7, bytes.data(), bytes.size());
+  };
+  auto invalidate_streamed_playlist = [this]() {
+    playlist_stream_generation_.fetch_add(1);
+    if (index_building_) {
+      index_superseded_ = true;
+    }
   };
   switch (command.type) {
   case CommandType::play:
@@ -1027,33 +1337,51 @@ void MonkeyMoteClient::send_command(const Command &command) {
     send_packet(4, payload.data(), payload.size());
     break;
   case CommandType::request_playlist:
-    payload.push_back(10);
-    append_i32(payload, command.first);
-    append_i32(payload, 1);
-    send_packet(4, payload.data(), payload.size());
+    send_playlist_request(command.first);
     break;
   case CommandType::activate_playlist:
+    if (pending_library_play_row_ >= 0) {
+      fail_pending_library_play("LIBRARY PLAY CANCELLED");
+    }
     queue_filter_active_ = false;
     queue_filter_.clear();
+    invalidate_streamed_playlist();
+    model_.update([](Snapshot &state) { state.active_playlist_count_known = false; });
     simple(12, command.first);
     enqueue({CommandType::request_playlist, command.first});
     break;
   case CommandType::play_index:
+    if (pending_library_play_row_ >= 0) {
+      fail_pending_library_play("LIBRARY PLAY CANCELLED");
+    }
     simple(10, command.first);
     simple(1, 0);
     break;
   case CommandType::delete_index:
+    if (pending_library_play_row_ >= 0) {
+      fail_pending_library_play("LIBRARY PLAY CANCELLED");
+    }
+    invalidate_streamed_playlist();
+    model_.update([](Snapshot &state) { state.active_playlist_count_known = false; });
     append_i32(payload, command.first);
     append_i32(payload, command.second);
     send_packet(32, payload.data(), payload.size());
     enqueue({CommandType::request_playlist, command.first});
     break;
   case CommandType::clear_playlist:
+    if (pending_library_play_row_ >= 0) {
+      fail_pending_library_play("LIBRARY PLAY CANCELLED");
+    }
+    invalidate_streamed_playlist();
+    model_.update([](Snapshot &state) { state.active_playlist_count_known = false; });
     append_i32(payload, command.first);
     send_packet(20, payload.data(), payload.size());
     enqueue({CommandType::request_playlist, command.first});
     break;
   case CommandType::delete_playlist:
+    if (pending_library_play_row_ >= 0) {
+      fail_pending_library_play("LIBRARY PLAY CANCELLED");
+    }
     simple(16, command.first);
     enqueue({CommandType::request_playlists, command.second});
     break;
@@ -1095,12 +1423,544 @@ void MonkeyMoteClient::send_command(const Command &command) {
       load_index_page(0);
     }
     break;
+  case CommandType::request_library_root: {
+    static constexpr std::array<uint8_t, 4> kSubcommands{7, 16, 9, 12};
+    static constexpr std::array<const char *, 4> kTitles{"ARTISTS", "ALBUMS", "GENRES",
+                                                        "COMPOSERS"};
+    const size_t category = static_cast<size_t>(std::clamp<int32_t>(command.first, 0, 3));
+    library_request_id_ = library_request_id_ == UINT32_MAX ? 1 : library_request_id_ + 1;
+    pending_library_path_ = {};
+    pending_library_title_ = kTitles[category];
+    pending_library_search_ = false;
+    payload.push_back(kSubcommands[category]);
+    append_u32(payload, library_request_id_);
+    model_.update([title = pending_library_title_](Snapshot &state) {
+      state.library_loading = true;
+      state.library_items = std::make_shared<const LibraryItems>();
+      state.library_total_count = 0;
+      state.library_title = title;
+      state.library_message.clear();
+      state.status = "LOADING LIBRARY";
+      ++state.library_revision;
+    });
+    if (!send_packet(4, payload.data(), payload.size())) {
+      library_request_deadline_us_ = 0;
+      model_.update([](Snapshot &state) {
+        state.library_loading = false;
+        state.library_message = "LIBRARY REQUEST FAILED";
+        state.status = "LIBRARY REQUEST FAILED";
+        ++state.library_revision;
+      });
+    } else {
+      library_request_deadline_us_ = esp_timer_get_time() + 15'000'000;
+    }
+    break;
   }
+  case CommandType::browse_library:
+    request_library(command.library_path, command.text);
+    break;
+  case CommandType::search_library: {
+    const size_t query_size = std::min<size_t>(command.text.size(), 128);
+    if (query_size == 0) {
+      break;
+    }
+    library_request_id_ = library_request_id_ == UINT32_MAX ? 1 : library_request_id_ + 1;
+    pending_library_path_ = {};
+    pending_library_title_ = "SEARCH: " + command.text.substr(0, query_size);
+    pending_library_search_ = true;
+    append_u32(payload, library_request_id_);
+    payload.insert(payload.end(), command.text.begin(), command.text.begin() + query_size);
+    payload.push_back(0);
+    model_.update([title = pending_library_title_](Snapshot &state) {
+      state.library_loading = true;
+      state.library_items = std::make_shared<const LibraryItems>();
+      state.library_total_count = 0;
+      state.library_title = title;
+      state.library_message.clear();
+      state.status = "SEARCHING LIBRARY";
+      ++state.library_revision;
+    });
+    if (!send_packet(24, payload.data(), payload.size())) {
+      library_request_deadline_us_ = 0;
+      model_.update([](Snapshot &state) {
+        state.library_loading = false;
+        state.library_message = "LIBRARY SEARCH FAILED";
+        state.status = "LIBRARY SEARCH FAILED";
+        ++state.library_revision;
+      });
+    } else {
+      library_request_deadline_us_ = esp_timer_get_time() + 15'000'000;
+    }
+    break;
+  }
+  case CommandType::play_library_item:
+    select_library_item(command, true);
+    break;
+  case CommandType::enqueue_library_item:
+    select_library_item(command, false);
+    break;
+  case CommandType::request_lyrics:
+    if (cover_track_key_.empty()) {
+      model_.update([](Snapshot &state) {
+        state.lyrics_state = LyricsState::unavailable;
+        state.lyrics = std::make_shared<const std::string>("No track is playing.");
+        ++state.lyrics_revision;
+      });
+      break;
+    }
+    payload.push_back(11);
+    append_i32(payload, 0);
+    model_.update([key = cover_track_key_](Snapshot &state) {
+      state.lyrics_state = LyricsState::loading;
+      state.lyrics = std::make_shared<const std::string>();
+      state.lyrics_track_key = key;
+      ++state.lyrics_revision;
+    });
+    if (lyrics_requests_.size() >= 32 ||
+        !send_packet(4, payload.data(), payload.size())) {
+      model_.update([](Snapshot &state) {
+        state.lyrics_state = LyricsState::failed;
+        state.lyrics = std::make_shared<const std::string>("Lyrics request failed.");
+        ++state.lyrics_revision;
+      });
+    } else {
+      lyrics_requests_.push_back(
+          {.track_key = cover_track_key_,
+           .deadline_us = esp_timer_get_time() + 15'000'000});
+    }
+    break;
+  case CommandType::streamed_playlist_result: {
+    PlaylistRequestToken token{.id = command.request_token,
+                               .playlist_id = command.first,
+                               .confirms_library_play = true};
+    const bool valid = command.text == "valid" && command.second >= 0 &&
+                       command.stream_generation == playlist_stream_generation_.load();
+    finish_playlist_response(token, valid, command.first,
+                             valid ? static_cast<uint32_t>(command.second) : 0);
+    break;
+  }
+  }
+}
+
+void MonkeyMoteClient::request_library(const LibraryPath &path, std::string title) {
+  const uint32_t flags = library_path_flags(path);
+  if (flags == 0) {
+    return;
+  }
+  library_request_id_ = library_request_id_ == UINT32_MAX ? 1 : library_request_id_ + 1;
+  pending_library_path_ = path;
+  pending_library_title_ = title.empty() ? "BROWSING" : std::move(title);
+  pending_library_search_ = false;
+  std::vector<uint8_t> payload;
+  append_u32(payload, library_request_id_);
+  append_u32(payload, flags);
+  append_optional_string(payload, path.genre);
+  append_optional_string(payload, path.artist);
+  append_optional_string(payload, path.album);
+  append_optional_string(payload, path.composer);
+  model_.update([path, title = pending_library_title_](Snapshot &state) {
+    state.library_loading = true;
+    state.library_items = std::make_shared<const LibraryItems>();
+    state.library_total_count = 0;
+    state.library_path = path;
+    state.library_title = title;
+    state.library_message.clear();
+    state.status = "BROWSING LIBRARY";
+    ++state.library_revision;
+  });
+  if (!send_packet(39, payload.data(), payload.size())) {
+    library_request_deadline_us_ = 0;
+    model_.update([](Snapshot &state) {
+      state.library_loading = false;
+      state.library_message = "LIBRARY BROWSE FAILED";
+      state.status = "LIBRARY BROWSE FAILED";
+      ++state.library_revision;
+    });
+  } else {
+    library_request_deadline_us_ = esp_timer_get_time() + 15'000'000;
+  }
+}
+
+void MonkeyMoteClient::select_library_item(const Command &command, bool play) {
+  const Snapshot current = model_.copy();
+  const int32_t destination = current.active_playlist_id;
+  if (pending_library_play_row_ >= 0) {
+    model_.update([](Snapshot &state) { state.status = "WAIT FOR LIBRARY ADD"; });
+    return;
+  }
+  if (play && (!current.active_playlist_count_known ||
+               current.active_playlist_track_count > static_cast<uint32_t>(INT32_MAX))) {
+    model_.update([](Snapshot &state) { state.status = "REFRESH PLAYLIST FIRST"; });
+    return;
+  }
+  const int32_t appended_row =
+      static_cast<int32_t>(current.active_playlist_track_count);
+  const auto invalidate_streamed_playlist = [this]() {
+    playlist_stream_generation_.fetch_add(1);
+    if (index_building_) {
+      index_superseded_ = true;
+    }
+  };
+  const auto confirm_before_play = [this, destination, appended_row]() {
+    pending_library_play_row_ = appended_row;
+    pending_library_play_destination_ = destination;
+    pending_library_play_deadline_us_ = esp_timer_get_time() + 15'000'000;
+    if (!send_playlist_request(destination, true)) {
+      fail_pending_library_play("LIBRARY PLAY CONFIRM FAILED");
+      close_socket();
+      return false;
+    }
+    return true;
+  };
+  if (destination < 0) {
+    model_.update([](Snapshot &state) { state.status = "NO ACTIVE PLAYLIST"; });
+    return;
+  }
+  if (command.library_path.empty() && command.second > 0 && command.first >= 0) {
+    std::vector<uint8_t> payload;
+    append_i32(payload, command.second);
+    append_i32(payload, destination);
+    append_i32(payload, command.first);
+    append_i32(payload, -2);
+    append_u16(payload, 0);
+    const bool sent = send_packet(44, payload.data(), payload.size());
+    if (sent) {
+      invalidate_streamed_playlist();
+    }
+    const bool confirmation_started = !play || !sent || confirm_before_play();
+    if (sent && !play) {
+      send_playlist_request(destination);
+    }
+    model_.update([play, sent, confirmation_started](Snapshot &state) {
+      if (sent) {
+        state.active_playlist_count_known = false;
+      }
+      state.library_play_pending = sent && play && confirmation_started;
+      state.status = !sent                       ? "LIBRARY SELECTION FAILED"
+                     : !confirmation_started     ? "LIBRARY PLAY CONFIRM FAILED"
+                     : play                      ? "ADDING SEARCH RESULT"
+                                                 : "ENQUEUED SEARCH RESULT";
+    });
+    return;
+  }
+  const uint32_t path_flags = library_path_flags(command.library_path);
+  if (path_flags == 0) {
+    return;
+  }
+  std::vector<uint8_t> payload;
+  append_i32(payload, destination);
+  append_u32(payload, path_flags);
+  append_i32(payload, command.first);
+  append_optional_string(payload, command.library_path.genre);
+  append_optional_string(payload, command.library_path.artist);
+  append_optional_string(payload, command.library_path.album);
+  append_optional_string(payload, command.library_path.composer);
+  const bool sent = send_packet(40, payload.data(), payload.size());
+  if (sent) {
+    invalidate_streamed_playlist();
+  }
+  const bool confirmation_started = !play || !sent || confirm_before_play();
+  if (sent && !play) {
+    send_playlist_request(destination);
+  }
+  model_.update([play, sent, confirmation_started](Snapshot &state) {
+    if (sent) {
+      state.active_playlist_count_known = false;
+    }
+    state.library_play_pending = sent && play && confirmation_started;
+    state.status = !sent                   ? "LIBRARY SELECTION FAILED"
+                   : !confirmation_started ? "LIBRARY PLAY CONFIRM FAILED"
+                   : play                  ? "ADDING LIBRARY ITEM"
+                                           : "ENQUEUED LIBRARY ITEM";
+  });
+}
+
+void MonkeyMoteClient::complete_pending_library_play() {
+  if (pending_library_play_row_ < 0) {
+    return;
+  }
+  const int32_t row = pending_library_play_row_;
+  pending_library_play_row_ = -1;
+  pending_library_play_destination_ = -1;
+  pending_library_play_deadline_us_ = 0;
+  pending_library_play_token_ = 0;
+  std::vector<uint8_t> body{10};
+  append_i32(body, row);
+  const bool selected = send_packet(7, body.data(), body.size());
+  body.assign(1, 1);
+  append_i32(body, 0);
+  const bool started = selected && send_packet(7, body.data(), body.size());
+  model_.update([started](Snapshot &state) {
+    state.library_play_pending = false;
+    state.status = started ? "PLAYING LIBRARY ITEM" : "LIBRARY PLAY FAILED";
+  });
+}
+
+void MonkeyMoteClient::fail_pending_library_play(const char *message) {
+  if (pending_library_play_row_ < 0) {
+    return;
+  }
+  pending_library_play_row_ = -1;
+  pending_library_play_destination_ = -1;
+  pending_library_play_deadline_us_ = 0;
+  pending_library_play_token_ = 0;
+  model_.update([message = std::string(message)](Snapshot &state) {
+    state.active_playlist_count_known = false;
+    state.library_play_pending = false;
+    state.status = message;
+  });
+}
+
+std::optional<MonkeyMoteClient::PlaylistRequestToken>
+MonkeyMoteClient::take_playlist_response_token() {
+  std::lock_guard lock(playlist_requests_mutex_);
+  if (playlist_requests_.empty()) {
+    return std::nullopt;
+  }
+  PlaylistRequestToken token = playlist_requests_.front();
+  playlist_requests_.pop_front();
+  if (!playlist_requests_.empty()) {
+    playlist_requests_.front().deadline_us = esp_timer_get_time() + 15'000'000;
+  }
+  return token;
+}
+
+void MonkeyMoteClient::finish_playlist_response(
+    const std::optional<PlaylistRequestToken> &token, bool valid,
+    int32_t resolved_playlist_id, uint32_t count) {
+  if (!token || !token->confirms_library_play || pending_library_play_row_ < 0 ||
+      pending_library_play_token_ != token->id) {
+    return;
+  }
+  const bool appended_row_confirmed =
+      valid && resolved_playlist_id == pending_library_play_destination_ &&
+      count > static_cast<uint32_t>(pending_library_play_row_);
+  if (!appended_row_confirmed) {
+    const int32_t destination = pending_library_play_destination_;
+    fail_pending_library_play("LIBRARY APPEND NOT CONFIRMED");
+    // The failed response token has already been consumed, so a fresh
+    // authoritative request cannot be mis-correlated with it.
+    if (destination >= 0 && socket_ >= 0) {
+      enqueue({CommandType::request_playlist, destination});
+    }
+    return;
+  }
+  complete_pending_library_play();
+}
+
+void MonkeyMoteClient::consume_playlist_response(bool valid,
+                                                 int32_t resolved_playlist_id,
+                                                 uint32_t count) {
+  playlist_stream_generation_.fetch_add(1);
+  const auto token = take_playlist_response_token();
+  finish_playlist_response(token, valid, resolved_playlist_id, count);
 }
 
 void MonkeyMoteClient::request_initial_state() {
   enqueue({CommandType::request_playlists, -1});
   enqueue({CommandType::request_playlist, -1});
+}
+
+bool MonkeyMoteClient::parse_library(const std::vector<uint8_t> &payload) {
+  constexpr uint32_t kMaxRecords = 100'000;
+  constexpr size_t kMaxRetainedRecords = 1'000;
+  constexpr size_t kMaxRetainedText = 128 * 1024;
+  if (payload.size() < 9) {
+    return false;
+  }
+  const uint32_t request_id = read_u32(payload.data());
+  if (request_id != library_request_id_) {
+    ESP_LOGI(kTag, "Ignoring stale library response id=%" PRIu32, request_id);
+    return true;
+  }
+  const uint32_t count = read_u32(payload.data() + 4);
+  const uint8_t wire_kind = payload[8];
+  if (count > kMaxRecords || (wire_kind != 0 && wire_kind != 2 && wire_kind != 4 &&
+                             wire_kind != 6 && wire_kind != 7 && wire_kind != 8)) {
+    return false;
+  }
+
+  size_t offset = 9;
+  size_t retained_text = 0;
+  bool truncated = false;
+  LibraryItems items;
+  // Bound the initial allocation by both the retention cap and the minimum
+  // number of bytes required to encode each declared record. The count is
+  // untrusted and must not request a large contiguous allocation by itself.
+  const size_t min_record_size = wire_kind == 6                ? 14
+                                 : wire_kind == 7 || wire_kind == 8 ? 23
+                                                                    : 1;
+  items.reserve(std::min<size_t>(
+      {count, kMaxRetainedRecords, (payload.size() - 9) / min_record_size}));
+  auto retain = [&](LibraryItem item) {
+    const size_t text_size = item.title.size() + item.subtitle.size() +
+                             item.path.genre.size() + item.path.artist.size() +
+                             item.path.album.size() + item.path.composer.size();
+    if (truncated || items.size() >= kMaxRetainedRecords ||
+        text_size > kMaxRetainedText - retained_text) {
+      truncated = true;
+      return;
+    }
+    retained_text += text_size;
+    items.push_back(std::move(item));
+  };
+
+  for (uint32_t index = 0; index < count; ++index) {
+    LibraryItem item;
+    item.selection_index = wire_kind == 7 || wire_kind == 8
+                               ? static_cast<int32_t>(index)
+                               : -1;
+    item.selection_request_id = pending_library_search_ ? request_id : 0;
+    item.path = pending_library_path_;
+    if (wire_kind == 0 || wire_kind == 2 || wire_kind == 4) {
+      if (!read_bounded_cstring(payload, offset, item.title)) {
+        return false;
+      }
+      if (wire_kind == 0) {
+        item.path.artist = item.title;
+      } else if (wire_kind == 2) {
+        item.path.genre = item.title;
+      } else {
+        item.path.composer = item.title;
+      }
+      retain(std::move(item));
+      continue;
+    }
+
+    if (wire_kind == 6) {
+      if (offset > payload.size() || payload.size() - offset < 12) {
+        return false;
+      }
+      const uint16_t album_length = read_u16(payload.data() + offset);
+      const uint16_t artist_length = read_u16(payload.data() + offset + 2);
+      item.year = read_u16(payload.data() + offset + 4);
+      const uint32_t record_size = read_u32(payload.data() + offset + 8);
+      offset += 12;
+      if (record_size > payload.size() - offset) {
+        return false;
+      }
+      const size_t record_end = offset + record_size;
+      if (!read_string_field(payload, offset, record_end, album_length, item.title) ||
+          !read_string_field(payload, offset, record_end, artist_length, item.subtitle)) {
+        return false;
+      }
+      offset = record_end;
+      item.kind = LibraryItemKind::album;
+      item.path.album = item.title;
+      if (!item.subtitle.empty()) {
+        item.path.artist = item.subtitle;
+      }
+      retain(std::move(item));
+      continue;
+    }
+
+    if (offset > payload.size() || payload.size() - offset < 20) {
+      return false;
+    }
+    const uint16_t artist_length = read_u16(payload.data() + offset);
+    const uint16_t title_length = read_u16(payload.data() + offset + 2);
+    const uint16_t album_length = read_u16(payload.data() + offset + 4);
+    item.year = read_u16(payload.data() + offset + 6);
+    const uint32_t record_size = read_u32(payload.data() + offset + 8);
+    item.duration_ms = read_i32(payload.data() + offset + 12);
+    offset += 20;
+    if (record_size > payload.size() - offset) {
+      return false;
+    }
+    const size_t record_end = offset + record_size;
+    std::string artist;
+    std::string album;
+    if (!read_string_field(payload, offset, record_end, artist_length, artist) ||
+        !read_string_field(payload, offset, record_end, title_length, item.title) ||
+        !read_string_field(payload, offset, record_end, album_length, album)) {
+      return false;
+    }
+    offset = record_end;
+    item.kind = LibraryItemKind::track;
+    item.subtitle = artist.empty() ? album : artist;
+    // Browsed rows are selected by their parent path plus result index (type
+    // 40). Search rows retain no path and use their request ID plus result
+    // index (type 44). The display metadata must not overwrite either key.
+    retain(std::move(item));
+  }
+  if (offset != payload.size()) {
+    return false;
+  }
+
+  auto published_items = std::make_shared<const LibraryItems>(std::move(items));
+  library_request_deadline_us_ = 0;
+  model_.update([items = std::move(published_items), path = pending_library_path_,
+                 title = pending_library_title_, count, truncated](Snapshot &state) mutable {
+    state.library_items = std::move(items);
+    state.library_path = std::move(path);
+    state.library_title = std::move(title);
+    state.library_total_count = count;
+    state.library_loading = false;
+    state.library_truncated = truncated || state.library_items->size() != count;
+    state.library_message.clear();
+    state.status = count == 0 ? "NO LIBRARY MATCHES" : "LIBRARY READY";
+    ++state.library_revision;
+  });
+  return true;
+}
+
+bool MonkeyMoteClient::parse_lyrics(const std::vector<uint8_t> &payload) {
+  constexpr uint32_t kMaxLyricsBytes = 24 * 1024;
+  const std::string request_track_key = take_lyrics_request();
+  if (request_track_key.empty()) {
+    ESP_LOGW(kTag, "Ignoring lyrics reply without a matching request");
+    return true;
+  }
+  if (payload.size() < 20) {
+    if (request_track_key == cover_track_key_) {
+      model_.update([key = request_track_key](Snapshot &state) {
+        state.lyrics_state = LyricsState::failed;
+        state.lyrics = std::make_shared<const std::string>("Lyrics response was invalid.");
+        state.lyrics_track_key = key;
+        ++state.lyrics_revision;
+      });
+    }
+    return false;
+  }
+  const uint32_t length = read_u32(payload.data());
+  if (length != payload.size() - 20) {
+    if (request_track_key == cover_track_key_) {
+      model_.update([key = request_track_key](Snapshot &state) {
+        state.lyrics_state = LyricsState::failed;
+        state.lyrics = std::make_shared<const std::string>("Lyrics response was invalid.");
+        state.lyrics_track_key = key;
+        ++state.lyrics_revision;
+      });
+    }
+    return false;
+  }
+  if (request_track_key != cover_track_key_) {
+    return true;
+  }
+  if (length > kMaxLyricsBytes) {
+    model_.update([key = request_track_key](Snapshot &state) {
+      state.lyrics_state = LyricsState::failed;
+      state.lyrics = std::make_shared<const std::string>(
+          "Lyrics exceed the 24 KiB display limit.");
+      state.lyrics_track_key = key;
+      ++state.lyrics_revision;
+    });
+    return true;
+  }
+  std::string lyrics(reinterpret_cast<const char *>(payload.data() + 20), length);
+  std::replace(lyrics.begin(), lyrics.end(), '\0', ' ');
+  const bool empty = lyrics.empty();
+  auto published_lyrics = std::make_shared<const std::string>(
+      empty ? "No lyrics are available for this track." : std::move(lyrics));
+  model_.update([key = request_track_key, empty,
+                 lyrics = std::move(published_lyrics)](
+                    Snapshot &state) mutable {
+    state.lyrics_state = empty ? LyricsState::unavailable : LyricsState::ready;
+    state.lyrics = std::move(lyrics);
+    state.lyrics_track_key = key;
+    ++state.lyrics_revision;
+  });
+  return true;
 }
 
 void MonkeyMoteClient::parse_track_info(const std::vector<uint8_t> &payload) {
@@ -1127,9 +1987,15 @@ void MonkeyMoteClient::parse_track_info(const std::vector<uint8_t> &payload) {
   const std::string track_key = artwork_track_key(track);
   const bool is_now_playing = (flags & 2) != 0 || track.index >= 0;
   model_.update(
-      [track = std::move(track), is_now_playing](Snapshot &state) mutable {
+      [track = std::move(track), is_now_playing, track_key](Snapshot &state) mutable {
         if (is_now_playing) {
           state.now_playing = std::move(track);
+          if (state.lyrics_track_key != track_key) {
+            state.lyrics_state = LyricsState::none;
+            state.lyrics = std::make_shared<const std::string>();
+            state.lyrics_track_key = track_key;
+            ++state.lyrics_revision;
+          }
         }
       });
   if (is_now_playing && track_key != cover_track_key_) {
@@ -1216,9 +2082,9 @@ void MonkeyMoteClient::parse_playlists(const std::vector<uint8_t> &payload) {
   });
 }
 
-void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
+bool MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
   if (payload.size() < 11) {
-    return;
+    return false;
   }
   const uint32_t count = read_u32(payload.data());
   const int32_t playlist_id = read_i32(payload.data() + 4);
@@ -1226,17 +2092,32 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
   const uint8_t flags = payload[10];
   size_t offset = 11;
   if (offset + name_length + 1 > payload.size()) {
-    return;
+    return false;
   }
   std::string name(reinterpret_cast<const char *>(payload.data() + offset), name_length);
   offset += name_length + 1;
+  int32_t resolved_response_id = model_.read([&](const Snapshot &state) {
+    return resolve_playlist_id(state, playlist_id, name, count);
+  });
+  // AIMP can encode an explicitly requested active playlist as -1. Only use
+  // the destination from the exact FIFO request token paired with this reply.
+  int32_t requested_playlist_id = -1;
+  {
+    std::lock_guard lock(playlist_requests_mutex_);
+    if (!playlist_requests_.empty()) {
+      requested_playlist_id = playlist_requests_.front().playlist_id;
+    }
+  }
+  if (resolved_response_id < 0 && requested_playlist_id >= 0) {
+    resolved_response_id = requested_playlist_id;
+  }
   if (count > 10000) {
     // Oversized queues are not retained, but still validate the complete
     // record structure before allowing an untrusted frame to alter the model.
     size_t validation_offset = offset;
     for (uint32_t i = 0; i < count; ++i) {
       if (validation_offset > payload.size() || payload.size() - validation_offset < 32) {
-        return;
+        return false;
       }
       const std::array<uint16_t, 4> lengths{
           read_u16(payload.data() + validation_offset + 24),
@@ -1248,19 +2129,21 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
         const size_t field_size = static_cast<size_t>(length) + 1;
         if (validation_offset > payload.size() ||
             field_size > payload.size() - validation_offset) {
-          return;
+          return false;
         }
         validation_offset += field_size;
       }
     }
     queue_filter_active_ = false;
     queue_filter_.clear();
-    model_.update([playlist_id, count, name = std::move(name)](Snapshot &state) mutable {
-      const int32_t resolved_playlist_id = resolve_playlist_id(state, playlist_id, name, count);
+    model_.update([resolved_playlist_id = resolved_response_id, count,
+                   name = std::move(name)](Snapshot &state) mutable {
       state.active_playlist_id = resolved_playlist_id;
       state.active_playlist_name = name.empty() ? "PLAYLIST TOO LARGE" : std::move(name);
       state.queue.clear();
       state.queue_total_count = 0;
+      state.active_playlist_track_count = count;
+      state.active_playlist_count_known = true;
       state.queue_page_start = 0;
       state.queue_index_ready = false;
       state.queue_indexing = false;
@@ -1278,7 +2161,8 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
       }
       state.status = "PLAYLIST TOO LARGE";
     });
-    return;
+    consume_playlist_response(true, resolved_response_id, count);
+    return true;
   }
   queue_filter_active_ = false;
   queue_filter_.clear();
@@ -1286,7 +2170,7 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
   tracks.reserve(std::min<uint32_t>(count, 1000));
   for (uint32_t i = 0; i < count; ++i) {
     if (offset + 32 > payload.size()) {
-      return;
+      return false;
     }
     Track track;
     track.index = read_i32(payload.data() + offset);
@@ -1302,7 +2186,7 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
     std::array<std::string *, 4> fields{&track.title, &track.artist, &track.album, &track.codec};
     for (size_t field = 0; field < fields.size(); ++field) {
       if (offset + lengths[field] + 1 > payload.size()) {
-        return;
+        return false;
       }
       fields[field]->assign(reinterpret_cast<const char *>(payload.data() + offset), lengths[field]);
       offset += lengths[field] + 1;
@@ -1311,10 +2195,9 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
       tracks.push_back(std::move(track));
     }
   }
-  model_.update([playlist_id, name = std::move(name), flags, count,
+  model_.update([resolved_playlist_id = resolved_response_id, name = std::move(name), flags, count,
                  tracks = std::move(tracks)](Snapshot &state) mutable {
     const bool replaced_index_build = state.queue_indexing;
-    const int32_t resolved_playlist_id = resolve_playlist_id(state, playlist_id, name, count);
     state.active_playlist_id = resolved_playlist_id;
     if (!name.empty()) {
       state.active_playlist_name = std::move(name);
@@ -1334,6 +2217,8 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
       ++state.queue_revision;
     }
     state.queue_total_count = count;
+    state.active_playlist_track_count = count;
+    state.active_playlist_count_known = true;
     state.queue_page_start = 0;
     state.queue_index_ready = false;
     state.queue_indexing = false;
@@ -1353,28 +2238,90 @@ void MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
     }
     (void)flags;
   });
+  consume_playlist_response(true, resolved_response_id, count);
+  return true;
 }
 
-void MonkeyMoteClient::parse_compressed(const std::vector<uint8_t> &payload) {
+void MonkeyMoteClient::parse_compressed(std::vector<uint8_t> &payload) {
+  auto reset_unclassifiable_playlist_correlation = [this]() {
+    bool pending = false;
+    {
+      std::lock_guard lock(playlist_requests_mutex_);
+      pending = !playlist_requests_.empty();
+    }
+    if (pending) {
+      model_.update([](Snapshot &state) {
+        state.active_playlist_count_known = false;
+        state.status = "PLAYLIST RESPONSE INVALID";
+      });
+      close_socket();
+    }
+  };
   if (payload.size() < 10) {
+    if (payload.size() >= 8) {
+      const uint32_t malformed_inner_type = read_u32(payload.data() + 4);
+      if (malformed_inner_type == 36) {
+        reject_lyrics_reply("Lyrics response was invalid.");
+      } else if (malformed_inner_type == 8 || malformed_inner_type == 13) {
+        reject_cover_reply();
+      } else if (malformed_inner_type == 19) {
+        library_request_deadline_us_ = 0;
+        model_.update([](Snapshot &state) {
+          state.library_loading = false;
+          state.library_message = "LIBRARY RESPONSE INVALID";
+          state.status = "LIBRARY RESPONSE INVALID";
+          ++state.library_revision;
+        });
+      } else if (malformed_inner_type == 9 || malformed_inner_type == 31 ||
+                 malformed_inner_type == 50) {
+        consume_playlist_response(false);
+      } else {
+        reset_unclassifiable_playlist_correlation();
+      }
+    } else {
+      reset_unclassifiable_playlist_correlation();
+    }
     return;
   }
   const uint32_t uncompressed_size = read_u32(payload.data());
   const uint32_t inner_type = read_u32(payload.data() + 4);
   if (inner_type == 45) {
     ESP_LOGW(kTag, "Nested compressed packet rejected");
+    reset_unclassifiable_playlist_correlation();
     return;
   }
-  if (uncompressed_size > kMaxPayload) {
+  if (uncompressed_size > kMaxPayload ||
+      (inner_type == 36 && uncompressed_size > 24 * 1024 + 20)) {
     if (inner_type == 8 || inner_type == 13) {
       reject_cover_reply();
       return;
     }
+    if (inner_type == 19) {
+      library_request_deadline_us_ = 0;
+      model_.update([](Snapshot &state) {
+        state.library_loading = false;
+        state.library_items = std::make_shared<const LibraryItems>();
+        state.library_total_count = 0;
+        state.library_truncated = true;
+        state.library_message = "LIBRARY RESULT TOO LARGE";
+        state.status = "LIBRARY RESULT TOO LARGE";
+        ++state.library_revision;
+      });
+      return;
+    }
+    if (inner_type == 36) {
+      reject_lyrics_reply("Lyrics exceed the 24 KiB display limit.");
+      return;
+    }
     queue_filter_active_ = false;
     queue_filter_.clear();
+    if (inner_type == 9 || inner_type == 31 || inner_type == 50) {
+      consume_playlist_response(false);
+    }
     model_.update([](Snapshot &state) {
       state.queue.clear();
       state.queue_total_count = 0;
+      state.active_playlist_count_known = false;
       state.queue_page_start = 0;
       state.queue_index_ready = false;
       state.queue_indexing = false;
@@ -1392,9 +2339,22 @@ void MonkeyMoteClient::parse_compressed(const std::vector<uint8_t> &payload) {
     ESP_LOGW(kTag, "LZ4 payload failed to decompress");
     if (inner_type == 8 || inner_type == 13) {
       reject_cover_reply();
+    } else if (inner_type == 19) {
+      library_request_deadline_us_ = 0;
+      model_.update([](Snapshot &state) {
+        state.library_loading = false;
+        state.library_message = "LIBRARY RESPONSE INVALID";
+        state.status = "LIBRARY RESPONSE INVALID";
+        ++state.library_revision;
+      });
+    } else if (inner_type == 36) {
+      reject_lyrics_reply("Lyrics response was invalid.");
+    } else if (inner_type == 9 || inner_type == 31 || inner_type == 50) {
+      consume_playlist_response(false);
     }
     return;
   }
+  std::vector<uint8_t>().swap(payload);
   process_frame(inner_type, uncompressed);
 }
 
@@ -1412,6 +2372,74 @@ void MonkeyMoteClient::reject_cover_reply() {
   if (!track_key.empty() && track_key == cover_track_key_) {
     artwork_decoder_.mark_unavailable(track_key);
   }
+}
+
+std::string MonkeyMoteClient::take_lyrics_request() {
+  if (lyrics_requests_.empty()) {
+    return {};
+  }
+  std::string track_key = std::move(lyrics_requests_.front().track_key);
+  lyrics_requests_.pop_front();
+  return track_key;
+}
+
+void MonkeyMoteClient::expire_requests(int64_t now_us) {
+  bool playlist_response_timed_out = false;
+  {
+    std::lock_guard lock(playlist_requests_mutex_);
+    playlist_response_timed_out =
+        !playlist_requests_.empty() &&
+        now_us >= playlist_requests_.front().deadline_us;
+  }
+  if (playlist_response_timed_out) {
+    model_.update([](Snapshot &state) {
+      state.active_playlist_count_known = false;
+      state.status = "PLAYLIST RESPONSE TIMED OUT";
+    });
+    // Never drop only the head token: without response IDs that would shift
+    // every subsequent response. Reconnect to reset the complete correlation.
+    close_socket();
+    return;
+  }
+  if (library_request_deadline_us_ != 0 && now_us >= library_request_deadline_us_) {
+    library_request_deadline_us_ = 0;
+    model_.update([](Snapshot &state) {
+      if (!state.library_loading) {
+        return;
+      }
+      state.library_loading = false;
+      state.library_message = "LIBRARY REQUEST TIMED OUT";
+      state.status = "LIBRARY REQUEST TIMED OUT";
+      ++state.library_revision;
+    });
+  }
+  if (!lyrics_requests_.empty() &&
+      now_us >= lyrics_requests_.front().deadline_us) {
+    // Type 36 has no request identifier. Clear the FIFO as a unit so one
+    // missing response cannot permanently shift every later correlation.
+    lyrics_requests_.clear();
+    model_.update([](Snapshot &state) {
+      if (state.lyrics_state == LyricsState::loading) {
+        state.lyrics_state = LyricsState::failed;
+        state.lyrics =
+            std::make_shared<const std::string>("Lyrics request timed out.");
+        ++state.lyrics_revision;
+      }
+    });
+  }
+}
+
+void MonkeyMoteClient::reject_lyrics_reply(const char *message) {
+  const std::string track_key = take_lyrics_request();
+  if (track_key.empty() || track_key != cover_track_key_) {
+    return;
+  }
+  model_.update([track_key, message = std::string(message)](Snapshot &state) {
+    state.lyrics_state = LyricsState::failed;
+    state.lyrics = std::make_shared<const std::string>(message);
+    state.lyrics_track_key = track_key;
+    ++state.lyrics_revision;
+  });
 }
 
 } // namespace musicremote

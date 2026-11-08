@@ -25,6 +25,7 @@ public:
                       uint32_t &stride);
   bool select_page_for_diagnostics(uint8_t page);
   bool select_overlay_for_diagnostics(uint8_t overlay);
+  bool select_library_category_for_diagnostics(uint8_t category);
 
 private:
   enum class Page { now, queue, playlists, more };
@@ -33,6 +34,7 @@ private:
   static void event_handler(lv_event_t *event);
   static void queue_row_handler(lv_event_t *event);
   static void playlist_row_handler(lv_event_t *event);
+  static void library_row_handler(lv_event_t *event);
 
   void run();
   void create_ui();
@@ -43,6 +45,8 @@ private:
   void create_playlists_page();
   void create_more_page();
   void create_filter_overlays();
+  void create_library_overlay();
+  void create_lyrics_overlay();
   void show_page(Page page);
   void update(const Snapshot &snapshot);
   void update_timeline(int64_t now_us, bool force = false);
@@ -50,6 +54,9 @@ private:
   void append_queue_rows(const Snapshot &snapshot);
   void update_queue_selection(const Snapshot &snapshot);
   void rebuild_playlists(const Snapshot &snapshot);
+  void show_library_root();
+  void rebuild_library(const Snapshot &snapshot);
+  void update_lyrics(const Snapshot &snapshot);
   void handle_event(lv_event_t *event);
 
   lv_obj_t *make_button(lv_obj_t *parent, const char *text, int width, int height);
@@ -68,6 +75,11 @@ private:
   uint64_t rendered_queue_revision_{UINT64_MAX};
   uint64_t rendered_playlist_revision_{UINT64_MAX};
   uint64_t rendered_artwork_revision_{UINT64_MAX};
+  uint64_t rendered_library_revision_{UINT64_MAX};
+  uint64_t rendered_lyrics_revision_{UINT64_MAX};
+  ConnectionState rendered_lyrics_connection_{ConnectionState::offline};
+  uint64_t rendered_lyrics_connection_generation_{UINT64_MAX};
+  std::string rendered_lyrics_track_key_;
   size_t queue_build_index_{0};
   size_t queue_build_limit_{0};
   size_t queue_page_start_{0};
@@ -84,6 +96,12 @@ private:
   bool suppress_play_click_{false};
   bool suppress_queue_click_{false};
   bool suppress_playlist_click_{false};
+  bool suppress_library_click_{false};
+  bool library_root_visible_{true};
+  enum class SearchContext { queue, library };
+  SearchContext search_context_{SearchContext::queue};
+  size_t library_page_start_{0};
+  std::string lyrics_requested_key_;
   std::vector<int32_t> playlist_folder_ids_;
   std::vector<std::string> playlist_folder_names_;
 
@@ -122,6 +140,8 @@ private:
   lv_obj_t *more_status_{nullptr};
   lv_obj_t *more_shuffle_{nullptr};
   lv_obj_t *more_repeat_{nullptr};
+  lv_obj_t *library_button_{nullptr};
+  lv_obj_t *lyrics_button_{nullptr};
   lv_obj_t *filter_overlay_{nullptr};
   lv_obj_t *filter_search_button_{nullptr};
   lv_obj_t *filter_close_button_{nullptr};
@@ -129,6 +149,17 @@ private:
   lv_obj_t *search_overlay_{nullptr};
   lv_obj_t *search_textarea_{nullptr};
   lv_obj_t *search_keyboard_{nullptr};
+  lv_obj_t *library_overlay_{nullptr};
+  lv_obj_t *library_title_{nullptr};
+  lv_obj_t *library_count_{nullptr};
+  lv_obj_t *library_list_{nullptr};
+  lv_obj_t *library_back_button_{nullptr};
+  lv_obj_t *library_search_button_{nullptr};
+  lv_obj_t *library_previous_page_{nullptr};
+  lv_obj_t *library_next_page_{nullptr};
+  lv_obj_t *lyrics_overlay_{nullptr};
+  lv_obj_t *lyrics_title_{nullptr};
+  lv_obj_t *lyrics_text_{nullptr};
   lv_image_dsc_t artwork_descriptor_{};
   std::shared_ptr<const ArtworkBitmap> displayed_artwork_;
 };

@@ -161,6 +161,28 @@ Date: 2026-11-08 (Australia/Melbourne)
   after a hardware reset the same key logged a cache hit and decoded before the
   live host reply. The qualification-only storage override and diagnostics were
   removed before the production build.
+- Issue #3 live protocol qualification returned 3,358 artists, 5,647 albums,
+  338 genres, and 383 composers from the four library roots. A whole-library
+  search for `Beatles` returned 135 track rows; browsing artist `The Beatles`
+  returned 17 albums and selecting `Abbey Road (Remastered)` returned eight
+  tracks. The current live track had no lyrics and produced the expected empty
+  type-36 body after its fixed 20-byte header.
+- The guarded mutation matrix then removed its seeded scratch row, browsed the
+  exact live artist/album with type 39, and successfully re-enqueued the chosen
+  result with type 40. It cleared that row, searched the exact title with type
+  24, re-enqueued the chosen search row with type 44, cleared it again, and
+  activated the scratch playlist, selected its appended row 0, and confirmed
+  the exact searched title began playing. It then stopped playback, cleared
+  the row, and deleted the scratch playlist. Follow-up reads confirmed every count. The
+  original playlist 0 remained stopped at 0 ms with volume 49,679, shuffle
+  off, and repeat mode 2 after restoration.
+- The review build was hash-verified and flashed after the board was recovered
+  from an unresponsive black-screen state. Its boot trace passed the 2 MB PSRAM
+  test, mounted the 60,786 MB microSD card, joined Wi-Fi, resolved the AIMP host,
+  and authenticated. Physical framebuffer diagnostics then loaded all four live
+  media-library roots without a panic: 3,358 artists, 5,647 albums, 338 genres,
+  and 383 composers. The first two visibly reported the intentional bounded-row
+  retained-result limit while paging the first 25 rows.
 
 ## Visual inspection
 
@@ -209,3 +231,14 @@ search surfaces on the same physical board:
 ![A-prefix results](../artifacts/device-large-az-results.png)
 ![A-Z chooser](../artifacts/device-large-az.png)
 ![Search keyboard](../artifacts/device-large-search.png)
+
+The issue #3 review captures show the physical media-library and lyrics
+surfaces. These are live AIMP results, not desktop mockups:
+
+![Media-library categories](../artifacts/device-library-root.png)
+![Artists root](../artifacts/device-library-artists.png)
+![Albums root](../artifacts/device-library-albums.png)
+![Genres root](../artifacts/device-library-genres.png)
+![Composers root](../artifacts/device-library-composers.png)
+![Lyrics surface](../artifacts/device-lyrics.png)
+![More controls with library entry points](../artifacts/device-more-library.png)

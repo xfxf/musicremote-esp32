@@ -17,6 +17,21 @@ accent colour, and information hierarchy—without copying branded assets.
   playlist never starves touch handling or the ESP32 watchdog.
 - Playlist folders open in place with a large Back control; protected AIMP
   playlists remain selectable but cannot be deleted from the device.
+- Media Library opens as a full-screen surface with Artists, Albums, Genres,
+  and Composers roots. Results render in 25-row UI pages; at most 1,000 results
+  and 128 KiB of result text are retained from one response. A response whose
+  wire or decoded size exceeds 512 KiB is drained and reported as `LIBRARY
+  RESULT TOO LARGE` with no rows; narrow such views with Search. The Search
+  action reaches the complete AIMP media library when a desired item falls
+  outside the bounded browse window.
+- Tapping a library track appends it without clearing the playlist, starts
+  playback, and returns directly to
+  Now Playing. Long-pressing a track enqueues it without
+  changing pages. Whole-library search reuses the on-screen keyboard and keeps
+  the AIMP request ID needed to select the correct result.
+- Lyrics are requested on demand and shown in a scrollable overlay. Missing or
+  oversized text produces a bounded status message rather than allocating an
+  untrusted server length.
 - Destructive operations use long press instead of confirmation dialogs to
   keep the small-screen flow predictable.
 - The now-playing tile displays AIMP's current cover at its returned aspect

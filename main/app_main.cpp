@@ -37,6 +37,7 @@ esp_err_t screenshot_handler(httpd_req_t *request) {
   auto *ui = context == nullptr ? nullptr : context->ui;
   char query[192]{};
   char page[16]{};
+  uint32_t render_delay_ms = 500;
   if (ui != nullptr && httpd_req_get_url_query_str(request, query, sizeof(query)) == ESP_OK &&
       httpd_query_key_value(query, "page", page, sizeof(page)) == ESP_OK) {
     if (std::strcmp(page, "now") == 0) {
@@ -51,6 +52,22 @@ esp_err_t screenshot_handler(httpd_req_t *request) {
       ui->select_overlay_for_diagnostics(1);
     } else if (std::strcmp(page, "search") == 0) {
       ui->select_overlay_for_diagnostics(2);
+    } else if (std::strcmp(page, "library") == 0) {
+      ui->select_overlay_for_diagnostics(3);
+    } else if (std::strcmp(page, "lyrics") == 0) {
+      ui->select_overlay_for_diagnostics(4);
+    } else if (std::strcmp(page, "artists") == 0) {
+      ui->select_library_category_for_diagnostics(0);
+      render_delay_ms = 2000;
+    } else if (std::strcmp(page, "albums") == 0) {
+      ui->select_library_category_for_diagnostics(1);
+      render_delay_ms = 2000;
+    } else if (std::strcmp(page, "genres") == 0) {
+      ui->select_library_category_for_diagnostics(2);
+      render_delay_ms = 2000;
+    } else if (std::strcmp(page, "composers") == 0) {
+      ui->select_library_category_for_diagnostics(3);
+      render_delay_ms = 2000;
     }
     if (context->client != nullptr) {
       char start_text[16]{};
@@ -86,7 +103,7 @@ esp_err_t screenshot_handler(httpd_req_t *request) {
              search});
       }
     }
-    vTaskDelay(pdMS_TO_TICKS(500));
+    vTaskDelay(pdMS_TO_TICKS(render_delay_ms));
   }
   std::vector<uint8_t> pixels;
   uint32_t width = 0;
