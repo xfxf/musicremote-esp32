@@ -255,6 +255,25 @@ pending because the configured Windows host did not accept TCP connections.
   blocks every advanced mutation and restores authoritative state on exit; the
   slider target is now 46 px. The permitted focused re-review found both issues
   resolved with no remaining P1, P2, or blocker.
+- The post-merge completion audit opened issue #17 for evidence that cannot be
+  inferred from passing builds: live advanced-control mutation/restoration,
+  disconnect/reconnect timeline behavior, and a literal finger-driven blank /
+  wake / second-touch sequence. At audit time `aerocore.local` resolved to
+  `192.168.227.178`, but returned no ping replies and TCP 19371 timed out from
+  both the host probe and device.
+- Issue #17 adds a read-only advanced-state probe and a separately confirmed
+  reversible matrix. Host fixtures validate strict EQ/preset/timer parsing,
+  capability selection, EQ enable/preamp changes, timer enable/disable, exact
+  baseline restoration, and the invariant that no type-4/subcommand-14 power
+  packet is emitted. The expanded suite passes all 21 Python protocol tests;
+  live mutation remains deferred until the Windows host accepts connections.
+- The issue #17 adversarial review found three P2 restoration-safety and
+  documentation gaps. Mutation bookkeeping now precedes ambiguous socket
+  writes, restoration retries once after reconnect, timer restoration requires
+  the exact captured payload, and interruption limitations are explicit. Fault
+  injection covers an applied-then-failed write and disabled-but-different
+  timer responses. The permitted focused re-review found all three resolved
+  with no remaining blocker, P1, or P2 in scope.
 
 ## Visual inspection
 
