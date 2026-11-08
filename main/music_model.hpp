@@ -115,6 +115,10 @@ struct Snapshot {
   uint32_t queue_page_start{0};
   bool queue_index_ready{false};
   bool queue_indexing{false};
+  // The queue came from a structurally valid persisted index whose ID/name/
+  // count still match AIMP. The protocol exposes no content revision, so this
+  // remains explicitly stale until a full refresh is requested or received.
+  bool queue_from_persisted_cache{false};
   bool queue_filter_active{false};
   std::string queue_filter_label;
   std::vector<Playlist> playlists;

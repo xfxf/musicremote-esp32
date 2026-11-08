@@ -156,6 +156,7 @@ private:
   lv_obj_t *repeat_button_{nullptr};
 
   lv_obj_t *queue_title_{nullptr};
+  lv_obj_t *queue_cache_label_{nullptr};
   lv_obj_t *queue_list_{nullptr};
   lv_obj_t *queue_previous_page_{nullptr};
   lv_obj_t *queue_next_page_{nullptr};

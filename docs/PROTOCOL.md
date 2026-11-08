@@ -214,6 +214,34 @@ unavailable or indexing fails, the frame is drained and the UI reports the
 failure without allocating the complete response or dropping the AIMP
 connection.
 
+The lightweight type-41 playlist collection exposes stable playlist IDs,
+names, and track counts, but no content revision and no active-playlist bit.
+The persisted-index policy therefore remains deliberately bounded:
+
+- after a complete authoritative large-playlist response, an atomic marker
+  records that the structurally validated index represented the active
+  playlist;
+- at boot, the client publishes the first cached page immediately as
+  unverified, so it remains browsable while AIMP is offline. On reconnect it
+  requests only the root type-41 collection and retains the index only when its
+  ID, name, and count still match exactly (a legacy `-1` current-playlist ID
+  must resolve to one unique name/count match). A missing or malformed root
+  reply falls back to a full request after five seconds;
+- type 12/17/30/35 notifications, explicit playlist activation, queue edits,
+  library additions, or manual `REFRESH FROM AIMP` clear the marker and force
+  the complete playlist request; cache-format or extent validation failures do
+  the same;
+- because same-count edits and active-playlist changes made while the client is
+  offline cannot be proven from this protocol, reused rows are visibly labelled
+  `CACHED` rather than claimed fresh. Destructive queue, playlist, and library
+  mutations remain disabled in that state. Tapping a cached row first activates
+  the recorded playlist ID, requests the authoritative current playlist, and
+  sends the global queue row only after the response confirms that identity.
+  The manual refresh is the authoritative escape hatch.
+
+This avoids the large transfer on an unchanged second connection without
+inventing a server revision signal that AIMP does not provide.
+
 The host probe in `tools/protocol_probe.py` implements the same framing,
 authentication, and LZ4 decoding without third-party Python dependencies. Its
 `validate-mutations --confirm-live-mutations` command confines create, populate,

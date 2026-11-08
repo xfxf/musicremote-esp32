@@ -65,6 +65,10 @@ independent AIMP remote that interoperates with the MonkeyMote AIMP plugin.
   token-heavy review loops.
 - Record the reviewer outcome on the pull request. Built-in pull-request review
   may supplement this workflow, but it is not a prerequisite for local work.
+- Do not run `ccr-local` as a routine review step. It is permitted only when an
+  actual merge gate requires it, for any pull request; use the Codex engine,
+  disable engine fallback, and run the minimum rounds needed to satisfy that
+  gate.
 
 ### Protocol compatibility
 

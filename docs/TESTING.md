@@ -442,3 +442,31 @@ without using the synthetic Advanced Controls fixture:
 
 ![Issue #22 advanced state loading](../artifacts/issue22-advanced-loading.png)
 ![Issue #22 timer state unavailable](../artifacts/issue22-advanced-unavailable.png)
+
+## Persisted large-playlist cache qualification (issue #28)
+
+The physical issue #28 qualification used the same 48,321-row `NAS:Music`
+playlist and microSD index as the earlier large-playlist tests. On the first
+connection, serial evidence recorded `Streaming 1223088-byte playlist frame`,
+then `Indexed 48321 tracks for playlist -1` and an active marker resolved to
+playlist ID 2. The source hash matched the existing index, so validation and
+marker publication completed without a full rebuild.
+
+After a hardware reset, the next connection logged the persisted identity
+(`id=2 count=48321`), deferred the current-queue request, matched that identity
+against the root playlist collection, and reported `Reused persisted playlist
+index without queue transfer`. No streamed frame or index-worker activity
+appeared during the following 12-second observation window. The device loaded
+the real first 100 rows, retained global queue row IDs, and exposed the bounded
+freshness state in the framebuffer:
+
+Final hardware qualification also caught a startup resource-ordering failure:
+publishing the cached page before `httpd_start` could leave no suitable
+internal stack block for diagnostics, while starting diagnostics first could
+starve the AIMP client. The final build places the supported HTTP server task
+stack in PSRAM and starts it before cache publication. A clean reset then
+logged the screenshot endpoint, authenticated to `aerocore.local:19371`,
+reused playlist ID 2 without a queue transfer, and returned the inspected
+480x320 framebuffer below while online.
+
+![Persisted 48,321-row queue marked cached](../artifacts/issue28-cached-queue.png)

@@ -97,9 +97,14 @@ private:
   bool process_socket(int timeout_ms);
   bool process_frame(uint32_t type, std::vector<uint8_t> &payload);
   bool send_packet(uint32_t type, const void *data = nullptr, size_t size = 0);
-  bool send_playlist_request(int32_t playlist_id, bool confirms_library_play = false);
+  bool send_playlist_request(int32_t playlist_id, bool confirms_library_play = false,
+                             bool cacheable_active = false);
   void send_command(const Command &command);
   void request_initial_state();
+  bool prepare_persisted_playlist_cache();
+  void validate_persisted_playlist_cache(const std::vector<Playlist> &playlists,
+                                         int32_t folder_id);
+  void begin_playlist_refresh(const char *status);
 
   void parse_track_info(const std::vector<uint8_t> &payload);
   void parse_playback(const std::vector<uint8_t> &payload);
@@ -116,6 +121,7 @@ private:
     uint64_t id{0};
     int32_t playlist_id{-1};
     bool confirms_library_play{false};
+    bool cacheable_active{false};
     int64_t deadline_us{0};
   };
   std::optional<PlaylistRequestToken> take_playlist_response_token();
@@ -172,6 +178,7 @@ private:
   int32_t pending_library_play_destination_{-1};
   std::atomic<int64_t> pending_library_play_deadline_us_{0};
   uint64_t pending_library_play_token_{0};
+  bool pending_cached_queue_play_{false};
   uint64_t next_playlist_request_token_{1};
   std::deque<PlaylistRequestToken> playlist_requests_;
   std::optional<PlaylistRequestToken> streamed_playlist_request_;
@@ -179,6 +186,15 @@ private:
   std::atomic<uint64_t> playlist_stream_generation_{0};
   uint64_t receiving_stream_generation_{0};
   uint64_t streamed_playlist_generation_{0};
+  struct PersistedPlaylistCache {
+    bool available{false};
+    bool awaiting_root_validation{false};
+    int32_t playlist_id{-1};
+    uint32_t count{0};
+    std::string name;
+  } persisted_playlist_cache_;
+  std::atomic<bool> using_persisted_playlist_cache_{false};
+  int64_t persisted_cache_validation_deadline_us_{0};
   int64_t last_receive_us_{0};
   int64_t last_ping_us_{0};
   std::mutex commands_mutex_;
