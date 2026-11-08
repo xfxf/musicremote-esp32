@@ -504,6 +504,9 @@ bool MonkeyMoteClient::process_socket(int timeout_ms) {
           (compressed_envelope_ready &&
            (inner_type == 8 || inner_type == 13))) {
         reject_cover_reply();
+        ESP_LOGW(kTag, "Draining oversized cover reply: %" PRIu32, length);
+        discard_remaining_ = length;
+        continue;
       }
       if (stream_playlist && index_building_) {
         index_superseded_ = true;
