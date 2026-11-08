@@ -469,6 +469,7 @@ bool MonkeyMoteClient::connect_and_authenticate() {
   cover_requests_.clear();
   cover_track_key_.clear();
   lyrics_requests_.clear();
+  equalizer_payload_.clear();
   library_request_deadline_us_ = 0;
   pending_library_play_row_ = -1;
   pending_library_play_destination_ = -1;
@@ -513,6 +514,7 @@ void MonkeyMoteClient::close_socket() {
     close(old_socket);
   }
   lyrics_requests_.clear();
+  equalizer_payload_.clear();
   library_request_deadline_us_ = 0;
   pending_library_play_row_ = -1;
   pending_library_play_destination_ = -1;
@@ -529,6 +531,11 @@ void MonkeyMoteClient::close_socket() {
     state.library_play_pending = false;
     state.capabilities_known = false;
     state.server_capabilities = 0;
+    state.equalizer = {};
+    state.equalizer_presets.clear();
+    ++state.equalizer_revision;
+    state.sleep_timer = {};
+    ++state.sleep_timer_revision;
     bool library_changed = false;
     bool lyrics_changed = false;
     if (state.library_loading) {
@@ -1186,6 +1193,7 @@ bool MonkeyMoteClient::process_frame(uint32_t type, std::vector<uint8_t> &payloa
       state.capabilities_known = true;
       state.server_capabilities = capabilities;
     });
+    enqueue({CommandType::request_advanced_controls});
     return true;
   case 36:
     return parse_lyrics(payload);
@@ -1195,6 +1203,40 @@ bool MonkeyMoteClient::process_frame(uint32_t type, std::vector<uint8_t> &payloa
   case 45:
     parse_compressed(payload);
     return true;
+  case 48: {
+    advanced::EqualizerState equalizer;
+    if (!advanced::parse_equalizer(payload, equalizer)) {
+      return false;
+    }
+    equalizer_payload_ = payload;
+    model_.update([equalizer = std::move(equalizer)](Snapshot &state) mutable {
+      state.equalizer = std::move(equalizer);
+      ++state.equalizer_revision;
+    });
+    return true;
+  }
+  case 49: {
+    std::vector<std::string> presets;
+    if (!advanced::parse_equalizer_presets(payload, presets)) {
+      return false;
+    }
+    model_.update([presets = std::move(presets)](Snapshot &state) mutable {
+      state.equalizer_presets = std::move(presets);
+      ++state.equalizer_revision;
+    });
+    return true;
+  }
+  case 51: {
+    advanced::SleepTimerState timer;
+    if (!advanced::parse_sleep_timer(payload, timer)) {
+      return false;
+    }
+    model_.update([timer](Snapshot &state) {
+      state.sleep_timer = timer;
+      ++state.sleep_timer_revision;
+    });
+    return true;
+  }
   case 9:
   case 31:
   case 50: {
@@ -1543,6 +1585,73 @@ void MonkeyMoteClient::send_command(const Command &command) {
            .deadline_us = esp_timer_get_time() + 15'000'000});
     }
     break;
+  case CommandType::request_advanced_controls: {
+    const Snapshot state = model_.copy();
+    if (!state.capabilities_known) {
+      break;
+    }
+    if ((state.server_capabilities & advanced::kEqualizerCapability) != 0) {
+      payload = advanced::make_state_request(17);
+      send_packet(4, payload.data(), payload.size());
+      payload = advanced::make_state_request(18);
+      send_packet(4, payload.data(), payload.size());
+    }
+    if ((state.server_capabilities & advanced::kSleepTimerCapability) != 0) {
+      payload = advanced::make_state_request(19);
+      send_packet(4, payload.data(), payload.size());
+    }
+    break;
+  }
+  case CommandType::equalizer_enable: {
+    const Snapshot state = model_.copy();
+    std::vector<uint8_t> updated = equalizer_payload_;
+    if ((state.server_capabilities & advanced::kEqualizerCapability) != 0 &&
+        advanced::set_equalizer_enabled(updated, command.first != 0) &&
+        send_packet(48, updated.data(), updated.size())) {
+      equalizer_payload_ = std::move(updated);
+      enqueue({CommandType::request_advanced_controls});
+    }
+    break;
+  }
+  case CommandType::equalizer_gain: {
+    const Snapshot state = model_.copy();
+    std::vector<uint8_t> updated = equalizer_payload_;
+    if ((state.server_capabilities & advanced::kEqualizerCapability) != 0 &&
+        command.second >= 0 && command.second <= 300 &&
+        advanced::set_equalizer_gain(updated, command.first,
+                                     static_cast<uint16_t>(command.second)) &&
+        send_packet(48, updated.data(), updated.size())) {
+      equalizer_payload_ = std::move(updated);
+      enqueue({CommandType::request_advanced_controls});
+    }
+    break;
+  }
+  case CommandType::sleep_timer: {
+    const Snapshot state = model_.copy();
+    if ((state.server_capabilities & advanced::kSleepTimerCapability) == 0) {
+      break;
+    }
+    const bool enabled = command.first > 0;
+    const uint8_t trigger = static_cast<uint8_t>((command.second >> 8) & 0xff);
+    const uint8_t action = static_cast<uint8_t>(command.second & 0xff);
+    payload = advanced::make_sleep_timer(enabled, trigger, action,
+                                         static_cast<uint32_t>(std::max(command.first, int32_t{0})));
+    if (!payload.empty() && send_packet(51, payload.data(), payload.size())) {
+      enqueue({CommandType::request_advanced_controls});
+    }
+    break;
+  }
+  case CommandType::computer_power: {
+    const Snapshot state = model_.copy();
+    if ((state.server_capabilities & advanced::kComputerPowerCapability) == 0) {
+      break;
+    }
+    payload = advanced::make_computer_power(static_cast<uint8_t>(command.first));
+    if (!payload.empty()) {
+      send_packet(4, payload.data(), payload.size());
+    }
+    break;
+  }
   case CommandType::streamed_playlist_result: {
     PlaylistRequestToken token{.id = command.request_token,
                                .playlist_id = command.first,

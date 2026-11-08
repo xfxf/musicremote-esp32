@@ -1,5 +1,7 @@
 #pragma once
 
+#include "advanced_controls.hpp"
+
 #include <algorithm>
 #include <cstdint>
 #include <memory>
@@ -80,6 +82,11 @@ struct Snapshot {
   uint64_t connection_generation{0};
   bool capabilities_known{false};
   uint64_t server_capabilities{0};
+  advanced::EqualizerState equalizer;
+  std::vector<std::string> equalizer_presets;
+  uint64_t equalizer_revision{0};
+  advanced::SleepTimerState sleep_timer;
+  uint64_t sleep_timer_revision{0};
   PlaybackState playback{PlaybackState::unknown};
   bool shuffle{false};
   uint8_t repeat{0};

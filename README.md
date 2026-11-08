@@ -19,6 +19,9 @@ the clarity of Microsoft Zune.
 - Long-press `+ ESP REMOTE` to create a playlist named `ESP Remote`.
 - Persistent on-device Wi-Fi, AIMP connection, brightness, and screen-off
   settings, with automatic reconnection and `.local` host resolution.
+- Capability-gated manual equalizer and sleep timer controls.
+- Explicitly confirmed computer sleep, restart, and shutdown actions when the
+  AIMP plug-in advertises support.
 
 Current-track cover artwork is fetched, decoded off the UI thread, and cached
 on microSD when available. A generated music tile is the fallback for missing
@@ -74,8 +77,11 @@ outside their visible bounds to tolerate finger movement on release.
 The board exposes a LAN-only diagnostic framebuffer at
 `http://musicremote.local/screenshot.ppm?page=now`. Valid page names are
 `now`, `queue`, `playlists`, `more`, `az`, `search`, `library`, `lyrics`,
-`playback-settings`, `connection-settings`, `display-settings`, and
-`storage-settings`. For non-mutating index diagnostics, the queue capture also
+`playback-settings`, `connection-settings`, `display-settings`,
+`storage-settings`, and `advanced-settings`. View-only physical-widget samples
+are available as `advanced-demo`, `equalizer-demo`, and `power-confirm-demo`;
+they retain the real connection state and cannot enqueue control commands. For
+non-mutating index diagnostics, the queue capture also
 accepts `start=10000`, `filter=A`, or `search=Mars`. This endpoint has no
 authentication; use the firmware only on a trusted Wi-Fi network.
 

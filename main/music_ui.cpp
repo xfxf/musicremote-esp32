@@ -92,6 +92,7 @@ bool MusicUi::select_page_for_diagnostics(uint8_t page) {
     return false;
   }
   std::lock_guard lock(mutex_);
+  end_advanced_demo();
   last_interaction_us_ = esp_timer_get_time();
   set_display_blank(false);
   lv_obj_set_hidden(filter_overlay_, true);
@@ -100,6 +101,8 @@ bool MusicUi::select_page_for_diagnostics(uint8_t page) {
   lv_obj_set_hidden(lyrics_overlay_, true);
   lv_obj_set_hidden(settings_overlay_, true);
   lv_obj_set_hidden(setting_editor_, true);
+  lv_obj_set_hidden(equalizer_overlay_, true);
+  lv_obj_set_hidden(power_confirm_overlay_, true);
   show_page(static_cast<Page>(page));
   return true;
 }
@@ -109,6 +112,7 @@ bool MusicUi::select_overlay_for_diagnostics(uint8_t overlay) {
     return false;
   }
   std::lock_guard lock(mutex_);
+  end_advanced_demo();
   last_interaction_us_ = esp_timer_get_time();
   set_display_blank(false);
   lv_obj_set_hidden(filter_overlay_, overlay != 1);
@@ -117,6 +121,8 @@ bool MusicUi::select_overlay_for_diagnostics(uint8_t overlay) {
   lv_obj_set_hidden(lyrics_overlay_, overlay != 4);
   lv_obj_set_hidden(settings_overlay_, true);
   lv_obj_set_hidden(setting_editor_, true);
+  lv_obj_set_hidden(equalizer_overlay_, true);
+  lv_obj_set_hidden(power_confirm_overlay_, true);
   if (overlay == 1) {
     lv_obj_move_foreground(filter_overlay_);
   } else if (overlay == 2) {
@@ -135,6 +141,7 @@ bool MusicUi::select_library_category_for_diagnostics(uint8_t category) {
     return false;
   }
   std::lock_guard lock(mutex_);
+  end_advanced_demo();
   library_root_visible_ = false;
   library_page_start_ = 0;
   lv_obj_set_hidden(filter_overlay_, true);
@@ -142,6 +149,8 @@ bool MusicUi::select_library_category_for_diagnostics(uint8_t category) {
   lv_obj_set_hidden(lyrics_overlay_, true);
   lv_obj_set_hidden(settings_overlay_, true);
   lv_obj_set_hidden(setting_editor_, true);
+  lv_obj_set_hidden(equalizer_overlay_, true);
+  lv_obj_set_hidden(power_confirm_overlay_, true);
   lv_obj_set_hidden(library_overlay_, false);
   lv_obj_move_foreground(library_overlay_);
   lv_label_set_text(library_count_, "LOADING...");
@@ -155,6 +164,7 @@ bool MusicUi::select_settings_for_diagnostics(uint8_t section) {
     return false;
   }
   std::lock_guard lock(mutex_);
+  end_advanced_demo();
   last_interaction_us_ = esp_timer_get_time();
   set_display_blank(false);
   lv_obj_set_hidden(filter_overlay_, true);
@@ -162,7 +172,64 @@ bool MusicUi::select_settings_for_diagnostics(uint8_t section) {
   lv_obj_set_hidden(library_overlay_, true);
   lv_obj_set_hidden(lyrics_overlay_, true);
   lv_obj_set_hidden(setting_editor_, true);
-  show_settings_section(static_cast<SettingsSection>(section));
+  lv_obj_set_hidden(equalizer_overlay_, true);
+  lv_obj_set_hidden(power_confirm_overlay_, true);
+  const auto selected = static_cast<SettingsSection>(section);
+  show_settings_section(selected);
+  return true;
+}
+
+bool MusicUi::select_advanced_demo_for_diagnostics(uint8_t view) {
+  if (view > 2) {
+    return false;
+  }
+  std::lock_guard lock(mutex_);
+  advanced_demo_active_ = true;
+  last_interaction_us_ = esp_timer_get_time();
+  set_display_blank(false);
+  lv_obj_set_hidden(filter_overlay_, true);
+  lv_obj_set_hidden(search_overlay_, true);
+  lv_obj_set_hidden(library_overlay_, true);
+  lv_obj_set_hidden(lyrics_overlay_, true);
+  lv_obj_set_hidden(setting_editor_, true);
+  lv_obj_set_hidden(equalizer_overlay_, true);
+  lv_obj_set_hidden(power_confirm_overlay_, true);
+
+  // This diagnostic state is deliberately view-only: snapshot_ retains the
+  // real connection state, so touch events cannot enqueue a command while a
+  // synthetic capability screen is being captured.
+  Snapshot demo = snapshot_;
+  demo.capabilities_known = true;
+  demo.server_capabilities = advanced::kEqualizerCapability |
+                             advanced::kSleepTimerCapability |
+                             advanced::kComputerPowerCapability;
+  demo.equalizer.known = true;
+  demo.equalizer.enabled = true;
+  demo.equalizer.preamp_tenths_offset = 150;
+  demo.equalizer.bands = {{70, 150}, {180, 165}, {320, 155}, {600, 145},
+                          {1000, 150}, {3000, 160}, {6000, 150}, {12000, 140}};
+  demo.equalizer_revision = rendered_equalizer_revision_ == UINT64_MAX
+                                ? 1
+                                : rendered_equalizer_revision_ + 1;
+  demo.sleep_timer = {.known = true,
+                      .enabled = true,
+                      .trigger = 1,
+                      .action = 1,
+                      .seconds_remaining = 30 * 60};
+  update_advanced_controls(demo);
+  show_settings_section(SettingsSection::advanced);
+
+  if (view == 1) {
+    lv_obj_set_hidden(equalizer_overlay_, false);
+    lv_obj_move_foreground(equalizer_overlay_);
+  } else if (view == 2) {
+    lv_label_set_text(power_confirm_message_,
+                      "Shut down the AIMP computer now?\n"
+                      "Unsaved work on that computer may be lost.");
+    pending_power_action_ = -1;
+    lv_obj_set_hidden(power_confirm_overlay_, false);
+    lv_obj_move_foreground(power_confirm_overlay_);
+  }
   return true;
 }
 
@@ -226,6 +293,7 @@ void MusicUi::create_ui() {
   create_more_page();
   create_navigation();
   create_settings_overlays();
+  create_equalizer_overlay();
   create_filter_overlays();
   create_library_overlay();
   create_lyrics_overlay();
@@ -729,6 +797,7 @@ void MusicUi::create_more_page() {
   connection_settings_button_ = add_row("CONNECTION");
   display_settings_button_ = add_row("DISPLAY");
   storage_settings_button_ = add_row("STORAGE / ABOUT");
+  advanced_settings_button_ = add_row("AIMP CONTROLS");
 }
 
 void MusicUi::create_settings_overlays() {
@@ -854,8 +923,9 @@ void MusicUi::create_settings_overlays() {
       "LARGE PLAYLIST CACHE\n"
       "Indexes and artwork persist on microSD when available. A matching content hash reuses the index after "
       "reboot; changed content rebuilds safely. AIMP has no revision or delta paging, so the response is still "
-      "checked.\n\nADVANCED CONTROLS\n"
-      "Equalizer, sleep timer and computer power stay hidden until their command payloads are safely verified.",
+      "checked.\n\nAIMP CONTROLS\n"
+      "Equalizer, sleep timer and confirmed computer actions are available from their own settings page when "
+      "the connected plug-in advertises support.",
       &lv_font_montserrat_14, color(kText));
   lv_obj_set_pos(storage_text, 10, 44);
   lv_obj_set_width(storage_text, 420);
@@ -868,6 +938,52 @@ void MusicUi::create_settings_overlays() {
                                        &lv_font_montserrat_14, color(kAccent));
   lv_obj_set_pos(settings_storage_value_, 10, 24);
   lv_obj_set_width(settings_storage_value_, 420);
+
+  lv_obj_t *advanced_panel =
+      settings_panels_[static_cast<size_t>(SettingsSection::advanced)];
+  lv_obj_set_style_pad_row(advanced_panel, 4, 0);
+  lv_obj_set_flex_flow(advanced_panel, LV_FLEX_FLOW_COLUMN);
+  advanced_status_ = make_label(advanced_panel, "WAITING FOR AIMP CAPABILITIES",
+                                &lv_font_montserrat_14, color(kMuted));
+  lv_obj_set_width(advanced_status_, 430);
+  lv_label_set_long_mode(advanced_status_, LV_LABEL_LONG_WRAP);
+  equalizer_enable_button_ = make_button(advanced_panel, "EQUALIZER", 440, 52);
+  lv_obj_t *eq_name = lv_obj_get_child(equalizer_enable_button_, 0);
+  lv_obj_set_width(eq_name, 250);
+  lv_obj_set_style_text_align(eq_name, LV_TEXT_ALIGN_LEFT, 0);
+  lv_obj_align(eq_name, LV_ALIGN_LEFT_MID, 4, 0);
+  equalizer_enable_value_ = make_label(equalizer_enable_button_, "WAITING",
+                                       &lv_font_montserrat_18, color(kAccent));
+  lv_obj_set_width(equalizer_enable_value_, 150);
+  lv_obj_set_style_text_align(equalizer_enable_value_, LV_TEXT_ALIGN_RIGHT, 0);
+  lv_obj_align(equalizer_enable_value_, LV_ALIGN_RIGHT_MID, -4, 0);
+  lv_obj_set_clickable(equalizer_enable_value_, false);
+  lv_obj_add_event_cb(equalizer_enable_button_, event_handler, LV_EVENT_CLICKED, this);
+  equalizer_edit_button_ = make_button(advanced_panel, "ADJUST EQUALIZER", 440, 48);
+  lv_obj_add_event_cb(equalizer_edit_button_, event_handler, LV_EVENT_CLICKED, this);
+
+  sleep_timer_button_ = make_button(advanced_panel, "SLEEP TIMER", 440, 52);
+  lv_obj_t *sleep_name = lv_obj_get_child(sleep_timer_button_, 0);
+  lv_obj_set_width(sleep_name, 220);
+  lv_obj_set_style_text_align(sleep_name, LV_TEXT_ALIGN_LEFT, 0);
+  lv_obj_align(sleep_name, LV_ALIGN_LEFT_MID, 4, 0);
+  sleep_timer_value_ = make_label(sleep_timer_button_, "OFF", &lv_font_montserrat_18,
+                                  color(kAccent));
+  lv_obj_set_width(sleep_timer_value_, 190);
+  lv_obj_set_style_text_align(sleep_timer_value_, LV_TEXT_ALIGN_RIGHT, 0);
+  lv_obj_align(sleep_timer_value_, LV_ALIGN_RIGHT_MID, -4, 0);
+  lv_obj_set_clickable(sleep_timer_value_, false);
+  lv_obj_add_event_cb(sleep_timer_button_, event_handler, LV_EVENT_CLICKED, this);
+
+  power_title_ = make_label(advanced_panel, "COMPUTER / CONFIRMATION REQUIRED",
+                            &lv_font_montserrat_14, color(kMuted));
+  lv_obj_set_style_pad_top(power_title_, 8, 0);
+  static constexpr std::array<const char *, 3> kPowerLabels{
+      "SLEEP COMPUTER", "RESTART COMPUTER", "SHUT DOWN COMPUTER"};
+  for (size_t index = 0; index < power_buttons_.size(); ++index) {
+    power_buttons_[index] = make_button(advanced_panel, kPowerLabels[index], 440, 48);
+    lv_obj_add_event_cb(power_buttons_[index], event_handler, LV_EVENT_CLICKED, this);
+  }
 
   setting_editor_ = lv_obj_create(root_);
   lv_obj_remove_style_all(setting_editor_);
@@ -914,9 +1030,119 @@ void MusicUi::create_settings_overlays() {
   refresh_setting_labels();
 }
 
+void MusicUi::create_equalizer_overlay() {
+  equalizer_overlay_ = lv_obj_create(root_);
+  lv_obj_remove_style_all(equalizer_overlay_);
+  lv_obj_set_size(equalizer_overlay_, 480, 320);
+  lv_obj_set_style_bg_color(equalizer_overlay_, color(kBackground), 0);
+  lv_obj_set_style_bg_opa(equalizer_overlay_, LV_OPA_COVER, 0);
+  lv_obj_add_flag(equalizer_overlay_, LV_OBJ_FLAG_HIDDEN);
+
+  lv_obj_t *title = make_label(equalizer_overlay_, "EQUALIZER", &lv_font_montserrat_22,
+                               color(kText));
+  lv_obj_set_pos(title, 14, 14);
+  equalizer_overlay_toggle_ = make_button(equalizer_overlay_, "OFF", 96, 48);
+  lv_obj_set_pos(equalizer_overlay_toggle_, 252, 4);
+  lv_obj_add_event_cb(equalizer_overlay_toggle_, event_handler, LV_EVENT_CLICKED, this);
+  equalizer_close_button_ = make_button(equalizer_overlay_, "CLOSE", 112, 48);
+  lv_obj_set_pos(equalizer_close_button_, 356, 4);
+  lv_obj_add_event_cb(equalizer_close_button_, event_handler, LV_EVENT_CLICKED, this);
+
+  equalizer_list_ = lv_obj_create(equalizer_overlay_);
+  lv_obj_set_pos(equalizer_list_, 8, 58);
+  lv_obj_set_size(equalizer_list_, 464, 254);
+  lv_obj_set_style_bg_opa(equalizer_list_, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(equalizer_list_, 0, 0);
+  lv_obj_set_style_pad_all(equalizer_list_, 4, 0);
+  lv_obj_set_style_pad_row(equalizer_list_, 4, 0);
+  lv_obj_set_flex_flow(equalizer_list_, LV_FLEX_FLOW_COLUMN);
+
+  power_confirm_overlay_ = lv_obj_create(root_);
+  lv_obj_remove_style_all(power_confirm_overlay_);
+  lv_obj_set_size(power_confirm_overlay_, 480, 320);
+  lv_obj_set_style_bg_color(power_confirm_overlay_, color(kBackground), 0);
+  lv_obj_set_style_bg_opa(power_confirm_overlay_, LV_OPA_COVER, 0);
+  lv_obj_add_flag(power_confirm_overlay_, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_t *warning = make_label(power_confirm_overlay_, "CONFIRM COMPUTER ACTION",
+                                 &lv_font_montserrat_22, color(0xE04F5F));
+  lv_obj_set_pos(warning, 20, 30);
+  power_confirm_message_ = make_label(
+      power_confirm_overlay_, "", &lv_font_montserrat_18, color(kText));
+  lv_obj_set_pos(power_confirm_message_, 20, 92);
+  lv_obj_set_width(power_confirm_message_, 440);
+  lv_label_set_long_mode(power_confirm_message_, LV_LABEL_LONG_WRAP);
+  power_cancel_button_ = make_button(power_confirm_overlay_, "CANCEL", 196, 56);
+  lv_obj_set_pos(power_cancel_button_, 32, 228);
+  power_confirm_button_ = make_button(power_confirm_overlay_, "CONFIRM", 196, 56);
+  lv_obj_set_pos(power_confirm_button_, 252, 228);
+  lv_obj_set_style_bg_color(power_confirm_button_, color(0x7A2431), 0);
+  lv_obj_set_style_bg_color(power_confirm_button_, color(0xA73545), LV_STATE_PRESSED);
+  lv_obj_add_event_cb(power_cancel_button_, event_handler, LV_EVENT_CLICKED, this);
+  lv_obj_add_event_cb(power_confirm_button_, event_handler, LV_EVENT_CLICKED, this);
+}
+
+void MusicUi::rebuild_equalizer(const Snapshot &snapshot) {
+  if (equalizer_list_ == nullptr) {
+    return;
+  }
+  lv_obj_clean(equalizer_list_);
+  equalizer_gain_sliders_.clear();
+  equalizer_gain_values_.clear();
+  if (!snapshot.equalizer.known) {
+    lv_obj_t *waiting = make_label(equalizer_list_, "WAITING FOR EQUALIZER STATE FROM AIMP",
+                                   &lv_font_montserrat_18, color(kMuted));
+    lv_obj_set_style_pad_all(waiting, 16, 0);
+    return;
+  }
+  auto add_gain = [this](const char *name, uint16_t value) {
+    lv_obj_t *row = lv_obj_create(equalizer_list_);
+    lv_obj_set_size(row, 440, 52);
+    lv_obj_set_style_bg_color(row, color(kPanel), 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_radius(row, 3, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_t *label = make_label(row, name, &lv_font_montserrat_14, color(kMuted));
+    lv_obj_set_pos(label, 8, 17);
+    lv_obj_set_width(label, 66);
+    lv_obj_t *slider = lv_slider_create(row);
+    lv_obj_set_pos(slider, 76, 20);
+    lv_obj_set_size(slider, 272, 10);
+    // The 10 px visual track keeps the Zune-like lightness, while the extended
+    // area provides a full 46 px finger target in both axes.
+    lv_obj_set_ext_click_area(slider, 18);
+    lv_slider_set_range(slider, 0, 300);
+    lv_slider_set_value(slider, value, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(slider, color(0x28303D), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(slider, color(kAccentBlue), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(slider, color(kText), LV_PART_KNOB);
+    lv_obj_add_event_cb(slider, event_handler, LV_EVENT_VALUE_CHANGED, this);
+    lv_obj_add_event_cb(slider, event_handler, LV_EVENT_RELEASED, this);
+    char db[16];
+    std::snprintf(db, sizeof(db), "%+.1f dB", (static_cast<int>(value) - 150) / 10.0);
+    lv_obj_t *value_label = make_label(row, db, &lv_font_montserrat_14, color(kText));
+    lv_obj_set_pos(value_label, 354, 17);
+    lv_obj_set_width(value_label, 78);
+    lv_obj_set_style_text_align(value_label, LV_TEXT_ALIGN_RIGHT, 0);
+    equalizer_gain_sliders_.push_back(slider);
+    equalizer_gain_values_.push_back(value_label);
+  };
+  add_gain("PREAMP", snapshot.equalizer.preamp_tenths_offset);
+  for (const auto &band : snapshot.equalizer.bands) {
+    char frequency[16];
+    if (band.frequency_hz >= 1000 && band.frequency_hz % 1000 == 0) {
+      std::snprintf(frequency, sizeof(frequency), "%uK",
+                    static_cast<unsigned>(band.frequency_hz / 1000));
+    } else {
+      std::snprintf(frequency, sizeof(frequency), "%u",
+                    static_cast<unsigned>(band.frequency_hz));
+    }
+    add_gain(frequency, band.gain_tenths_offset);
+  }
+}
+
 void MusicUi::show_settings_section(SettingsSection section) {
-  static constexpr std::array<const char *, 4> kTitles{
-      "PLAYBACK", "CONNECTION", "DISPLAY", "STORAGE / ABOUT"};
+  static constexpr std::array<const char *, 5> kTitles{
+      "PLAYBACK", "CONNECTION", "DISPLAY", "STORAGE / ABOUT", "AIMP CONTROLS"};
   for (size_t i = 0; i < std::size(settings_panels_); ++i) {
     lv_obj_set_hidden(settings_panels_[i], i != static_cast<size_t>(section));
   }
@@ -964,6 +1190,76 @@ void MusicUi::refresh_setting_labels() {
                                                         : "SETTINGS STORAGE: UNAVAILABLE");
   lv_obj_set_style_text_color(settings_storage_value_,
                               persistent ? color(kAccent) : color(0xE04F5F), 0);
+}
+
+void MusicUi::update_advanced_controls(const Snapshot &snapshot) {
+  const bool known = snapshot.capabilities_known;
+  const bool has_equalizer =
+      known && (snapshot.server_capabilities & advanced::kEqualizerCapability) != 0;
+  const bool has_sleep =
+      known && (snapshot.server_capabilities & advanced::kSleepTimerCapability) != 0;
+  const bool has_power =
+      known && (snapshot.server_capabilities & advanced::kComputerPowerCapability) != 0;
+  if (!known) {
+    lv_label_set_text(advanced_status_, "WAITING FOR AIMP CAPABILITIES");
+  } else if (!has_equalizer && !has_sleep && !has_power) {
+    lv_label_set_text(advanced_status_, "THE CONNECTED PLUG-IN REPORTS NO ADVANCED CONTROLS");
+  } else {
+    lv_label_set_text(advanced_status_, "ONLY CONTROLS ADVERTISED BY AIMP ARE SHOWN");
+  }
+  lv_obj_set_hidden(equalizer_enable_button_, !has_equalizer);
+  lv_obj_set_hidden(equalizer_edit_button_, !has_equalizer);
+  lv_obj_set_hidden(sleep_timer_button_, !has_sleep);
+  lv_obj_set_hidden(power_title_, !has_power);
+  for (lv_obj_t *button : power_buttons_) {
+    lv_obj_set_hidden(button, !has_power);
+  }
+
+  if (has_equalizer) {
+    const char *state = snapshot.equalizer.known
+                            ? (snapshot.equalizer.enabled ? "ON" : "OFF")
+                            : "LOADING";
+    lv_label_set_text(equalizer_enable_value_, state);
+    lv_label_set_text(lv_obj_get_child(equalizer_overlay_toggle_, 0), state);
+    lv_obj_set_state(equalizer_enable_button_, LV_STATE_DISABLED,
+                     !snapshot.equalizer.known);
+    lv_obj_set_state(equalizer_edit_button_, LV_STATE_DISABLED,
+                     !snapshot.equalizer.known);
+    lv_obj_set_state(equalizer_overlay_toggle_, LV_STATE_DISABLED,
+                     !snapshot.equalizer.known);
+  }
+
+  if (has_sleep) {
+    char timer[32];
+    if (!snapshot.sleep_timer.known) {
+      std::snprintf(timer, sizeof(timer), "LOADING");
+    } else if (!snapshot.sleep_timer.enabled) {
+      std::snprintf(timer, sizeof(timer), "OFF");
+    } else if (snapshot.sleep_timer.trigger == 2) {
+      std::snprintf(timer, sizeof(timer), "END OF TRACK");
+    } else {
+      const uint32_t minutes = (snapshot.sleep_timer.seconds_remaining + 59) / 60;
+      std::snprintf(timer, sizeof(timer), "%u MIN LEFT", static_cast<unsigned>(minutes));
+    }
+    lv_label_set_text(sleep_timer_value_, timer);
+    lv_obj_set_state(sleep_timer_button_, LV_STATE_DISABLED,
+                     !snapshot.sleep_timer.known);
+  }
+
+  if (snapshot.equalizer_revision != rendered_equalizer_revision_) {
+    rebuild_equalizer(snapshot);
+    rendered_equalizer_revision_ = snapshot.equalizer_revision;
+  }
+  rendered_sleep_timer_revision_ = snapshot.sleep_timer_revision;
+}
+
+void MusicUi::end_advanced_demo() {
+  if (!advanced_demo_active_) {
+    return;
+  }
+  advanced_demo_active_ = false;
+  pending_power_action_ = -1;
+  update_advanced_controls(snapshot_);
 }
 
 void MusicUi::begin_setting_edit(SettingField field, const char *title, bool password) {
@@ -1115,6 +1411,7 @@ void MusicUi::show_page(Page page) {
 
 void MusicUi::update(const Snapshot &snapshot) {
   snapshot_ = snapshot;
+  update_advanced_controls(snapshot);
 
   if (capabilities_value_ != nullptr) {
     char capabilities[112];
@@ -1554,11 +1851,13 @@ void MusicUi::handle_event(lv_event_t *event) {
   const lv_event_code_t code = lv_event_get_code(event);
   for (size_t i = 0; i < 4; ++i) {
     if (target == nav_buttons_[i]) {
+      end_advanced_demo();
       show_page(static_cast<Page>(i));
       return;
     }
   }
   if (target == settings_back_button_) {
+    end_advanced_demo();
     lv_obj_add_flag(settings_overlay_, LV_OBJ_FLAG_HIDDEN);
     return;
   }
@@ -1576,6 +1875,102 @@ void MusicUi::handle_event(lv_event_t *event) {
   }
   if (target == storage_settings_button_) {
     show_settings_section(SettingsSection::storage);
+    return;
+  }
+  if (target == advanced_settings_button_) {
+    end_advanced_demo();
+    show_settings_section(SettingsSection::advanced);
+    if (snapshot_.connection == ConnectionState::online) {
+      client_.enqueue({CommandType::request_advanced_controls});
+    }
+    return;
+  }
+  if (target == equalizer_close_button_) {
+    lv_obj_add_flag(equalizer_overlay_, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  if (target == equalizer_edit_button_) {
+    if (snapshot_.connection == ConnectionState::online && snapshot_.equalizer.known) {
+      rebuild_equalizer(snapshot_);
+      lv_obj_remove_flag(equalizer_overlay_, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_move_foreground(equalizer_overlay_);
+    }
+    return;
+  }
+  if (target == equalizer_enable_button_ || target == equalizer_overlay_toggle_) {
+    if (!advanced_demo_active_ && snapshot_.connection == ConnectionState::online &&
+        snapshot_.equalizer.known) {
+      client_.enqueue(
+          {CommandType::equalizer_enable, snapshot_.equalizer.enabled ? 0 : 1});
+    }
+    return;
+  }
+  if (target == sleep_timer_button_) {
+    if (advanced_demo_active_ || snapshot_.connection != ConnectionState::online ||
+        !snapshot_.sleep_timer.known) {
+      return;
+    }
+    int32_t seconds = 0;
+    uint8_t trigger = 1;
+    if (!snapshot_.sleep_timer.enabled) {
+      seconds = 15 * 60;
+    } else if (snapshot_.sleep_timer.trigger == 1 &&
+               snapshot_.sleep_timer.seconds_remaining <= 15 * 60) {
+      seconds = 30 * 60;
+    } else if (snapshot_.sleep_timer.trigger == 1 &&
+               snapshot_.sleep_timer.seconds_remaining <= 30 * 60) {
+      seconds = 60 * 60;
+    } else if (snapshot_.sleep_timer.trigger == 1) {
+      trigger = 2;
+    }
+    client_.enqueue({CommandType::sleep_timer, seconds,
+                     static_cast<int32_t>((trigger << 8) | 1U)});
+    return;
+  }
+  for (size_t index = 0; index < power_buttons_.size(); ++index) {
+    if (target != power_buttons_[index]) {
+      continue;
+    }
+    if (snapshot_.connection != ConnectionState::online) {
+      return;
+    }
+    static constexpr std::array<const char *, 3> kMessages{
+        "Put the AIMP computer to sleep?\nPlayback and the remote connection will stop.",
+        "Restart the AIMP computer now?\nUnsaved work on that computer may be lost.",
+        "Shut down the AIMP computer now?\nUnsaved work on that computer may be lost."};
+    pending_power_action_ = static_cast<int32_t>(index);
+    lv_label_set_text(power_confirm_message_, kMessages[index]);
+    lv_obj_remove_flag(power_confirm_overlay_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(power_confirm_overlay_);
+    return;
+  }
+  if (target == power_cancel_button_) {
+    pending_power_action_ = -1;
+    lv_obj_add_flag(power_confirm_overlay_, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  if (target == power_confirm_button_) {
+    if (!advanced_demo_active_ && pending_power_action_ >= 0 && pending_power_action_ <= 2 &&
+        snapshot_.connection == ConnectionState::online) {
+      client_.enqueue({CommandType::computer_power, pending_power_action_});
+    }
+    pending_power_action_ = -1;
+    lv_obj_add_flag(power_confirm_overlay_, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  for (size_t index = 0; index < equalizer_gain_sliders_.size(); ++index) {
+    if (target != equalizer_gain_sliders_[index]) {
+      continue;
+    }
+    const int32_t value = lv_slider_get_value(target);
+    char db[16];
+    std::snprintf(db, sizeof(db), "%+.1f dB", (value - 150) / 10.0);
+    lv_label_set_text(equalizer_gain_values_[index], db);
+    if (code == LV_EVENT_RELEASED && !advanced_demo_active_ &&
+        snapshot_.connection == ConnectionState::online) {
+      client_.enqueue({CommandType::equalizer_gain,
+                       index == 0 ? -1 : static_cast<int32_t>(index - 1), value});
+    }
     return;
   }
   if (target == wifi_ssid_button_) {
