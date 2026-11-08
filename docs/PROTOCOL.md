@@ -66,9 +66,20 @@ not the per-item ID in playlist metadata (which AIMP may report as `-1`). Type
   observed constant `int32_t` value of 1.
 - Type 10 sets a one-byte rating from 0 through 5.
 - Type 20 clears a playlist.
+- Type 21 asks AIMP's media-library delegate to add a matching item to a
+  playlist. The live validation probe uses five `int32_t` values: destination
+  playlist ID followed by four zero values. With no optional filters enabled,
+  selection zero adds one media-library item to the disposable destination.
 - Type 32 removes a queue item (playlist ID and item index).
 - Type 42 creates a playlist from a parent/folder ID, reserved `uint16_t`, name
   byte length, and NUL-terminated name.
+
+Live AIMP 5 testing confirms seek subcommand 7 is expressed in milliseconds.
+The server may send a short burst of type 6 states around the requested
+position and then remain quiet while playback continues. The firmware therefore
+uses the most recent type 6 position as an authoritative sync point and
+extrapolates elapsed time locally while the published state is playing. A later
+type 6 state always replaces that estimate.
 
 ## Large playlists
 
@@ -87,4 +98,12 @@ failure without allocating the complete response or dropping the AIMP
 connection.
 
 The host probe in `tools/protocol_probe.py` implements the same framing,
-authentication, and LZ4 decoding without third-party Python dependencies.
+authentication, and LZ4 decoding without third-party Python dependencies. Its
+`validate-mutations --confirm-live-mutations` command confines create, populate,
+seek, remove, clear, and delete operations to a uniquely named scratch
+playlist. The rating step changes the shared media-library item added to that
+playlist and restores its original value before cleanup; an interrupted run can
+therefore leave that track's rating changed. The command records only packet
+types and sizes and restores the observed AIMP state in a `finally` block. The
+explicit confirmation flag prevents accidental mutation during routine
+read-only probing.

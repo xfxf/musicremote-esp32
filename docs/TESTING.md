@@ -68,9 +68,9 @@ Date: 2026-11-08 (Australia/Melbourne)
   The implementation is designed to freeze the last extrapolated value while
   offline, wait for a new type-6 sync after reconnect, preserve an optimistic
   seek target until a post-send host reply, and update elapsed text when
-  duration is unknown. Those edge cases still require targeted physical tests;
-  this run directly validates normal playing progress and a panic-free online
-  soak only.
+  duration is unknown. Offline freeze, reconnect sync, and unknown-duration
+  behavior still require targeted physical tests; this run directly validates
+  normal playing progress and a panic-free online soak only.
 - The issue #7 completion build replaced the multi-file index assembler with a
   single atomic staging file and rebuilt all 48,321 `NAS:Music` rows from the
   1,223,088-byte compressed response in about 110 seconds. The device remained
@@ -102,6 +102,38 @@ Date: 2026-11-08 (Australia/Melbourne)
   card, removed about 4 MB of interrupted staging files, retained/reused the
   prior promoted 48,321-row index, and restored the card's reported free space
   from 60,595 MB to 60,599 MB on the following boot.
+- Commit `f8cedf8` passed the issue #8 guarded live-mutation run, then was built,
+  hash-verified, and flashed as the clean production qualification image. Its
+  boot log reported app version `f8cedf8`, mounted the 60,786 MB microSD card,
+  passed the 2 MB PSRAM test, joined Wi-Fi, resolved the AIMP host, and
+  authenticated without a panic. The live run created a uniquely named
+  disposable playlist, populated it with one media-library item, played it,
+  and sought to 78,639 ms of a 157,279 ms track. AIMP replied with type 6 at
+  78,639 ms while remaining in the playing state. The same run
+  changed rating 0 to 1 and back to 0, removed the item (type 32), repopulated
+  and cleared the playlist (type 20), then deleted it (type 7/subcommand 16).
+  Type 42 creation and every resulting playlist count were confirmed by a
+  follow-up read; no validation playlist remained afterward.
+- The mutation probe logs only request/response message types, payload sizes,
+  counts, and command-result bytes. It recorded create `42/36`, population
+  `21/20`, seek `7/5`, rating `10/1`, removal `32/8`, clear `20/4`, and delete
+  `7/5`; authentication material and payload bodies were not captured.
+- The run restored its observed playlist, stopped/playing state, position,
+  volume 49,679, shuffle off, repeat mode 2, and rating 0. After qualification,
+  AIMP was explicitly returned to the original `Local files` playlist in the
+  stopped state.
+- For a separate post-seek device run, the host sought the playing track to
+  90,000 ms and confirmed type 6 state `playing` at that position before the
+  board connected. The physical display subsequently advanced from 2:52 to
+  2:59 with matching progress-knob movement. AIMP was again returned to
+  `Local files`, stopped at 0 ms, after both framebuffers were captured.
+- A temporary flash-only diagnostic hook sent LVGL's real long-press and click
+  events to the play control. Playback was running at 6:47 before the long
+  press, stopped at 0:00 on the long press, and remained stopped after the
+  release/click event. This directly proves the play control's long-press
+  suppression latch consumes the subsequent click; the queue and playlist
+  delete latches use the same event pattern but were not directly injected in
+  this run. The hook was removed before the production build.
 
 ## Visual inspection
 
@@ -119,6 +151,21 @@ Inspection covered orientation, navigation selection, clipping, list text,
 live state, theme-state colours, the right-aligned connection indicator, main
 volume control, the compact timeline layout, queue paging controls, and
 contiguous full-height bottom touch targets.
+
+The issue #8 captures below directly cover locally extrapolated progress,
+post-seek progress, and long-press suppression. On the same playing track,
+elapsed time advances from 1:43 to 1:49 with corresponding progress-knob
+movement despite no intervening authoritative type 6 update. After a separately
+confirmed seek to 1:30, the display advances from 2:52 to 2:59. The long-press
+pair shows playback before the gesture and still stopped after release:
+
+![Elapsed time at 1:43](../artifacts/device-progress-143.png)
+![Elapsed time at 1:49](../artifacts/device-progress-149.png)
+![Post-seek elapsed time at 2:52](../artifacts/device-postseek-252.png)
+![Post-seek elapsed time at 2:59](../artifacts/device-postseek-259.png)
+![Playing before long press](../artifacts/device-longpress-before.png)
+![Still stopped after release](../artifacts/device-longpress-release.png)
+![Final f8cedf8 production image online and stopped](../artifacts/device-issue8-final.png)
 
 The following two large-playlist captures come from commit `f7a2374`, before
 `f68297c` moved queue titles to x=48. They do not yet show the current row
