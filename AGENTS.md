@@ -48,6 +48,19 @@ independent AIMP remote that interoperates with the MonkeyMote AIMP plugin.
 
 ## Code Review Rules
 
+### Review workflow
+
+- For each implementation pull request, run one adversarial review in a
+  dedicated subagent after the build, tests, and hardware evidence are ready.
+- The reviewer must inspect the diff and validation evidence for correctness,
+  protocol safety, bounded memory use, responsive touch behavior, secrets, and
+  regressions on the physical device.
+- Resolve all actionable findings before merge. A single focused follow-up
+  review may verify fixes for blocking findings; do not run repeated broad or
+  token-heavy review loops.
+- Record the reviewer outcome on the pull request. Built-in pull-request review
+  may supplement this workflow, but it is not a prerequisite for local work.
+
 ### Protocol compatibility
 
 - Flag any packet parser that trusts remote counts, lengths, or decompressed
