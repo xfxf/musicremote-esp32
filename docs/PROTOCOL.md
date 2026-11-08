@@ -100,7 +100,10 @@ connection.
 The host probe in `tools/protocol_probe.py` implements the same framing,
 authentication, and LZ4 decoding without third-party Python dependencies. Its
 `validate-mutations --confirm-live-mutations` command confines create, populate,
-rating, seek, remove, clear, and delete operations to a uniquely named scratch
-playlist, records only packet types and sizes, and restores the observed AIMP
-state in a `finally` block. The explicit confirmation flag prevents accidental
-mutation during routine read-only probing.
+seek, remove, clear, and delete operations to a uniquely named scratch
+playlist. The rating step changes the shared media-library item added to that
+playlist and restores its original value before cleanup; an interrupted run can
+therefore leave that track's rating changed. The command records only packet
+types and sizes and restores the observed AIMP state in a `finally` block. The
+explicit confirmation flag prevents accidental mutation during routine
+read-only probing.

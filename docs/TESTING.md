@@ -68,9 +68,9 @@ Date: 2026-11-08 (Australia/Melbourne)
   The implementation is designed to freeze the last extrapolated value while
   offline, wait for a new type-6 sync after reconnect, preserve an optimistic
   seek target until a post-send host reply, and update elapsed text when
-  duration is unknown. Those edge cases still require targeted physical tests;
-  this run directly validates normal playing progress and a panic-free online
-  soak only.
+  duration is unknown. Offline freeze, reconnect sync, and unknown-duration
+  behavior still require targeted physical tests; this run directly validates
+  normal playing progress and a panic-free online soak only.
 - The issue #7 completion build replaced the multi-file index assembler with a
   single atomic staging file and rebuilt all 48,321 `NAS:Music` rows from the
   1,223,088-byte compressed response in about 110 seconds. The device remained
@@ -118,11 +118,18 @@ Date: 2026-11-08 (Australia/Melbourne)
   volume 49,679, shuffle off, repeat mode 2, and rating 0. After qualification,
   AIMP was explicitly returned to the original `Local files` playlist in the
   stopped state.
+- For a separate post-seek device run, the host sought the playing track to
+  90,000 ms and confirmed type 6 state `playing` at that position before the
+  board connected. The physical display subsequently advanced from 2:52 to
+  2:59 with matching progress-knob movement. AIMP was again returned to
+  `Local files`, stopped at 0 ms, after both framebuffers were captured.
 - A temporary flash-only diagnostic hook sent LVGL's real long-press and click
   events to the play control. Playback was running at 6:47 before the long
   press, stopped at 0:00 on the long press, and remained stopped after the
-  release/click event. This proves the long-press suppression latch consumes
-  the subsequent click. The hook was removed before the production build.
+  release/click event. This directly proves the play control's long-press
+  suppression latch consumes the subsequent click; the queue and playlist
+  delete latches use the same event pattern but were not directly injected in
+  this run. The hook was removed before the production build.
 
 ## Visual inspection
 
@@ -141,14 +148,17 @@ live state, theme-state colours, the right-aligned connection indicator, main
 volume control, the compact timeline layout, queue paging controls, and
 contiguous full-height bottom touch targets.
 
-The issue #8 captures below directly cover locally extrapolated progress and
-long-press suppression. On the same playing track, elapsed time advances from
-1:43 to 1:49 with corresponding progress-knob movement despite no intervening
-authoritative type 6 update. The long-press pair shows playback before the
-gesture and still stopped after release:
+The issue #8 captures below directly cover locally extrapolated progress,
+post-seek progress, and long-press suppression. On the same playing track,
+elapsed time advances from 1:43 to 1:49 with corresponding progress-knob
+movement despite no intervening authoritative type 6 update. After a separately
+confirmed seek to 1:30, the display advances from 2:52 to 2:59. The long-press
+pair shows playback before the gesture and still stopped after release:
 
 ![Elapsed time at 1:43](../artifacts/device-progress-143.png)
 ![Elapsed time at 1:49](../artifacts/device-progress-149.png)
+![Post-seek elapsed time at 2:52](../artifacts/device-postseek-252.png)
+![Post-seek elapsed time at 2:59](../artifacts/device-postseek-259.png)
 ![Playing before long press](../artifacts/device-longpress-before.png)
 ![Still stopped after release](../artifacts/device-longpress-release.png)
 

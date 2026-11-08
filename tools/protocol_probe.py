@@ -661,7 +661,12 @@ def validate_mutations_and_restore(
             client.send(10, bytes((test_rating,)))
             client.collect(0.5)
         if baseline_playlist is not None:
-            activate_and_wait(client, baseline_playlist)
+            try:
+                activate_and_wait(client, baseline_playlist)
+            except RuntimeError as exc:
+                notes.append(
+                    f"WARNING: baseline playlist reactivation not confirmed: {exc}"
+                )
         if scratch_id is not None:
             delete_payload = struct.pack("<Bi", 16, scratch_id)
             client.send(7, delete_payload)
@@ -739,7 +744,10 @@ def validate_mutations_and_restore(
             ):
                 raise RuntimeError("AIMP baseline restoration did not verify")
         if baseline_track is not None:
-            notes.append(f"baseline track rating remained {baseline_track.rating}")
+            notes.append(
+                f"baseline track rating captured before run={baseline_track.rating}; "
+                "scratch-item rating restoration was verified separately"
+            )
     return notes
 
 
@@ -940,14 +948,15 @@ def main() -> int:
                 print(note)
             return 0
         if args.command == "play-row":
-            activate_and_wait(client, args.playlist_id)
+            if args.playlist_id >= 0:
+                activate_and_wait(client, args.playlist_id)
             playback_command(client, 10, args.queue_row)
             playback_command(client, 1, 0)
             frames = client.collect(1.5)
             track = latest_track_info(frames)
             state = latest_playback(frames)
             print(
-                f"play-row confirmed playlist={args.playlist_id} row={args.queue_row} "
+                f"play-row requested playlist={args.playlist_id} row={args.queue_row} "
                 f"track={None if track is None else track.title!r} "
                 f"state={None if state is None else state.state}"
             )
