@@ -65,6 +65,7 @@ configure_file(
 idf_component_register(
     SRCS
         "app_main.cpp"
+        "artwork_decoder.cpp"
         "monkeymote_client.cpp"
         "playlist_index.cpp"
         "music_ui.cpp"
@@ -74,6 +75,7 @@ idf_component_register(
         esp_netif
         esp_wifi
         esp_http_server
+        esp_rom
         fatfs
         spiffs
         nvs_flash

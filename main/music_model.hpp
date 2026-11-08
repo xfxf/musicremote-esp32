@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -33,6 +34,16 @@ struct Playlist {
   std::string name;
 };
 
+enum class ArtworkState : uint8_t { none, loading, ready, unavailable, failed };
+
+struct ArtworkBitmap {
+  uint16_t width{0};
+  uint16_t height{0};
+  uint32_t stride{0};
+  // LVGL's RGB888 storage order on this target is B, G, R.
+  std::vector<uint8_t> pixels;
+};
+
 struct Snapshot {
   ConnectionState connection{ConnectionState::offline};
   PlaybackState playback{PlaybackState::unknown};
@@ -43,6 +54,10 @@ struct Snapshot {
   int64_t position_updated_us{0};
   int64_t seek_sent_us{0};
   Track now_playing;
+  ArtworkState artwork_state{ArtworkState::none};
+  std::shared_ptr<const ArtworkBitmap> artwork;
+  std::string artwork_track_key;
+  uint64_t artwork_revision{0};
   int32_t active_queue_index{-1};
   int32_t active_playlist_id{-1};
   std::string active_playlist_name{"CURRENT PLAYLIST"};

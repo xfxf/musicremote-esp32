@@ -1,5 +1,6 @@
 #pragma once
 
+#include "artwork_decoder.hpp"
 #include "music_model.hpp"
 #include "playlist_index.hpp"
 
@@ -102,6 +103,7 @@ private:
   std::vector<uint8_t> receive_buffer_;
   size_t discard_remaining_{0};
   PlaylistIndex playlist_index_;
+  ArtworkDecoder artwork_decoder_;
   FILE *streamed_frame_{nullptr};
   size_t streamed_remaining_{0};
   std::atomic<bool> index_building_{false};
@@ -109,6 +111,8 @@ private:
   bool queue_filter_active_{false};
   PlaylistIndex::SearchMode queue_filter_mode_{PlaylistIndex::SearchMode::contains};
   std::string queue_filter_;
+  std::string cover_track_key_;
+  bool cover_request_pending_{false};
   int64_t last_receive_us_{0};
   int64_t last_ping_us_{0};
   std::mutex commands_mutex_;

@@ -71,6 +71,12 @@ class TrackInfo:
     artist: str
 
 
+@dataclass(frozen=True)
+class CoverArt:
+    identity: bytes
+    jpeg: bytes
+
+
 class Client:
     def __init__(self, host: str, port: int, password: str, timeout: float = 4.0):
         self.host = host
@@ -213,6 +219,22 @@ def expand_frame(frame: Frame) -> Frame:
     if size > MAX_DECODED_PAYLOAD:
         raise ValueError(f"decoded payload too large: {size}")
     return Frame(inner_type, lz4_decompress_block(frame.payload[10:], size))
+
+
+def parse_cover_frame(frame: Frame) -> CoverArt | None:
+    frame = expand_frame(frame)
+    if frame.message_type != 8 or len(frame.payload) < 24:
+        return None
+    jpeg_size = struct.unpack_from("<I", frame.payload)[0]
+    jpeg = frame.payload[20:]
+    if (
+        jpeg_size != len(jpeg)
+        or jpeg_size > 256 * 1024
+        or not jpeg.startswith(b"\xff\xd8")
+        or not jpeg.endswith(b"\xff\xd9")
+    ):
+        raise ValueError("invalid cover-art response")
+    return CoverArt(frame.payload[4:20], jpeg)
 
 
 def latest_playback(frames: list[Frame]) -> PlaybackSnapshot | None:
@@ -869,6 +891,15 @@ def describe(frame: Frame) -> str:
         repeat = p[6]
         volume = p[7] if len(p) == 8 else struct.unpack_from("<H", p, 8)[0]
         return f"playback position_ms={position} state={state} shuffle={shuffle} repeat={repeat} volume={volume}"
+    if frame.message_type == 8:
+        cover = parse_cover_frame(frame)
+        if cover is None:
+            return f"invalid cover response bytes={len(p)}"
+        return (
+            f"cover jpeg_bytes={len(cover.jpeg)} "
+            f"identity={cover.identity.hex()} "
+            f"sha256={hashlib.sha256(cover.jpeg).hexdigest()}"
+        )
     if frame.message_type == 28 and len(p) == 8:
         return f"capabilities=0x{struct.unpack('<Q', p)[0]:016x}"
     if frame.message_type == 41 and len(p) >= 12:
@@ -908,11 +939,13 @@ def main() -> int:
             "validate-mutations",
             "cleanup-validation",
             "play-row",
+            "cover",
             "stop",
         ),
     )
     parser.add_argument("--playlist-id", type=int, default=-1)
     parser.add_argument("--queue-row", type=int, default=0)
+    parser.add_argument("--cover-size", type=int, default=144)
     parser.add_argument(
         "--confirm-live-mutations",
         action="store_true",
@@ -966,6 +999,28 @@ def main() -> int:
             for frame in client.collect(1.0):
                 print(describe(frame))
             return 0
+        if args.command == "cover":
+            if not 1 <= args.cover_size <= 256:
+                raise RuntimeError("--cover-size must be between 1 and 256")
+            client.send(4, struct.pack("<Bii", 3, args.cover_size, args.cover_size))
+            frames = client.collect(1.5)
+            covers = [
+                cover
+                for frame in frames
+                if (cover := parse_cover_frame(frame)) is not None
+            ]
+            if covers:
+                cover = covers[-1]
+                print(
+                    f"cover size={args.cover_size} jpeg_bytes={len(cover.jpeg)} "
+                    f"identity={cover.identity.hex()} "
+                    f"sha256={hashlib.sha256(cover.jpeg).hexdigest()}"
+                )
+                return 0
+            if any(expand_frame(frame).message_type == 13 for frame in frames):
+                print(f"cover unavailable size={args.cover_size}")
+                return 0
+            raise RuntimeError("AIMP did not return a cover response")
         if args.command == "playlists":
             client.send(4, struct.pack("<Bi", 13, args.playlist_id))
         elif args.command == "playlist":

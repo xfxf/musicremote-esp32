@@ -19,4 +19,5 @@ probe:
 
 check: build
 	python3 -m py_compile tools/protocol_probe.py
+	PYTHONPATH=tools python3 -m unittest tools/test_protocol_probe.py
 	git check-ignore .env

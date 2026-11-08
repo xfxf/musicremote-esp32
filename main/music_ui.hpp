@@ -4,6 +4,7 @@
 #include "music_model.hpp"
 
 #include <mutex>
+#include <memory>
 #include <vector>
 
 #include "lvgl.h"
@@ -66,6 +67,7 @@ private:
   size_t rendered_playlist_size_{SIZE_MAX};
   uint64_t rendered_queue_revision_{UINT64_MAX};
   uint64_t rendered_playlist_revision_{UINT64_MAX};
+  uint64_t rendered_artwork_revision_{UINT64_MAX};
   size_t queue_build_index_{0};
   size_t queue_build_limit_{0};
   size_t queue_page_start_{0};
@@ -95,6 +97,8 @@ private:
 
   lv_obj_t *title_label_{nullptr};
   lv_obj_t *art_{nullptr};
+  lv_obj_t *art_image_{nullptr};
+  lv_obj_t *art_fallback_{nullptr};
   lv_obj_t *rating_label_{nullptr};
   lv_obj_t *artist_label_{nullptr};
   lv_obj_t *album_label_{nullptr};
@@ -125,6 +129,8 @@ private:
   lv_obj_t *search_overlay_{nullptr};
   lv_obj_t *search_textarea_{nullptr};
   lv_obj_t *search_keyboard_{nullptr};
+  lv_image_dsc_t artwork_descriptor_{};
+  std::shared_ptr<const ArtworkBitmap> displayed_artwork_;
 };
 
 } // namespace musicremote
