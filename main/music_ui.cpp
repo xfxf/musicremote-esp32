@@ -98,6 +98,8 @@ bool MusicUi::select_page_for_diagnostics(uint8_t page) {
   lv_obj_set_hidden(search_overlay_, true);
   lv_obj_set_hidden(library_overlay_, true);
   lv_obj_set_hidden(lyrics_overlay_, true);
+  lv_obj_set_hidden(settings_overlay_, true);
+  lv_obj_set_hidden(setting_editor_, true);
   show_page(static_cast<Page>(page));
   return true;
 }
@@ -113,6 +115,8 @@ bool MusicUi::select_overlay_for_diagnostics(uint8_t overlay) {
   lv_obj_set_hidden(search_overlay_, overlay != 2);
   lv_obj_set_hidden(library_overlay_, overlay != 3);
   lv_obj_set_hidden(lyrics_overlay_, overlay != 4);
+  lv_obj_set_hidden(settings_overlay_, true);
+  lv_obj_set_hidden(setting_editor_, true);
   if (overlay == 1) {
     lv_obj_move_foreground(filter_overlay_);
   } else if (overlay == 2) {
@@ -136,6 +140,8 @@ bool MusicUi::select_library_category_for_diagnostics(uint8_t category) {
   lv_obj_set_hidden(filter_overlay_, true);
   lv_obj_set_hidden(search_overlay_, true);
   lv_obj_set_hidden(lyrics_overlay_, true);
+  lv_obj_set_hidden(settings_overlay_, true);
+  lv_obj_set_hidden(setting_editor_, true);
   lv_obj_set_hidden(library_overlay_, false);
   lv_obj_move_foreground(library_overlay_);
   lv_label_set_text(library_count_, "LOADING...");
@@ -151,6 +157,10 @@ bool MusicUi::select_settings_for_diagnostics(uint8_t section) {
   std::lock_guard lock(mutex_);
   last_interaction_us_ = esp_timer_get_time();
   set_display_blank(false);
+  lv_obj_set_hidden(filter_overlay_, true);
+  lv_obj_set_hidden(search_overlay_, true);
+  lv_obj_set_hidden(library_overlay_, true);
+  lv_obj_set_hidden(lyrics_overlay_, true);
   lv_obj_set_hidden(setting_editor_, true);
   show_settings_section(static_cast<SettingsSection>(section));
   return true;
