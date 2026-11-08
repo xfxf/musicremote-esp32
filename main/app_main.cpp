@@ -37,7 +37,7 @@ esp_err_t screenshot_handler(httpd_req_t *request) {
   auto *context = static_cast<DiagnosticContext *>(request->user_ctx);
   auto *ui = context == nullptr ? nullptr : context->ui;
   char query[192]{};
-  char page[16]{};
+  char page[32]{};
   uint32_t render_delay_ms = 500;
   if (ui != nullptr && httpd_req_get_url_query_str(request, query, sizeof(query)) == ESP_OK &&
       httpd_query_key_value(query, "page", page, sizeof(page)) == ESP_OK) {
