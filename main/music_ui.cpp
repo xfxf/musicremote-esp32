@@ -742,6 +742,11 @@ void MusicUi::create_settings_overlays() {
   settings_title_ = make_label(settings_overlay_, "PLAYBACK", &lv_font_montserrat_22,
                                color(kText));
   lv_obj_set_pos(settings_title_, 14, 14);
+  settings_notice_ = make_label(settings_overlay_, "", &lv_font_montserrat_14,
+                                color(0xE04F5F));
+  lv_obj_set_pos(settings_notice_, 214, 18);
+  lv_obj_set_size(settings_notice_, 130, 18);
+  lv_obj_set_style_text_align(settings_notice_, LV_TEXT_ALIGN_RIGHT, 0);
   settings_back_button_ = make_button(settings_overlay_, LV_SYMBOL_LEFT " BACK", 112, 48);
   lv_obj_set_pos(settings_back_button_, 356, 4);
   lv_obj_add_event_cb(settings_back_button_, event_handler, LV_EVENT_CLICKED, this);
@@ -859,6 +864,10 @@ void MusicUi::create_settings_overlays() {
                                    &lv_font_montserrat_14, color(kAccent));
   lv_obj_set_pos(capabilities_value_, 10, 4);
   lv_obj_set_width(capabilities_value_, 420);
+  settings_storage_value_ = make_label(storage, "SETTINGS STORAGE: NVS OK",
+                                       &lv_font_montserrat_14, color(kAccent));
+  lv_obj_set_pos(settings_storage_value_, 10, 24);
+  lv_obj_set_width(settings_storage_value_, 420);
 
   setting_editor_ = lv_obj_create(root_);
   lv_obj_remove_style_all(setting_editor_);
@@ -912,6 +921,7 @@ void MusicUi::show_settings_section(SettingsSection section) {
     lv_obj_set_hidden(settings_panels_[i], i != static_cast<size_t>(section));
   }
   lv_label_set_text(settings_title_, kTitles[static_cast<size_t>(section)]);
+  lv_label_set_text(settings_notice_, settings_.persistence_available() ? "" : "NVS UNAVAILABLE");
   refresh_setting_labels();
   lv_obj_remove_flag(settings_overlay_, LV_OBJ_FLAG_HIDDEN);
   lv_obj_move_foreground(settings_overlay_);
@@ -949,6 +959,11 @@ void MusicUi::refresh_setting_labels() {
     break;
   }
   lv_label_set_text(auto_blank_value_, blank);
+  const bool persistent = settings_.persistence_available();
+  lv_label_set_text(settings_storage_value_, persistent ? "SETTINGS STORAGE: NVS OK"
+                                                        : "SETTINGS STORAGE: UNAVAILABLE");
+  lv_obj_set_style_text_color(settings_storage_value_,
+                              persistent ? color(kAccent) : color(0xE04F5F), 0);
 }
 
 void MusicUi::begin_setting_edit(SettingField field, const char *title, bool password) {
@@ -1000,37 +1015,46 @@ void MusicUi::finish_setting_edit(bool save) {
   }
   const char *text = lv_textarea_get_text(setting_editor_textarea_);
   const std::string value = text == nullptr ? "" : text;
+  bool valid = false;
   bool stored = false;
   switch (editing_field_) {
   case SettingField::wifi_ssid:
-    stored = settings_.set_wifi_ssid(value);
+    valid = DeviceSettings::valid_wifi_ssid(value);
+    stored = valid && settings_.set_wifi_ssid(value);
     break;
   case SettingField::wifi_password:
-    stored = settings_.set_wifi_password(value);
+    valid = DeviceSettings::valid_wifi_password(value);
+    stored = valid && settings_.set_wifi_password(value);
     break;
   case SettingField::server_host:
-    stored = settings_.set_server_host(value);
+    valid = DeviceSettings::valid_server_host(value);
+    stored = valid && settings_.set_server_host(value);
     break;
   case SettingField::server_port: {
     char *end = nullptr;
     const unsigned long port = std::strtoul(value.c_str(), &end, 10);
-    stored = end != value.c_str() && end != nullptr && *end == '\0' && port <= UINT16_MAX &&
-             port != 0 && settings_.set_server_port(static_cast<uint16_t>(port));
+    valid = end != value.c_str() && end != nullptr && *end == '\0' && port <= UINT16_MAX &&
+            port != 0;
+    stored = valid && settings_.set_server_port(static_cast<uint16_t>(port));
     break;
   }
   case SettingField::server_password:
-    stored = settings_.set_server_password(value);
+    valid = DeviceSettings::valid_server_password(value);
+    stored = valid && settings_.set_server_password(value);
     break;
   case SettingField::none:
     break;
   }
   if (!stored) {
-    lv_label_set_text(setting_editor_message_, "INVALID VALUE - CHECK LENGTH OR PORT");
+    lv_label_set_text(setting_editor_message_, valid ? "SAVE FAILED - SETTINGS STORAGE UNAVAILABLE"
+                                                     : "INVALID VALUE - CHECK FORMAT OR PORT");
     lv_obj_set_style_text_color(setting_editor_message_, color(0xE04F5F), 0);
+    refresh_setting_labels();
     return;
   }
   editing_field_ = SettingField::none;
   lv_obj_add_flag(setting_editor_, LV_OBJ_FLAG_HIDDEN);
+  lv_label_set_text(settings_notice_, "");
   refresh_setting_labels();
 }
 
@@ -1586,13 +1610,24 @@ void MusicUi::handle_event(lv_event_t *event) {
     brightness_callback_(brightness);
     last_interaction_us_ = esp_timer_get_time();
     if (code == LV_EVENT_RELEASED) {
-      settings_.set_brightness(brightness);
+      if (!settings_.set_brightness(brightness)) {
+        const uint8_t stored_brightness = settings_.snapshot().brightness;
+        brightness_callback_(stored_brightness);
+        lv_label_set_text(settings_notice_, "SAVE FAILED");
+        refresh_setting_labels();
+      } else {
+        lv_label_set_text(settings_notice_, "");
+      }
     }
     return;
   }
   if (target == auto_blank_button_) {
     const uint32_t current = settings_.snapshot().auto_blank_seconds;
-    settings_.set_auto_blank_seconds(settings_policy::next_auto_blank_seconds(current));
+    if (!settings_.set_auto_blank_seconds(settings_policy::next_auto_blank_seconds(current))) {
+      lv_label_set_text(settings_notice_, "SAVE FAILED");
+    } else {
+      lv_label_set_text(settings_notice_, "");
+    }
     last_interaction_us_ = esp_timer_get_time();
     refresh_setting_labels();
     return;

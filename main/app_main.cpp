@@ -213,7 +213,13 @@ bool connect_wifi(const musicremote::DeviceSettingsData &settings) {
   wifi_config.sta.pmf_cfg.required = false;
 
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-  ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+  const esp_err_t wifi_config_status = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+  if (wifi_config_status != ESP_OK) {
+    ESP_LOGE(kTag, "Could not apply stored Wi-Fi settings: %s",
+             esp_err_to_name(wifi_config_status));
+    esp_wifi_deinit();
+    return false;
+  }
   ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
   ESP_ERROR_CHECK(esp_wifi_start());
 
@@ -234,13 +240,17 @@ extern "C" void app_main() {
   }
 
   static musicremote::DeviceSettings settings;
-  settings.load({.wifi_ssid = MUSICREMOTE_WIFI_SSID,
-                 .wifi_password = MUSICREMOTE_WIFI_PASSWORD,
-                 .server_host = MUSICREMOTE_AIMP_HOST,
-                 .server_port = static_cast<uint16_t>(MUSICREMOTE_AIMP_PORT),
-                 .server_password = MUSICREMOTE_AIMP_PASSWORD,
-                 .brightness = 82,
-                 .auto_blank_seconds = 300});
+  const bool settings_ready = settings.load({.wifi_ssid = MUSICREMOTE_WIFI_SSID,
+                                             .wifi_password = MUSICREMOTE_WIFI_PASSWORD,
+                                             .server_host = MUSICREMOTE_AIMP_HOST,
+                                             .server_port = static_cast<uint16_t>(
+                                                 MUSICREMOTE_AIMP_PORT),
+                                             .server_password = MUSICREMOTE_AIMP_PASSWORD,
+                                             .brightness = 82,
+                                             .auto_blank_seconds = 300});
+  if (!settings_ready) {
+    ESP_LOGE(kTag, "Persistent settings unavailable; running with in-memory defaults");
+  }
   const musicremote::DeviceSettingsData boot_settings = settings.snapshot();
 
   auto &board = espp::SmartPanleeSc01Plus::get();

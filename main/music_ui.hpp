@@ -166,8 +166,10 @@ private:
   lv_obj_t *display_settings_button_{nullptr};
   lv_obj_t *storage_settings_button_{nullptr};
   lv_obj_t *capabilities_value_{nullptr};
+  lv_obj_t *settings_storage_value_{nullptr};
   lv_obj_t *settings_overlay_{nullptr};
   lv_obj_t *settings_title_{nullptr};
+  lv_obj_t *settings_notice_{nullptr};
   lv_obj_t *settings_back_button_{nullptr};
   lv_obj_t *settings_panels_[4]{};
   lv_obj_t *wifi_ssid_button_{nullptr};

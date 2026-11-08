@@ -29,6 +29,7 @@ public:
 
   bool load(DeviceSettingsData defaults);
   DeviceSettingsData snapshot() const;
+  bool persistence_available() const;
 
   bool set_wifi_ssid(const std::string &value);
   bool set_wifi_password(const std::string &value);
@@ -49,12 +50,14 @@ private:
   bool set_string(const char *key, std::string DeviceSettingsData::*member,
                   const std::string &value, size_t maximum, bool allow_empty);
   bool commit_locked();
-  void load_string_locked(const char *key, std::string &destination, size_t maximum,
-                          bool allow_empty);
+  bool seed_locked();
+  bool load_string_locked(const char *key, std::string &destination, size_t maximum,
+                          bool (*validator)(const std::string &));
 
   mutable std::mutex mutex_;
   DeviceSettingsData data_;
   nvs_handle_t handle_{0};
+  bool persistence_available_{false};
 };
 
 } // namespace musicremote

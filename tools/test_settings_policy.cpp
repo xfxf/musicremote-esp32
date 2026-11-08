@@ -10,8 +10,14 @@ int main() {
   assert(valid_wifi_ssid(std::string(32, 's')));
   assert(!valid_wifi_ssid(std::string(33, 's')));
   assert(valid_wifi_password(""));
-  assert(valid_wifi_password(std::string(64, 'p')));
+  assert(!valid_wifi_password("short"));
+  assert(valid_wifi_password("eight888"));
+  assert(valid_wifi_password(std::string(63, 'p')));
+  assert(valid_wifi_password(std::string(64, 'a')));
+  assert(valid_wifi_password(std::string(64, 'F')));
+  assert(!valid_wifi_password(std::string(64, 'p')));
   assert(!valid_wifi_password(std::string(65, 'p')));
+  assert(!valid_wifi_password(std::string("password\n")));
   assert(!valid_server_host(""));
   assert(valid_server_host(std::string(127, 'h')));
   assert(!valid_server_host(std::string(128, 'h')));
