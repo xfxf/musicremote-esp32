@@ -147,6 +147,20 @@ Date: 2026-11-08 (Australia/Melbourne)
   128-bit track identity stored inside each entry, preventing truncated-name
   collisions from displaying incorrect art. A reset then logged a 2,941-byte
   cache hit and decoded it successfully before processing the fresh host reply.
+- Review qualification then drove 36 consecutive live track changes from the
+  physical panel firmware. For the first 24, a temporary two-entry threshold
+  forced the unchanged production pruning path on every over-capacity write;
+  uppercase FatFS 8.3 entries were counted and one entry was pruned after each
+  fresh 2,941-byte JPEG. A further 12 transitions recorded stable low-water
+  marks: internal RAM settled at 16,179 bytes and PSRAM at 1,201,084 bytes,
+  with no later decline, panic, reset, stale cover, or unresponsive capture.
+  The production thresholds (128 entries/16 MiB on SD) were restored afterward.
+- A separate `MUSICREMOTE_PLAYLIST_STORAGE_OVERRIDE=flash` build mounted the
+  3.7 MiB SPIFFS partition with the SD path disabled. It wrote a fresh
+  2,941-byte artwork entry for key `4cc712f2c3e1aed612e028c10ff0ec38`;
+  after a hardware reset the same key logged a cache hit and decoded before the
+  live host reply. The qualification-only storage override and diagnostics were
+  removed before the production build.
 
 ## Visual inspection
 

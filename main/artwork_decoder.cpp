@@ -183,10 +183,11 @@ void ArtworkDecoder::task_entry(void *context) {
 void ArtworkDecoder::run() {
   if (!cache_directory_.empty()) {
     if (mkdir(config_.storage_directory.c_str(), 0755) != 0 &&
-        errno != EEXIST) {
+        errno != EEXIST && errno != ENOTSUP) {
       ESP_LOGW(kTag, "Could not create storage directory: errno=%d", errno);
     }
-    if (mkdir(cache_directory_.c_str(), 0755) != 0 && errno != EEXIST) {
+    if (mkdir(cache_directory_.c_str(), 0755) != 0 && errno != EEXIST &&
+        errno != ENOTSUP) {
       ESP_LOGW(kTag, "Could not create cache directory: errno=%d", errno);
     }
     prune_cache();
