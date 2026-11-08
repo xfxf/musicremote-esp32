@@ -53,6 +53,89 @@ int main() {
   const auto request = make_state_request(19);
   assert(request == std::vector<uint8_t>({19, 0, 0, 0, 0}));
   assert(make_state_request(16).empty());
+
+  RequestTracker requests;
+  const uint8_t all_requests = kEqualizerStateRequest |
+                               kEqualizerPresetsRequest |
+                               kSleepTimerStateRequest;
+  requests.begin(all_requests, 100);
+  assert(requests.pending_mask() == all_requests);
+  assert(requests.deadline_us() == 100);
+  requests.complete(kEqualizerStateRequest);
+  assert(requests.pending_mask() ==
+         (kEqualizerPresetsRequest | kSleepTimerStateRequest));
+  assert(requests.expire(99) == 0);
+  assert(requests.expire(100) ==
+         (kEqualizerPresetsRequest | kSleepTimerStateRequest));
+  assert(requests.pending_mask() == 0 && requests.deadline_us() == 0);
+
+  // A retry gets a fresh deadline. A valid reply completes it even if an
+  // earlier request for the same response kind already timed out.
+  requests.begin(kSleepTimerStateRequest, 200);
+  requests.complete(kSleepTimerStateRequest);
+  assert(requests.expire(200) == 0);
+  requests.begin(kSleepTimerStateRequest, 300);
+  assert(requests.expire(300) == kSleepTimerStateRequest);
+  requests.begin(all_requests, 400);
+  requests.complete(kEqualizerStateRequest);
+  requests.complete(kEqualizerPresetsRequest);
+  requests.complete(kSleepTimerStateRequest);
+  assert(requests.pending_mask() == 0 && requests.deadline_us() == 0);
+  requests.begin(all_requests, 500);
+  requests.reset();
+  assert(requests.pending_mask() == 0 && requests.deadline_us() == 0);
+
+  AvailabilityState availability;
+  assert(availability.begin(all_requests, 0) == all_requests);
+  assert(availability.equalizer == StateAvailability::loading);
+  assert(availability.equalizer_presets == StateAvailability::loading);
+  assert(availability.sleep_timer == StateAvailability::loading);
+  assert(availability.complete(kEqualizerStateRequest) ==
+         kEqualizerStateRequest);
+  assert(availability.equalizer == StateAvailability::ready);
+  assert(availability.expire(kEqualizerPresetsRequest |
+                             kSleepTimerStateRequest) ==
+         (kEqualizerPresetsRequest | kSleepTimerStateRequest));
+  assert(availability.equalizer == StateAvailability::ready);
+  assert(availability.equalizer_presets == StateAvailability::unavailable);
+  assert(availability.sleep_timer == StateAvailability::unavailable);
+
+  // A valid late response restores readiness. Retrying only selected request
+  // kinds returns those controls to loading without disturbing ready state.
+  assert(availability.complete(kSleepTimerStateRequest) ==
+         kSleepTimerStateRequest);
+  assert(availability.sleep_timer == StateAvailability::ready);
+  assert(availability.begin(kEqualizerPresetsRequest |
+                                kSleepTimerStateRequest,
+                            0) ==
+         (kEqualizerPresetsRequest | kSleepTimerStateRequest));
+  assert(availability.equalizer == StateAvailability::ready);
+  assert(availability.equalizer_presets == StateAvailability::loading);
+  assert(availability.sleep_timer == StateAvailability::loading);
+  assert(availability.complete(kSleepTimerStateRequest) ==
+         kSleepTimerStateRequest);
+  assert(availability.expire(kEqualizerPresetsRequest) ==
+         kEqualizerPresetsRequest);
+  availability.reset();
+  assert(availability.equalizer == StateAvailability::not_requested);
+  assert(availability.equalizer_presets == StateAvailability::not_requested);
+  assert(availability.sleep_timer == StateAvailability::not_requested);
+
+  SleepTimerState unknown_timer;
+  assert(!sleep_timer_mutation_allowed(StateAvailability::loading,
+                                       unknown_timer));
+  assert(!sleep_timer_mutation_allowed(StateAvailability::ready,
+                                       unknown_timer));
+  timer.known = true;
+  assert(sleep_timer_mutation_allowed(StateAvailability::ready, timer));
+  assert(!sleep_timer_mutation_allowed(StateAvailability::unavailable, timer));
+  EqualizerState known_equalizer;
+  known_equalizer.known = true;
+  assert(equalizer_mutation_allowed(StateAvailability::ready, known_equalizer));
+  assert(!equalizer_mutation_allowed(StateAvailability::loading,
+                                     known_equalizer));
+  assert(!equalizer_mutation_allowed(StateAvailability::unavailable,
+                                     known_equalizer));
   assert(make_computer_power(0) == std::vector<uint8_t>({14, 0}));
   assert(make_computer_power(3).empty());
 }

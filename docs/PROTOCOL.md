@@ -97,7 +97,12 @@ not the per-item ID in playlist metadata (which AIMP may report as `-1`). Type
 - Type 4 subcommands 17, 18, and 19 plus an `int32_t` zero request equalizer
   state, equalizer preset names, and sleep-timer state respectively. They
   produce types 48, 49, and 51. The production client sends these requests
-  only after the corresponding capability bit is known.
+  only after the corresponding capability bit is known. Each outstanding
+  response kind has a five-second deadline. A missing response marks only that
+  state unavailable without disconnecting the otherwise healthy session; a
+  later valid response remains authoritative and restores the ready state.
+  Sleep-timer writes additionally require a received type-51 baseline, not
+  merely the advertised capability bit.
 - Type 24 searches the complete media library. Its body is the `int32_t`
   request ID followed by a NUL-terminated UTF-8 query. Search result rows are
   subsequently addressed through type 44 using the same request ID.

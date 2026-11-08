@@ -208,6 +208,8 @@ bool MusicUi::select_advanced_demo_for_diagnostics(uint8_t view) {
   demo.equalizer.preamp_tenths_offset = 150;
   demo.equalizer.bands = {{70, 150}, {180, 165}, {320, 155}, {600, 145},
                           {1000, 150}, {3000, 160}, {6000, 150}, {12000, 140}};
+  demo.advanced_availability.equalizer = advanced::StateAvailability::ready;
+  demo.advanced_availability.equalizer_presets = advanced::StateAvailability::ready;
   demo.equalizer_revision = rendered_equalizer_revision_ == UINT64_MAX
                                 ? 1
                                 : rendered_equalizer_revision_ + 1;
@@ -216,6 +218,7 @@ bool MusicUi::select_advanced_demo_for_diagnostics(uint8_t view) {
                       .trigger = 1,
                       .action = 1,
                       .seconds_remaining = 30 * 60};
+  demo.advanced_availability.sleep_timer = advanced::StateAvailability::ready;
   update_advanced_controls(demo);
   show_settings_section(SettingsSection::advanced);
 
@@ -1097,9 +1100,15 @@ void MusicUi::rebuild_equalizer(const Snapshot &snapshot) {
   lv_obj_clean(equalizer_list_);
   equalizer_gain_sliders_.clear();
   equalizer_gain_values_.clear();
-  if (!snapshot.equalizer.known) {
-    lv_obj_t *waiting = make_label(equalizer_list_, "WAITING FOR EQUALIZER STATE FROM AIMP",
-                                   &lv_font_montserrat_18, color(kMuted));
+  if (!advanced::equalizer_mutation_allowed(
+          snapshot.advanced_availability.equalizer, snapshot.equalizer)) {
+    const char *message =
+        snapshot.advanced_availability.equalizer ==
+                advanced::StateAvailability::unavailable
+            ? "AIMP DID NOT RETURN EQUALIZER STATE"
+            : "WAITING FOR EQUALIZER STATE FROM AIMP";
+    lv_obj_t *waiting =
+        make_label(equalizer_list_, message, &lv_font_montserrat_18, color(kMuted));
     lv_obj_set_style_pad_all(waiting, 16, 0);
     return;
   }
@@ -1209,10 +1218,21 @@ void MusicUi::update_advanced_controls(const Snapshot &snapshot) {
       known && (snapshot.server_capabilities & advanced::kSleepTimerCapability) != 0;
   const bool has_power =
       known && (snapshot.server_capabilities & advanced::kComputerPowerCapability) != 0;
+  const bool advanced_unavailable =
+      (has_equalizer &&
+       (snapshot.advanced_availability.equalizer ==
+            advanced::StateAvailability::unavailable ||
+        snapshot.advanced_availability.equalizer_presets ==
+            advanced::StateAvailability::unavailable)) ||
+      (has_sleep && snapshot.advanced_availability.sleep_timer ==
+                        advanced::StateAvailability::unavailable);
   if (!known) {
     lv_label_set_text(advanced_status_, "WAITING FOR AIMP CAPABILITIES");
   } else if (!has_equalizer && !has_sleep && !has_power) {
     lv_label_set_text(advanced_status_, "THE CONNECTED PLUG-IN REPORTS NO ADVANCED CONTROLS");
+  } else if (advanced_unavailable) {
+    lv_label_set_text(advanced_status_,
+                      "AIMP DID NOT RETURN STATE FOR AN ADVERTISED CONTROL");
   } else {
     lv_label_set_text(advanced_status_, "ONLY CONTROLS ADVERTISED BY AIMP ARE SHOWN");
   }
@@ -1225,19 +1245,28 @@ void MusicUi::update_advanced_controls(const Snapshot &snapshot) {
   }
 
   if (has_equalizer) {
-    const char *state = snapshot.equalizer.known
-                            ? (snapshot.equalizer.enabled ? "ON" : "OFF")
-                            : "LOADING";
+    const char *state =
+        snapshot.advanced_availability.equalizer ==
+                advanced::StateAvailability::unavailable
+            ? "UNAVAILABLE"
+            : snapshot.equalizer.known ? (snapshot.equalizer.enabled ? "ON" : "OFF")
+                                       : "LOADING";
     lv_label_set_text(equalizer_enable_value_, state);
     lv_label_set_text(equalizer_overlay_toggle_, state);
     lv_obj_set_state(equalizer_edit_button_, LV_STATE_DISABLED,
-                     !snapshot.equalizer.known);
+                     !advanced::equalizer_mutation_allowed(
+                         snapshot.advanced_availability.equalizer,
+                         snapshot.equalizer));
   }
 
   if (has_sleep) {
     char timer[32];
-    if (!snapshot.sleep_timer.known) {
-      std::snprintf(timer, sizeof(timer), "LOADING");
+    if (snapshot.advanced_availability.sleep_timer ==
+        advanced::StateAvailability::unavailable) {
+      std::snprintf(timer, sizeof(timer), "UNAVAILABLE");
+    } else if (!snapshot.sleep_timer.known) {
+      std::snprintf(
+          timer, sizeof(timer), "LOADING");
     } else if (!snapshot.sleep_timer.enabled) {
       std::snprintf(timer, sizeof(timer), "OFF");
     } else if (snapshot.sleep_timer.trigger == 2) {
@@ -1248,7 +1277,9 @@ void MusicUi::update_advanced_controls(const Snapshot &snapshot) {
     }
     lv_label_set_text(sleep_timer_value_, timer);
     lv_obj_set_state(sleep_timer_button_, LV_STATE_DISABLED,
-                     !snapshot.sleep_timer.known);
+                     !advanced::sleep_timer_mutation_allowed(
+                         snapshot.advanced_availability.sleep_timer,
+                         snapshot.sleep_timer));
   }
 
   if (snapshot.equalizer_revision != rendered_equalizer_revision_) {
@@ -1895,7 +1926,9 @@ void MusicUi::handle_event(lv_event_t *event) {
     return;
   }
   if (target == equalizer_edit_button_) {
-    if (snapshot_.connection == ConnectionState::online && snapshot_.equalizer.known) {
+    if (snapshot_.connection == ConnectionState::online &&
+        advanced::equalizer_mutation_allowed(
+            snapshot_.advanced_availability.equalizer, snapshot_.equalizer)) {
       rebuild_equalizer(snapshot_);
       lv_obj_remove_flag(equalizer_overlay_, LV_OBJ_FLAG_HIDDEN);
       lv_obj_move_foreground(equalizer_overlay_);
@@ -1904,7 +1937,8 @@ void MusicUi::handle_event(lv_event_t *event) {
   }
   if (target == sleep_timer_button_) {
     if (advanced_demo_active_ || snapshot_.connection != ConnectionState::online ||
-        !snapshot_.sleep_timer.known) {
+        !advanced::sleep_timer_mutation_allowed(
+            snapshot_.advanced_availability.sleep_timer, snapshot_.sleep_timer)) {
       return;
     }
     int32_t seconds = 0;
@@ -1958,6 +1992,10 @@ void MusicUi::handle_event(lv_event_t *event) {
   for (size_t index = 0; index < equalizer_gain_sliders_.size(); ++index) {
     if (target != equalizer_gain_sliders_[index]) {
       continue;
+    }
+    if (!advanced::equalizer_mutation_allowed(
+            snapshot_.advanced_availability.equalizer, snapshot_.equalizer)) {
+      return;
     }
     const int32_t value = lv_slider_get_value(target);
     char db[16];

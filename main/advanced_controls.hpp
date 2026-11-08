@@ -15,6 +15,121 @@ constexpr uint64_t kSleepTimerCapability = 1ULL << 22;
 constexpr size_t kMaximumEqualizerBands = 32;
 constexpr size_t kMaximumEqualizerPresets = 128;
 
+enum class StateAvailability : uint8_t {
+  not_requested,
+  loading,
+  ready,
+  unavailable,
+};
+
+constexpr uint8_t kEqualizerStateRequest = 1U << 0;
+constexpr uint8_t kEqualizerPresetsRequest = 1U << 1;
+constexpr uint8_t kSleepTimerStateRequest = 1U << 2;
+
+struct AvailabilityState {
+  StateAvailability equalizer{StateAvailability::not_requested};
+  StateAvailability equalizer_presets{StateAvailability::not_requested};
+  StateAvailability sleep_timer{StateAvailability::not_requested};
+
+  uint8_t begin(uint8_t sent_mask, uint8_t failed_mask) {
+    uint8_t changed = 0;
+    update(kEqualizerStateRequest, sent_mask, failed_mask, equalizer, changed);
+    update(kEqualizerPresetsRequest, sent_mask, failed_mask, equalizer_presets,
+           changed);
+    update(kSleepTimerStateRequest, sent_mask, failed_mask, sleep_timer, changed);
+    return changed;
+  }
+
+  uint8_t complete(uint8_t response_mask) {
+    uint8_t changed = 0;
+    complete_one(kEqualizerStateRequest, response_mask, equalizer, changed);
+    complete_one(kEqualizerPresetsRequest, response_mask, equalizer_presets,
+                 changed);
+    complete_one(kSleepTimerStateRequest, response_mask, sleep_timer, changed);
+    return changed;
+  }
+
+  uint8_t expire(uint8_t expired_mask) {
+    uint8_t changed = 0;
+    expire_one(kEqualizerStateRequest, expired_mask, equalizer, changed);
+    expire_one(kEqualizerPresetsRequest, expired_mask, equalizer_presets,
+               changed);
+    expire_one(kSleepTimerStateRequest, expired_mask, sleep_timer, changed);
+    return changed;
+  }
+
+  void reset() { *this = {}; }
+
+private:
+  static void update(uint8_t bit, uint8_t sent_mask, uint8_t failed_mask,
+                     StateAvailability &availability, uint8_t &changed) {
+    StateAvailability next = availability;
+    if ((sent_mask & bit) != 0) {
+      next = StateAvailability::loading;
+    } else if ((failed_mask & bit) != 0) {
+      next = StateAvailability::unavailable;
+    }
+    if (next != availability) {
+      availability = next;
+      changed |= bit;
+    }
+  }
+
+  static void complete_one(uint8_t bit, uint8_t response_mask,
+                           StateAvailability &availability, uint8_t &changed) {
+    if ((response_mask & bit) != 0 && availability != StateAvailability::ready) {
+      availability = StateAvailability::ready;
+      changed |= bit;
+    }
+  }
+
+  static void expire_one(uint8_t bit, uint8_t expired_mask,
+                         StateAvailability &availability, uint8_t &changed) {
+    if ((expired_mask & bit) != 0 && availability == StateAvailability::loading) {
+      availability = StateAvailability::unavailable;
+      changed |= bit;
+    }
+  }
+};
+
+// Advanced state replies have no request identifier. Track only the current
+// outstanding response kinds; any valid reply is authoritative when received.
+class RequestTracker {
+public:
+  void begin(uint8_t request_mask, int64_t deadline_us) {
+    pending_mask_ = request_mask;
+    deadline_us_ = request_mask == 0 ? 0 : deadline_us;
+  }
+
+  void complete(uint8_t request_mask) {
+    pending_mask_ &= static_cast<uint8_t>(~request_mask);
+    if (pending_mask_ == 0) {
+      deadline_us_ = 0;
+    }
+  }
+
+  uint8_t expire(int64_t now_us) {
+    if (deadline_us_ == 0 || now_us < deadline_us_) {
+      return 0;
+    }
+    const uint8_t expired = pending_mask_;
+    reset();
+    return expired;
+  }
+
+  void reset() {
+    pending_mask_ = 0;
+    deadline_us_ = 0;
+  }
+
+  [[nodiscard]] uint8_t pending_mask() const { return pending_mask_; }
+  [[nodiscard]] int64_t deadline_us() const { return deadline_us_; }
+
+private:
+  uint8_t pending_mask_{0};
+  int64_t deadline_us_{0};
+};
+
 struct EqualizerBand {
   uint16_t frequency_hz{0};
   // MonkeyMote encodes -15.0 .. +15.0 dB as 0 .. 300.
@@ -37,6 +152,16 @@ struct SleepTimerState {
   uint8_t action{1};
   uint32_t seconds_remaining{0};
 };
+
+inline bool sleep_timer_mutation_allowed(StateAvailability availability,
+                                         const SleepTimerState &state) {
+  return availability == StateAvailability::ready && state.known;
+}
+
+inline bool equalizer_mutation_allowed(StateAvailability availability,
+                                       const EqualizerState &state) {
+  return availability == StateAvailability::ready && state.known;
+}
 
 inline uint16_t read_u16(const uint8_t *data) {
   return static_cast<uint16_t>(data[0]) |
