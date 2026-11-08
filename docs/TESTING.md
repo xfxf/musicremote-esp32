@@ -102,10 +102,14 @@ Date: 2026-11-08 (Australia/Melbourne)
   card, removed about 4 MB of interrupted staging files, retained/reused the
   prior promoted 48,321-row index, and restored the card's reported free space
   from 60,595 MB to 60,599 MB on the following boot.
-- The issue #8 guarded live-mutation run created a uniquely named disposable
-  playlist, populated it with one media-library item, played it, and sought to
-  78,639 ms of a 157,279 ms track. AIMP replied with type 6 positions from
-  78,639 through 78,790 ms while remaining in the playing state. The same run
+- Commit `f8cedf8` passed the issue #8 guarded live-mutation run, then was built,
+  hash-verified, and flashed as the clean production qualification image. Its
+  boot log reported app version `f8cedf8`, mounted the 60,786 MB microSD card,
+  passed the 2 MB PSRAM test, joined Wi-Fi, resolved the AIMP host, and
+  authenticated without a panic. The live run created a uniquely named
+  disposable playlist, populated it with one media-library item, played it,
+  and sought to 78,639 ms of a 157,279 ms track. AIMP replied with type 6 at
+  78,639 ms while remaining in the playing state. The same run
   changed rating 0 to 1 and back to 0, removed the item (type 32), repopulated
   and cleared the playlist (type 20), then deleted it (type 7/subcommand 16).
   Type 42 creation and every resulting playlist count were confirmed by a
@@ -161,6 +165,7 @@ pair shows playback before the gesture and still stopped after release:
 ![Post-seek elapsed time at 2:59](../artifacts/device-postseek-259.png)
 ![Playing before long press](../artifacts/device-longpress-before.png)
 ![Still stopped after release](../artifacts/device-longpress-release.png)
+![Final f8cedf8 production image online and stopped](../artifacts/device-issue8-final.png)
 
 The following two large-playlist captures come from commit `f7a2374`, before
 `f68297c` moved queue titles to x=48. They do not yet show the current row
