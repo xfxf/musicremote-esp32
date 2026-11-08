@@ -22,4 +22,6 @@ check: build
 	PYTHONPATH=tools python3 -m unittest tools/test_protocol_probe.py
 	c++ -std=c++20 -Wall -Wextra -Werror -Imain tools/test_settings_policy.cpp -o /tmp/musicremote-settings-policy-test
 	/tmp/musicremote-settings-policy-test
+	c++ -std=c++20 -Wall -Wextra -Werror -Imain tools/test_advanced_controls.cpp -o /tmp/musicremote-advanced-controls-test
+	/tmp/musicremote-advanced-controls-test
 	git check-ignore .env

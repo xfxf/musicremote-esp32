@@ -47,6 +47,17 @@ controls, state feedback, queue manipulation, and playlist management.
 - Provide persistent brightness and screen-off settings; a touch on a blanked
   display wakes it without activating the control underneath.
 
+### Advanced AIMP controls
+
+- Gate equalizer, sleep timer, and computer actions on the server capability
+  mask and clear their state on disconnect.
+- Display and edit the complete reported manual equalizer, including preamp;
+  reject malformed or out-of-range bodies before retaining or echoing them.
+- Offer non-destructive sleep-timer choices for 15, 30, and 60 minutes or the
+  end of the current track.
+- Put computer sleep, restart, and shutdown behind a separate full-screen
+  confirmation. Never send those actions from automated validation.
+
 ### Quality gates
 
 - Build using the pinned ESP-IDF version and fit the configured app partition.
@@ -56,11 +67,12 @@ controls, state feedback, queue manipulation, and playlist management.
   restoring deliberately changed state when practical.
 - Open a pull request and request built-in Codex review with `@codex review`.
 
-## Explicit follow-up scope
+## Qualification boundary
 
-Cover art, lyrics, and media-library search are implemented. The server
-capability mask is surfaced for diagnostics. Equalizer, sleep-timer, and
-computer-power actions remain hidden until their command payloads and dedicated
-confirmation flows are physically qualified; automated validation must never
-invoke a destructive computer-power action.
+Cover art, lyrics, media-library search, persistent settings, and the advanced
+control surfaces are implemented. Equalizer, sleep-timer, and computer-power
+wire layouts have static reference-client and official plug-in evidence plus
+strict host tests and physical UI evidence. Live advanced-control confirmation
+must remain explicitly pending whenever the configured AIMP host is offline;
+computer-power actions are never part of automated validation.
 

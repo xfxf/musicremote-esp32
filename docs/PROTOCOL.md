@@ -26,15 +26,18 @@ session. Passwords and digests must never be logged.
 | 36 | Current-track lyrics response |
 | 41 | Playlist collection |
 | 45 | LZ4-compressed inner message |
+| 48 | Equalizer state and manual-band setter |
+| 49 | Equalizer preset-name collection |
+| 51 | Sleep-timer state and setter |
 | 9 / 31 / 50 | Playlist name and queue contents |
 | 43 | Command result; a non-zero first byte means failure |
 
 The type-28 capability mask is retained as raw diagnostic state and cleared on
 disconnect. Reference-client behavior maps bit 17 (`0x00020000`) to computer
 power availability, bit 21 (`0x00200000`) to equalizer availability, and bit 22
-(`0x00400000`) to sleep-timer availability. These bits gate visibility only;
-they do not establish a safe command wire format, so the production firmware
-does not expose those actions yet.
+(`0x00400000`) to sleep-timer availability. The production firmware requests,
+parses, renders, and sends only controls whose bit is advertised. Capability
+state and all advanced-control state are cleared on disconnect.
 
 Type 8 starts with the JPEG byte length (`uint32_t`), followed by a 16-byte
 server artwork identity and the JPEG bytes. The length must exactly match the
@@ -91,6 +94,10 @@ not the per-item ID in playlist metadata (which AIMP may report as `-1`). Type
   a 16-byte track identity, and the text; live testing has so far observed only
   the empty form, so this layout remains explicitly unverified. The firmware
   rejects inconsistent lengths and displays at most 24 KiB.
+- Type 4 subcommands 17, 18, and 19 plus an `int32_t` zero request equalizer
+  state, equalizer preset names, and sleep-timer state respectively. They
+  produce types 48, 49, and 51. The production client sends these requests
+  only after the corresponding capability bit is known.
 - Type 24 searches the complete media library. Its body is the `int32_t`
   request ID followed by a NUL-terminated UTF-8 query. Search result rows are
   subsequently addressed through type 44 using the same request ID.
@@ -144,6 +151,40 @@ result.
 - Type 32 removes a queue item (playlist ID and item index).
 - Type 42 creates a playlist from a parent/folder ID, reserved `uint16_t`, name
   byte length, and NUL-terminated name.
+
+## Advanced controls
+
+The following layouts were statically qualified against the official AIMP 5
+MonkeyMote plug-in DLL and the reference Android client. The configured live
+AIMP host was unavailable during implementation, so live host confirmation is
+recorded separately rather than inferred from this static evidence.
+
+Type 48 has exactly `10 + band_count * 4` bytes. Byte 0 is the band count,
+bytes 1 and 2 are the fixed `+15` and `0` range markers, and flag bit 0 at byte
+3 is equalizer enabled. The little-endian words at offsets 4, 6, and 8 are the
+fixed range span `300`, preamp gain, and reserved zero. Each band is a
+little-endian frequency/gain word pair. Gain values encode `-15.0 .. +15.0 dB`
+as `0 .. 300`, with `150` representing `0.0 dB`. AIMP accepts the complete
+validated type-48 body as the manual-band setter. The firmware never constructs
+one from partial state: it mutates only the enable bit or one gain in the last
+strictly validated response, then requests authoritative state again.
+
+Type 49 starts with a little-endian `uint16_t` count and a reserved zero word,
+followed by that many NUL-terminated preset names. The firmware bounds this to
+128 names of at most 255 bytes each. The plug-in exposes no distinct preset
+selection packet, so preset names are retained as state but the UI offers only
+the verified manual-band controls.
+
+Type 51 is exactly eight bytes: enabled, trigger, action, reserved, and a
+little-endian seconds value. Trigger 1 means the duration and trigger 2 means
+the end of the current track. Actions 1, 2, and 3 mean stop playback, exit the
+player, and shut down the computer. The device UI intentionally sends only
+action 1 and cycles through off, 15, 30, and 60 minutes and end-of-track.
+
+Type 4 subcommand 14 followed by one action byte performs a computer action:
+0 sleeps, 1 restarts, and 2 shuts down the AIMP computer. These controls remain
+hidden without capability bit 17 and always open a separate explicit
+confirmation screen. Automated validation must not send this packet.
 
 Live AIMP 5 testing confirms seek subcommand 7 is expressed in milliseconds.
 The server may send a short burst of type 6 states around the requested

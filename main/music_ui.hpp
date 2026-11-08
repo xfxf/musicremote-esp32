@@ -5,6 +5,7 @@
 #include "music_model.hpp"
 
 #include <functional>
+#include <array>
 #include <mutex>
 #include <memory>
 #include <vector>
@@ -30,10 +31,11 @@ public:
   bool select_overlay_for_diagnostics(uint8_t overlay);
   bool select_library_category_for_diagnostics(uint8_t category);
   bool select_settings_for_diagnostics(uint8_t section);
+  bool select_advanced_demo_for_diagnostics(uint8_t view);
 
 private:
   enum class Page { now, queue, playlists, more };
-  enum class SettingsSection { playback, connection, display, storage };
+  enum class SettingsSection { playback, connection, display, storage, advanced };
   enum class SettingField { none, wifi_ssid, wifi_password, server_host, server_port,
                             server_password };
 
@@ -55,6 +57,7 @@ private:
   void create_filter_overlays();
   void create_library_overlay();
   void create_lyrics_overlay();
+  void create_equalizer_overlay();
   void show_page(Page page);
   void update(const Snapshot &snapshot);
   void update_timeline(int64_t now_us, bool force = false);
@@ -69,6 +72,9 @@ private:
   void begin_setting_edit(SettingField field, const char *title, bool password);
   void finish_setting_edit(bool save);
   void refresh_setting_labels();
+  void update_advanced_controls(const Snapshot &snapshot);
+  void rebuild_equalizer(const Snapshot &snapshot);
+  void end_advanced_demo();
   void poll_display_timeout(int64_t now_us);
   void set_display_blank(bool blank);
   void handle_event(lv_event_t *event);
@@ -93,6 +99,8 @@ private:
   uint64_t rendered_artwork_revision_{UINT64_MAX};
   uint64_t rendered_library_revision_{UINT64_MAX};
   uint64_t rendered_lyrics_revision_{UINT64_MAX};
+  uint64_t rendered_equalizer_revision_{UINT64_MAX};
+  uint64_t rendered_sleep_timer_revision_{UINT64_MAX};
   ConnectionState rendered_lyrics_connection_{ConnectionState::offline};
   uint64_t rendered_lyrics_connection_generation_{UINT64_MAX};
   std::string rendered_lyrics_track_key_;
@@ -165,13 +173,14 @@ private:
   lv_obj_t *connection_settings_button_{nullptr};
   lv_obj_t *display_settings_button_{nullptr};
   lv_obj_t *storage_settings_button_{nullptr};
+  lv_obj_t *advanced_settings_button_{nullptr};
   lv_obj_t *capabilities_value_{nullptr};
   lv_obj_t *settings_storage_value_{nullptr};
   lv_obj_t *settings_overlay_{nullptr};
   lv_obj_t *settings_title_{nullptr};
   lv_obj_t *settings_notice_{nullptr};
   lv_obj_t *settings_back_button_{nullptr};
-  lv_obj_t *settings_panels_[4]{};
+  lv_obj_t *settings_panels_[5]{};
   lv_obj_t *wifi_ssid_button_{nullptr};
   lv_obj_t *wifi_password_button_{nullptr};
   lv_obj_t *server_host_button_{nullptr};
@@ -192,6 +201,26 @@ private:
   lv_obj_t *setting_editor_keyboard_{nullptr};
   lv_obj_t *setting_editor_message_{nullptr};
   lv_obj_t *blank_overlay_{nullptr};
+  lv_obj_t *advanced_status_{nullptr};
+  lv_obj_t *equalizer_enable_button_{nullptr};
+  lv_obj_t *equalizer_enable_value_{nullptr};
+  lv_obj_t *equalizer_edit_button_{nullptr};
+  lv_obj_t *sleep_timer_button_{nullptr};
+  lv_obj_t *sleep_timer_value_{nullptr};
+  lv_obj_t *power_title_{nullptr};
+  std::array<lv_obj_t *, 3> power_buttons_{};
+  lv_obj_t *equalizer_overlay_{nullptr};
+  lv_obj_t *equalizer_list_{nullptr};
+  lv_obj_t *equalizer_close_button_{nullptr};
+  lv_obj_t *equalizer_overlay_toggle_{nullptr};
+  std::vector<lv_obj_t *> equalizer_gain_sliders_;
+  std::vector<lv_obj_t *> equalizer_gain_values_;
+  lv_obj_t *power_confirm_overlay_{nullptr};
+  lv_obj_t *power_confirm_message_{nullptr};
+  lv_obj_t *power_confirm_button_{nullptr};
+  lv_obj_t *power_cancel_button_{nullptr};
+  int32_t pending_power_action_{-1};
+  bool advanced_demo_active_{false};
   lv_obj_t *filter_overlay_{nullptr};
   lv_obj_t *filter_search_button_{nullptr};
   lv_obj_t *filter_close_button_{nullptr};

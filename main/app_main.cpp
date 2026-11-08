@@ -65,6 +65,14 @@ esp_err_t screenshot_handler(httpd_req_t *request) {
       ui->select_settings_for_diagnostics(2);
     } else if (std::strcmp(page, "storage-settings") == 0) {
       ui->select_settings_for_diagnostics(3);
+    } else if (std::strcmp(page, "advanced-settings") == 0) {
+      ui->select_settings_for_diagnostics(4);
+    } else if (std::strcmp(page, "advanced-demo") == 0) {
+      ui->select_advanced_demo_for_diagnostics(0);
+    } else if (std::strcmp(page, "equalizer-demo") == 0) {
+      ui->select_advanced_demo_for_diagnostics(1);
+    } else if (std::strcmp(page, "power-confirm-demo") == 0) {
+      ui->select_advanced_demo_for_diagnostics(2);
     } else if (std::strcmp(page, "artists") == 0) {
       ui->select_library_category_for_diagnostics(0);
       render_delay_ms = 2000;

@@ -225,6 +225,36 @@ pending because the configured Windows host did not accept TCP connections.
   structurally prevents the first wake press from reaching an underlying
   control. A literal finger-driven timeout/wake/second-touch sequence was not
   performed during this unattended run and remains a manual hardware check.
+- The advanced-controls implementation was statically qualified against the
+  official AIMP 5 MonkeyMote plug-in DLL and the reference Android client. It
+  adds strict bounded parsers for equalizer state, preset names, and sleep
+  state; it mutates only a previously validated complete equalizer body. The
+  focused host test covers valid bodies, malformed lengths and fixed fields,
+  out-of-range bands, preset termination, timer bounds, state requests, and
+  power-action bounds.
+- The issue #4 advanced build passed ESP-IDF 5.5.4 `make check`: all 13 Python
+  protocol tests, the settings-policy host test, and the new advanced-controls
+  host test passed. The 1,993,584-byte image left 52% of the configured app
+  partition free and was hash-verified after flashing over `/dev/ttyACM0`.
+  Boot again passed the 2 MB PSRAM memory test, loaded NVS settings, mounted the
+  60,786 MB microSD card, and joined Wi-Fi at `192.168.227.64` without a panic.
+- The board resolved `aerocore.local` to `192.168.227.178`, but TCP port 19371
+  timed out from both the read-only host probe and device. Live equalizer and
+  sleep-timer mutation therefore remain explicitly unclaimed. No computer
+  sleep, restart, or shutdown packet was sent.
+- Physical framebuffer inspection covered the capability-gated advanced menu,
+  complete scrollable equalizer, full-screen shutdown confirmation, and real
+  offline state. A view-only diagnostic fixture renders supported controls
+  while retaining the real offline connection state, so touches cannot enqueue
+  commands. Sequential capture found and fixed a fixture-state leak; requesting
+  the ordinary advanced page afterward now restores `WAITING FOR AIMP
+  CAPABILITIES` and hides every unsupported control.
+- The single adversarial review found two P2 issues: diagnostic fixtures could
+  enqueue against a concurrently online real session, and the equalizer's
+  effective slider target was 38 px high. An explicit fixture-mode guard now
+  blocks every advanced mutation and restores authoritative state on exit; the
+  slider target is now 46 px. The permitted focused re-review found both issues
+  resolved with no remaining P1, P2, or blocker.
 
 ## Visual inspection
 
@@ -294,3 +324,12 @@ waiting state:
 ![Display settings](../artifacts/device-settings-display.png)
 ![Storage and capability status](../artifacts/device-settings-storage.png)
 ![Now Playing after dismissing settings](../artifacts/device-settings-now.png)
+
+The advanced-control captures below are also from the physical LVGL
+framebuffer. The first three use the non-commanding diagnostic fixture for
+layout inspection; the fourth proves the real offline capability gate:
+
+![Capability-gated advanced controls](../artifacts/device-advanced.png)
+![Scrollable manual equalizer](../artifacts/device-equalizer.png)
+![Explicit computer-action confirmation](../artifacts/device-power-confirm.png)
+![Advanced controls hidden while offline](../artifacts/device-advanced-offline.png)

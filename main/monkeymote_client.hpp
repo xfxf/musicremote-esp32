@@ -44,6 +44,11 @@ enum class CommandType {
   play_library_item,
   enqueue_library_item,
   request_lyrics,
+  request_advanced_controls,
+  equalizer_enable,
+  equalizer_gain,
+  sleep_timer,
+  computer_power,
   streamed_playlist_result,
 };
 
@@ -153,6 +158,7 @@ private:
     int64_t deadline_us{0};
   };
   std::deque<PendingLyricsRequest> lyrics_requests_;
+  std::vector<uint8_t> equalizer_payload_;
   uint32_t library_request_id_{0};
   int64_t library_request_deadline_us_{0};
   LibraryPath pending_library_path_;
