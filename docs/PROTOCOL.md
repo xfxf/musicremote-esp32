@@ -228,3 +228,14 @@ The `library`, `library-browse`, `library-search`, and `lyrics` probe commands
 exercise these bounded parsers. The guarded mutation matrix validates both
 type-40 browse selection and type-44 search selection against its disposable
 playlist before clearing and deleting it.
+
+The read-only `advanced` command requests only the state advertised by the
+server capability mask and summarizes equalizer, preset-count, and sleep-timer
+responses without printing raw payloads. The separately guarded
+`validate-advanced --confirm-live-mutations` command toggles equalizer enable,
+adjusts preamp by 1.0 dB, and—only when no timer is already active—briefly sets
+a 15-minute stop-playback timer. In `finally` it makes a best-effort exact
+restore of the equalizer body and disabled timer baseline, retrying once after
+reconnection. It contains no computer-power packet. Do not interrupt the
+command: a process kill or persistent connection loss can prevent restoration
+and leave EQ changed or a stop-playback timer active.

@@ -88,6 +88,18 @@ authentication; use the firmware only on a trusted Wi-Fi network.
 See [the product specification](docs/SPEC.md), [protocol notes](docs/PROTOCOL.md),
 [UI rationale](docs/UI.md), and [test record](docs/TESTING.md).
 
+For read-only advanced-state qualification against a live AIMP host, run:
+
+```sh
+python3 tools/protocol_probe.py --env .env advanced
+```
+
+The reversible mutation command requires the explicit
+`--confirm-live-mutations` flag, makes a best-effort restoration of captured
+baselines, and never sends a computer-power action. Do not interrupt it: a
+process kill or persistent connection loss can prevent restoration and leave
+EQ changed or a stop-playback timer active. See the protocol notes before use.
+
 ## Security note
 
 The legacy remote protocol authenticates the session but does not provide a
