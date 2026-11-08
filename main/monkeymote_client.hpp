@@ -3,6 +3,8 @@
 #include "artwork_decoder.hpp"
 #include "music_model.hpp"
 #include "playlist_index.hpp"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include <atomic>
 #include <cstdio>
@@ -74,6 +76,7 @@ public:
   MonkeyMoteClient(Model &model, Config config);
   ~MonkeyMoteClient();
 
+  bool prepare_index_worker();
   void start();
   void stop();
   void enqueue(Command command);
@@ -129,7 +132,7 @@ private:
   bool start_streamed_frame(uint32_t type, uint32_t length, uint64_t generation);
   bool consume_streamed_frame();
   void finish_streamed_frame();
-  void build_streamed_index();
+  bool build_streamed_index();
   void abort_streamed_frame(const char *status);
   void load_index_page(uint32_t start, bool require_indexing = false);
   void search_index_page(uint32_t start, bool require_indexing = false);
@@ -147,6 +150,7 @@ private:
   size_t streamed_remaining_{0};
   std::atomic<bool> index_building_{false};
   std::atomic<bool> index_superseded_{false};
+  TaskHandle_t index_task_{nullptr};
   bool queue_filter_active_{false};
   PlaylistIndex::SearchMode queue_filter_mode_{PlaylistIndex::SearchMode::contains};
   std::string queue_filter_;

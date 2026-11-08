@@ -372,6 +372,9 @@ extern "C" void app_main() {
               .password = boot_settings.server_password,
               .storage_directory = storage_directory,
               .storage_internal_flash = flash_ready});
+  if (!client.prepare_index_worker()) {
+    ESP_LOGW(kTag, "Could not reserve playlist index worker before UI/Wi-Fi startup");
+  }
   static musicremote::MusicUi ui(
       model, client, settings,
       [&board](uint8_t brightness) { board.brightness(static_cast<float>(brightness)); });

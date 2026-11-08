@@ -28,4 +28,6 @@ check: build check-visual
 	/tmp/musicremote-settings-policy-test
 	c++ -std=c++20 -Wall -Wextra -Werror -Imain tools/test_advanced_controls.cpp -o /tmp/musicremote-advanced-controls-test
 	/tmp/musicremote-advanced-controls-test
+	c++ -std=c++20 -Wall -Wextra -Werror -Imain tools/test_index_worker_policy.cpp -o /tmp/musicremote-index-worker-policy-test
+	/tmp/musicremote-index-worker-policy-test
 	git check-ignore .env
