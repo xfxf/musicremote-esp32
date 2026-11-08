@@ -26,6 +26,12 @@ public:
 
   using Progress = std::function<void(uint32_t completed, uint32_t total)>;
 
+  struct ActiveIdentity {
+    int32_t playlist_id{-1};
+    uint32_t count{0};
+    std::string name;
+  };
+
   explicit PlaylistIndex(std::string directory, bool internal_flash = false);
 
   bool available() const;
@@ -36,6 +42,9 @@ public:
   bool search_page(std::string_view query, SearchMode mode, uint32_t start,
                    uint32_t limit, std::vector<Track> &tracks, uint32_t &total,
                    int32_t &playlist_id, std::string &name) const;
+  bool load_active_identity(ActiveIdentity &identity) const;
+  bool mark_active(int32_t resolved_playlist_id) const;
+  void clear_active() const;
 
 private:
   std::string path(const char *name) const;

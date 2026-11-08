@@ -442,10 +442,14 @@ void MusicUi::create_queue_page() {
   lv_obj_remove_style_all(page);
   lv_obj_set_pos(page, 0, 40);
   lv_obj_set_size(page, 480, 234);
-  queue_title_ = make_label(page, "CURRENT PLAYLIST", &lv_font_montserrat_22, color(kText));
-  lv_obj_set_pos(queue_title_, 14, 4);
+  queue_cache_label_ =
+      make_label(page, "CACHED", &lv_font_montserrat_14, color(kAccent));
+  lv_obj_set_pos(queue_cache_label_, 14, 0);
+  lv_obj_add_flag(queue_cache_label_, LV_OBJ_FLAG_HIDDEN);
+  queue_title_ = make_label(page, "CURRENT PLAYLIST", &lv_font_montserrat_18, color(kText));
+  lv_obj_set_pos(queue_title_, 14, 8);
   lv_obj_set_width(queue_title_, 144);
-  lv_label_set_long_mode(queue_title_, LV_LABEL_LONG_SCROLL_CIRCULAR);
+  lv_label_set_long_mode(queue_title_, LV_LABEL_LONG_DOT);
   queue_filter_button_ = make_button(page, "FIND", 82, 42);
   lv_obj_set_pos(queue_filter_button_, 168, 0);
   lv_obj_add_event_cb(queue_filter_button_, event_handler, LV_EVENT_CLICKED, this);
@@ -1532,12 +1536,19 @@ void MusicUi::update(const Snapshot &snapshot) {
   apply_toggle(more_shuffle_, snapshot.shuffle);
   apply_toggle(repeat_button_, snapshot.repeat != 0);
   apply_toggle(more_repeat_, snapshot.repeat != 0);
-  const char *queue_title = snapshot.queue_indexing
-                                ? snapshot.status.c_str()
-                            : snapshot.queue_filter_active
-                                ? snapshot.queue_filter_label.c_str()
-                                : snapshot.active_playlist_name.c_str();
-  lv_label_set_text(queue_title_, queue_title);
+  const std::string queue_title = snapshot.queue_indexing
+                                      ? snapshot.status
+                                  : snapshot.queue_filter_active
+                                      ? snapshot.queue_filter_label
+                                      : snapshot.active_playlist_name;
+  const bool cached = snapshot.queue_from_persisted_cache && !snapshot.queue_indexing;
+  lv_obj_set_pos(queue_title_, 14, cached ? 18 : 8);
+  if (cached) {
+    lv_obj_remove_flag(queue_cache_label_, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(queue_cache_label_, LV_OBJ_FLAG_HIDDEN);
+  }
+  lv_label_set_text(queue_title_, queue_title.c_str());
   lv_obj_set_state(queue_filter_button_, LV_STATE_DISABLED,
                    !snapshot.queue_index_ready || snapshot.queue_indexing);
   if (snapshot.queue_revision != rendered_queue_revision_ ||
@@ -1767,6 +1778,9 @@ void MusicUi::queue_row_handler(lv_event_t *event) {
   }
   if (lv_event_get_code(event) == LV_EVENT_LONG_PRESSED) {
     ui->suppress_queue_click_ = true;
+    if (ui->snapshot_.queue_from_persisted_cache) {
+      return;
+    }
     const Track &track = ui->snapshot_.queue[index];
     const int32_t item = track.index >= 0       ? track.index
                          : track.queue_row >= 0 ? track.queue_row
@@ -1801,7 +1815,8 @@ void MusicUi::playlist_row_handler(lv_event_t *event) {
   }
   if (lv_event_get_code(event) == LV_EVENT_LONG_PRESSED) {
     ui->suppress_playlist_click_ = true;
-    if (!playlist.folder && !playlist.read_only && !playlist.active) {
+    if (!ui->snapshot_.queue_from_persisted_cache && !playlist.folder &&
+        !playlist.read_only && !playlist.active) {
       const int32_t folder_id = ui->playlist_folder_ids_.empty()
                                     ? -1
                                     : ui->playlist_folder_ids_.back();
@@ -1852,10 +1867,13 @@ void MusicUi::library_row_handler(lv_event_t *event) {
   const LibraryItem &item = items[index];
   if (lv_event_get_code(event) == LV_EVENT_LONG_PRESSED) {
     ui->suppress_library_click_ = true;
-    if (item.kind == LibraryItemKind::track) {
+    if (item.kind == LibraryItemKind::track &&
+        !ui->snapshot_.queue_from_persisted_cache) {
       ui->client_.enqueue({CommandType::enqueue_library_item, item.selection_index,
                            static_cast<int32_t>(item.selection_request_id), item.title,
                            item.path});
+    } else if (item.kind == LibraryItemKind::track) {
+      lv_label_set_text(ui->library_count_, "REFRESH PLAYLIST FIRST");
     }
     return;
   }
@@ -1864,7 +1882,8 @@ void MusicUi::library_row_handler(lv_event_t *event) {
     return;
   }
   if (item.kind == LibraryItemKind::track) {
-    if (!ui->snapshot_.active_playlist_count_known ||
+    if (ui->snapshot_.queue_from_persisted_cache ||
+        !ui->snapshot_.active_playlist_count_known ||
         ui->snapshot_.active_playlist_id < 0 || ui->snapshot_.library_play_pending) {
       lv_label_set_text(ui->library_count_, ui->snapshot_.library_play_pending
                                                 ? "WAIT FOR CURRENT ADD"
@@ -2249,7 +2268,8 @@ void MusicUi::handle_event(lv_event_t *event) {
     client_.enqueue({CommandType::request_playlist, -1});
     const int32_t folder = playlist_folder_ids_.empty() ? -1 : playlist_folder_ids_.back();
     client_.enqueue({CommandType::request_playlists, folder});
-  } else if (std::strcmp(text, "CLEAR") == 0 && code == LV_EVENT_LONG_PRESSED) {
+  } else if (std::strcmp(text, "CLEAR") == 0 && code == LV_EVENT_LONG_PRESSED &&
+             !snapshot_.queue_from_persisted_cache) {
     client_.enqueue({CommandType::clear_playlist, snapshot_.active_playlist_id});
   } else if (std::strcmp(text, "+ ESP REMOTE") == 0 && code == LV_EVENT_LONG_PRESSED) {
     client_.enqueue({CommandType::create_playlist, -1, 0, "ESP Remote"});

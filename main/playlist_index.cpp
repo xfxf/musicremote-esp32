@@ -21,6 +21,8 @@ namespace {
 
 constexpr uint32_t kIndexMagic = 0x5844494d; // MIDX
 constexpr uint16_t kIndexVersion = 2;
+constexpr uint32_t kActiveMagic = 0x5443414d; // MACT
+constexpr uint16_t kActiveVersion = 1;
 constexpr uint32_t kMaxDecodedBytes = 64 * 1024 * 1024;
 constexpr size_t kHistoryBytes = 64 * 1024;
 constexpr size_t kCopyBufferBytes = 4096;
@@ -61,6 +63,15 @@ struct IndexRecord {
 struct SearchEntry {
   uint32_t queue_row;
   uint16_t key_length;
+};
+
+struct ActiveMarker {
+  uint32_t magic;
+  uint16_t version;
+  uint16_t size;
+  int32_t playlist_id;
+  uint32_t count;
+  char name[96];
 };
 #pragma pack(pop)
 
@@ -381,7 +392,7 @@ bool PlaylistIndex::recover_index() const {
   // staging files left by a reset so they cannot consume the free space needed
   // by the next build.
   for (const char *name : {"WIRE.TMP", "RAW.TMP", "REC.TMP", "STR.TMP", "SEA.TMP",
-                           "INDEX.TMP"}) {
+                           "INDEX.TMP", "ACTIVE.TMP"}) {
     unlink(path(name).c_str());
   }
   const std::string final = path("INDEX.DAT");
@@ -397,8 +408,80 @@ bool PlaylistIndex::recover_index() const {
     // place. Once the promoted header and extent are valid, it is safe to
     // reclaim that backup.
     unlink(backup.c_str());
+  } else {
+    unlink(path("ACTIVE.DAT").c_str());
   }
   return final_valid;
+}
+
+bool PlaylistIndex::load_active_identity(ActiveIdentity &identity) const {
+  identity = {};
+  std::vector<Track> unused;
+  uint32_t index_count = 0;
+  int32_t index_playlist_id = -1;
+  std::string index_name;
+  if (!load_page(0, 0, unused, index_count, index_playlist_id, index_name)) {
+    return false;
+  }
+  FILE *file = std::fopen(path("ACTIVE.DAT").c_str(), "rb");
+  ActiveMarker marker{};
+  struct stat file_stat {};
+  const bool valid = file != nullptr && read_exact(file, &marker, sizeof(marker)) &&
+                     fstat(fileno(file), &file_stat) == 0 &&
+                     file_stat.st_size == static_cast<off_t>(sizeof(marker)) &&
+                     marker.magic == kActiveMagic && marker.version == kActiveVersion &&
+                     marker.size == sizeof(marker) && marker.playlist_id >= 0 &&
+                     marker.count == index_count &&
+                     (index_playlist_id < 0 || marker.playlist_id == index_playlist_id) &&
+                     strnlen(marker.name, sizeof(marker.name)) < sizeof(marker.name) &&
+                     index_name == marker.name;
+  if (file != nullptr) {
+    std::fclose(file);
+  }
+  if (!valid) {
+    unlink(path("ACTIVE.DAT").c_str());
+    return false;
+  }
+  identity.playlist_id = marker.playlist_id;
+  identity.count = marker.count;
+  identity.name = marker.name;
+  return true;
+}
+
+bool PlaylistIndex::mark_active(int32_t resolved_playlist_id) const {
+  if (resolved_playlist_id < 0) {
+    return false;
+  }
+  std::vector<Track> unused;
+  uint32_t count = 0;
+  int32_t index_playlist_id = -1;
+  std::string name;
+  if (!load_page(0, 0, unused, count, index_playlist_id, name) ||
+      (index_playlist_id >= 0 && index_playlist_id != resolved_playlist_id)) {
+    return false;
+  }
+  ActiveMarker marker{.magic = kActiveMagic,
+                      .version = kActiveVersion,
+                      .size = sizeof(ActiveMarker),
+                      .playlist_id = resolved_playlist_id,
+                      .count = count,
+                      .name = {}};
+  std::snprintf(marker.name, sizeof(marker.name), "%s", name.c_str());
+  const std::string temporary = path("ACTIVE.TMP");
+  FILE *file = std::fopen(temporary.c_str(), "wb");
+  const bool written = file != nullptr && write_exact(file, &marker, sizeof(marker)) &&
+                       std::fflush(file) == 0 && fsync(fileno(file)) == 0;
+  const bool closed = file != nullptr && std::fclose(file) == 0;
+  if (!written || !closed || rename(temporary.c_str(), path("ACTIVE.DAT").c_str()) != 0) {
+    unlink(temporary.c_str());
+    return false;
+  }
+  return true;
+}
+
+void PlaylistIndex::clear_active() const {
+  unlink(path("ACTIVE.TMP").c_str());
+  unlink(path("ACTIVE.DAT").c_str());
 }
 
 PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &progress) {

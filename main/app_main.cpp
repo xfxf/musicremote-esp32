@@ -202,6 +202,7 @@ esp_err_t screenshot_handler(httpd_req_t *request) {
 void start_diagnostics(musicremote::MusicUi &ui, musicremote::MonkeyMoteClient &client) {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.stack_size = 8192;
+  config.task_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
   httpd_handle_t server = nullptr;
   if (httpd_start(&server, &config) != ESP_OK) {
     ESP_LOGW(kTag, "Could not start screenshot server");
@@ -394,6 +395,9 @@ extern "C" void app_main() {
   }
   mdns_init();
   mdns_hostname_set("musicremote");
-  client.start();
+  // Reserve the HTTP server before the client publishes a persisted 100-row
+  // queue page. Its supported PSRAM stack leaves internal RAM available for
+  // the latency-sensitive AIMP client task.
   start_diagnostics(ui, client);
+  client.start();
 }

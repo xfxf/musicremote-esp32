@@ -30,4 +30,6 @@ check: build check-visual
 	/tmp/musicremote-advanced-controls-test
 	c++ -std=c++20 -Wall -Wextra -Werror -Imain tools/test_index_worker_policy.cpp -o /tmp/musicremote-index-worker-policy-test
 	/tmp/musicremote-index-worker-policy-test
+	c++ -std=c++20 -Wall -Wextra -Werror -Imain tools/test_playlist_cache_policy.cpp -o /tmp/musicremote-playlist-cache-policy-test
+	/tmp/musicremote-playlist-cache-policy-test
 	git check-ignore .env
