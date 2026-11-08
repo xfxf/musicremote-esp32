@@ -101,6 +101,7 @@ struct Snapshot {
   uint32_t queue_total_count{0};
   uint32_t active_playlist_track_count{0};
   bool active_playlist_count_known{false};
+  bool library_play_pending{false};
   uint32_t queue_page_start{0};
   bool queue_index_ready{false};
   bool queue_indexing{false};
@@ -135,6 +136,11 @@ public:
     }
     out = state_;
     return true;
+  }
+
+  template <typename Fn> auto read(Fn &&fn) const {
+    std::lock_guard lock(mutex_);
+    return fn(state_);
   }
 
   template <typename Fn> void update(Fn &&fn) {

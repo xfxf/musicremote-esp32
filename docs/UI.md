@@ -19,9 +19,11 @@ accent colour, and information hierarchy—without copying branded assets.
   playlists remain selectable but cannot be deleted from the device.
 - Media Library opens as a full-screen surface with Artists, Albums, Genres,
   and Composers roots. Results render in 25-row UI pages; at most 1,000 results
-  and 128 KiB of result text are retained even when AIMP reports a very large
-  collection. The Search action reaches the complete AIMP media library when a
-  desired item falls outside that bounded browse window.
+  and 128 KiB of result text are retained from one response. A response whose
+  wire or decoded size exceeds 512 KiB is drained and reported as `LIBRARY
+  RESULT TOO LARGE` with no rows; narrow such views with Search. The Search
+  action reaches the complete AIMP media library when a desired item falls
+  outside the bounded browse window.
 - Tapping a library track appends it without clearing the playlist, starts
   playback, and returns directly to
   Now Playing. Long-pressing a track enqueues it without

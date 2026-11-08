@@ -160,7 +160,7 @@ private:
   bool pending_library_search_{false};
   int32_t pending_library_play_row_{-1};
   int32_t pending_library_play_destination_{-1};
-  int64_t pending_library_play_deadline_us_{0};
+  std::atomic<int64_t> pending_library_play_deadline_us_{0};
   uint64_t pending_library_play_token_{0};
   uint64_t next_playlist_request_token_{1};
   std::deque<PlaylistRequestToken> playlist_requests_;

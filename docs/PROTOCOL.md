@@ -80,9 +80,10 @@ not the per-item ID in playlist metadata (which AIMP may report as `-1`). Type
   album, genre, and composer roots respectively. Each carries an `int32_t`
   request ID and receives type 19.
 - Type 4 subcommand 11 plus an `int32_t` zero requests current-track lyrics.
-  Type 36 contains a `uint32_t` UTF-8 byte length, a 16-byte track identity,
-  and the text. The firmware rejects inconsistent lengths and displays at most
-  24 KiB.
+  The type 36 non-empty layout is inferred as a `uint32_t` UTF-8 byte length,
+  a 16-byte track identity, and the text; live testing has so far observed only
+  the empty form, so this layout remains explicitly unverified. The firmware
+  rejects inconsistent lengths and displays at most 24 KiB.
 - Type 24 searches the complete media library. Its body is the `int32_t`
   request ID followed by a NUL-terminated UTF-8 query. Search result rows are
   subsequently addressed through type 44 using the same request ID.

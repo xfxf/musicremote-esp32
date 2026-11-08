@@ -1132,6 +1132,13 @@ void MusicUi::library_row_handler(lv_event_t *event) {
     return;
   }
   if (item.kind == LibraryItemKind::track) {
+    if (!ui->snapshot_.active_playlist_count_known ||
+        ui->snapshot_.active_playlist_id < 0 || ui->snapshot_.library_play_pending) {
+      lv_label_set_text(ui->library_count_, ui->snapshot_.library_play_pending
+                                                ? "WAIT FOR CURRENT ADD"
+                                                : "PLAYLIST REFRESHING - TRY AGAIN");
+      return;
+    }
     ui->client_.enqueue({CommandType::play_library_item, item.selection_index,
                          static_cast<int32_t>(item.selection_request_id), item.title,
                          item.path});
