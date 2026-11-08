@@ -357,7 +357,8 @@ void ArtworkDecoder::prune_cache() {
     if (name.size() != 12 || name.substr(8) != ".JPG" ||
         !std::all_of(name.begin(), name.begin() + 8, [](char value) {
           return (value >= '0' && value <= '9') ||
-                 (value >= 'a' && value <= 'f');
+                 (value >= 'a' && value <= 'f') ||
+                 (value >= 'A' && value <= 'F');
         })) {
       continue;
     }
@@ -382,6 +383,7 @@ void ArtworkDecoder::prune_cache() {
          (entries.size() - first > max_entries || total > max_bytes)) {
     if (unlink(entries[first].path.c_str()) == 0) {
       total -= std::min(total, entries[first].size);
+      ESP_LOGI(kTag, "Pruned one cache entry");
     }
     ++first;
   }

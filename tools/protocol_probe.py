@@ -892,7 +892,10 @@ def describe(frame: Frame) -> str:
         volume = p[7] if len(p) == 8 else struct.unpack_from("<H", p, 8)[0]
         return f"playback position_ms={position} state={state} shuffle={shuffle} repeat={repeat} volume={volume}"
     if frame.message_type == 8:
-        cover = parse_cover_frame(frame)
+        try:
+            cover = parse_cover_frame(frame)
+        except ValueError:
+            cover = None
         if cover is None:
             return f"invalid cover response bytes={len(p)}"
         return (

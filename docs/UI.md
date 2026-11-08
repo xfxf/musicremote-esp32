@@ -27,7 +27,8 @@ Cover JPEGs are decoded on a dedicated lower-priority task, never from the
 LVGL or socket loop. The 144 px decoded RGB888 surface uses PSRAM. Successful
 JPEGs are cached under the existing microSD-preferred storage directory; the
 cache is capped at 128 entries/16 MiB on SD and 16 entries/512 KiB on internal
-flash, with oldest entries removed first.
+flash. Entries are evicted in approximate filesystem-timestamp order; the hard
+entry and byte limits do not depend on the device having a real-time clock.
 
 The physical panel is natively 320x480. LVGL rotates the display 90 degrees to
 480x320; the board support package applies the corresponding touch transform.

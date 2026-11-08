@@ -413,6 +413,9 @@ bool MonkeyMoteClient::connect_and_authenticate() {
              sizeof(nonblocking_timeout));
   receive_buffer_.clear();
   discard_remaining_ = 0;
+  cover_requests_.clear();
+  cover_track_key_.clear();
+  artwork_decoder_.select_track({});
   last_receive_us_ = esp_timer_get_time();
   last_ping_us_ = last_receive_us_;
   model_.update([](Snapshot &state) {
@@ -853,20 +856,33 @@ bool MonkeyMoteClient::process_frame(uint32_t type, const std::vector<uint8_t> &
     return true;
   case 8: {
     // Cover reply: uint32 JPEG size, 16-byte server identity, then JPEG bytes.
-    if (!cover_request_pending_ || payload.size() < 24) {
+    if (cover_requests_.empty()) {
+      ESP_LOGW(kTag, "Ignoring cover reply without a matching request");
+      return true;
+    }
+    std::string response_track_key = std::move(cover_requests_.front());
+    cover_requests_.pop_front();
+    if (payload.size() < 24) {
+      if (response_track_key == cover_track_key_) {
+        artwork_decoder_.mark_unavailable(response_track_key);
+      }
       return false;
     }
     const uint32_t jpeg_size = read_u32(payload.data());
     if (jpeg_size != payload.size() - 20 || jpeg_size > 256 * 1024 ||
         payload[20] != 0xff || payload[21] != 0xd8 ||
         payload[payload.size() - 2] != 0xff || payload.back() != 0xd9) {
-      artwork_decoder_.mark_unavailable(cover_track_key_);
-      cover_request_pending_ = false;
+      if (response_track_key == cover_track_key_) {
+        artwork_decoder_.mark_unavailable(response_track_key);
+      }
       return false;
     }
+    if (response_track_key != cover_track_key_) {
+      ESP_LOGI(kTag, "Discarded stale cover reply");
+      return true;
+    }
     std::vector<uint8_t> jpeg(payload.begin() + 20, payload.end());
-    artwork_decoder_.submit_jpeg(cover_track_key_, std::move(jpeg));
-    cover_request_pending_ = false;
+    artwork_decoder_.submit_jpeg(response_track_key, std::move(jpeg));
     return true;
   }
   case 11:
@@ -884,14 +900,22 @@ bool MonkeyMoteClient::process_frame(uint32_t type, const std::vector<uint8_t> &
   case 35:
     enqueue({CommandType::request_playlist, -1});
     return true;
-  case 13:
+  case 13: {
     // Type 13 is the empty response to a cover query when the current item has
     // no embedded or folder artwork.
-    if (cover_request_pending_) {
-      artwork_decoder_.mark_unavailable(cover_track_key_);
-      cover_request_pending_ = false;
+    if (!payload.empty()) {
+      return false;
     }
-    return payload.empty();
+    if (cover_requests_.empty()) {
+      return true;
+    }
+    std::string response_track_key = std::move(cover_requests_.front());
+    cover_requests_.pop_front();
+    if (response_track_key == cover_track_key_) {
+      artwork_decoder_.mark_unavailable(response_track_key);
+    }
+    return true;
+  }
   case 23:
     send_packet(23);
     return true;
@@ -1100,22 +1124,25 @@ void MonkeyMoteClient::parse_track_info(const std::vector<uint8_t> &payload) {
     offset += lengths[i] + 1;
   }
   const std::string track_key = artwork_track_key(track);
-  model_.update([track = std::move(track), flags](Snapshot &state) mutable {
-    if ((flags & 2) != 0 || track.index >= 0) {
-      state.now_playing = std::move(track);
-    }
-  });
-  if (track_key != cover_track_key_) {
+  const bool is_now_playing = (flags & 2) != 0 || track.index >= 0;
+  model_.update(
+      [track = std::move(track), is_now_playing](Snapshot &state) mutable {
+        if (is_now_playing) {
+          state.now_playing = std::move(track);
+        }
+      });
+  if (is_now_playing && track_key != cover_track_key_) {
     cover_track_key_ = track_key;
-    cover_request_pending_ = false;
     artwork_decoder_.select_track(track_key);
     if (!track_key.empty()) {
       std::vector<uint8_t> request{3};
       append_i32(request, 144);
       append_i32(request, 144);
-      cover_request_pending_ = send_packet(4, request.data(), request.size());
-      if (!cover_request_pending_) {
+      if (cover_requests_.size() >= 32 ||
+          !send_packet(4, request.data(), request.size())) {
         artwork_decoder_.mark_unavailable(track_key);
+      } else {
+        cover_requests_.push_back(track_key);
       }
     }
   }

@@ -112,7 +112,7 @@ private:
   PlaylistIndex::SearchMode queue_filter_mode_{PlaylistIndex::SearchMode::contains};
   std::string queue_filter_;
   std::string cover_track_key_;
-  bool cover_request_pending_{false};
+  std::deque<std::string> cover_requests_;
   int64_t last_receive_us_{0};
   int64_t last_ping_us_{0};
   std::mutex commands_mutex_;

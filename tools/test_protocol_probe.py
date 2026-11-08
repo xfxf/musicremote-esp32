@@ -28,6 +28,13 @@ class CoverFrameTest(unittest.TestCase):
     def test_ignores_unrelated_frame(self) -> None:
         self.assertIsNone(probe.parse_cover_frame(probe.Frame(13, b"")))
 
+    def test_describe_reports_malformed_cover(self) -> None:
+        payload = struct.pack("<I", 99) + bytes(16) + b"\xff\xd8\xff\xd9"
+        self.assertEqual(
+            probe.describe(probe.Frame(8, payload)),
+            f"invalid cover response bytes={len(payload)}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
