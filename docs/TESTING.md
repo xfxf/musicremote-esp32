@@ -2,9 +2,9 @@
 
 Date: 2026-11-08 (Australia/Melbourne)
 
-The records below describe the last physically qualified merged firmware. The
-settings/capability branch must be rebuilt, flashed, and recaptured before its
-new screens can be marked hardware-qualified.
+The records below include the settings/capability branch's physical build,
+flash, boot, and framebuffer qualification. Its live AIMP portion remains
+pending because the configured Windows host did not accept TCP connections.
 
 ## Build and hardware
 
@@ -187,6 +187,22 @@ new screens can be marked hardware-qualified.
   media-library roots without a panic: 3,358 artists, 5,647 albums, 338 genres,
   and 383 composers. The first two visibly reported the intentional bounded-row
   retained-result limit while paging the first 25 rows.
+- Commit `16951f7` was built with ESP-IDF 5.5.4, hash-verified, and flashed to
+  the physical ESP32-S3. Boot reported the exact commit, passed the 2 MB PSRAM
+  test, loaded persistent settings from NVS, mounted the 60,786 MB microSD card,
+  and joined Wi-Fi at `192.168.227.64`. The configured AIMP machine resolved but
+  TCP port 19371 timed out during this run, so no live server mutation was
+  attempted and capability status correctly remained waiting/offline.
+- Physical framebuffer inspection covered the new scrollable Settings menu,
+  Playback, Display, and Storage/About submenus plus the returned Now Playing
+  page. The live Connection submenu was also inspected without preserving a
+  repository artifact: both passwords rendered as fixed masks, while host,
+  port, and SSID remained editable. Brightness and timeout controls were not
+  clipped, the Back target occupied its full rectangle, and the rating overlay
+  was absent. The inspection found and fixed two diagnostic-only regressions:
+  long settings route names exceeded the query buffer, and base-page selection
+  did not initially dismiss a settings overlay. Entering Storage/About and then
+  requesting Now Playing on the final flash proved the overlay reset.
 
 ## Visual inspection
 
@@ -246,3 +262,13 @@ surfaces. These are live AIMP results, not desktop mockups:
 ![Composers root](../artifacts/device-library-composers.png)
 ![Lyrics surface](../artifacts/device-lyrics.png)
 ![More controls with library entry points](../artifacts/device-more-library.png)
+
+The issue #4 settings captures below are from the final physical-device flow;
+the AIMP host was offline, so the capability line intentionally shows its
+waiting state:
+
+![Settings menu](../artifacts/device-settings-menu.png)
+![Playback settings](../artifacts/device-settings-playback.png)
+![Display settings](../artifacts/device-settings-display.png)
+![Storage and capability status](../artifacts/device-settings-storage.png)
+![Now Playing after dismissing settings](../artifacts/device-settings-now.png)
