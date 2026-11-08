@@ -23,6 +23,7 @@ namespace musicremote {
 namespace {
 
 constexpr char kTag[] = "monkeymote";
+constexpr int64_t kAdvancedRequestTimeoutUs = 5'000'000;
 
 uint16_t read_u16(const uint8_t *p) {
   return static_cast<uint16_t>(p[0]) | static_cast<uint16_t>(p[1] << 8);
@@ -470,6 +471,7 @@ bool MonkeyMoteClient::connect_and_authenticate() {
   cover_track_key_.clear();
   lyrics_requests_.clear();
   equalizer_payload_.clear();
+  advanced_requests_.reset();
   library_request_deadline_us_ = 0;
   pending_library_play_row_ = -1;
   pending_library_play_destination_ = -1;
@@ -515,6 +517,7 @@ void MonkeyMoteClient::close_socket() {
   }
   lyrics_requests_.clear();
   equalizer_payload_.clear();
+  advanced_requests_.reset();
   library_request_deadline_us_ = 0;
   pending_library_play_row_ = -1;
   pending_library_play_destination_ = -1;
@@ -533,6 +536,7 @@ void MonkeyMoteClient::close_socket() {
     state.server_capabilities = 0;
     state.equalizer = {};
     state.equalizer_presets.clear();
+    state.advanced_availability.reset();
     ++state.equalizer_revision;
     state.sleep_timer = {};
     ++state.sleep_timer_revision;
@@ -1208,9 +1212,11 @@ bool MonkeyMoteClient::process_frame(uint32_t type, std::vector<uint8_t> &payloa
     if (!advanced::parse_equalizer(payload, equalizer)) {
       return false;
     }
+    advanced_requests_.complete(advanced::kEqualizerStateRequest);
     equalizer_payload_ = payload;
     model_.update([equalizer = std::move(equalizer)](Snapshot &state) mutable {
       state.equalizer = std::move(equalizer);
+      state.advanced_availability.complete(advanced::kEqualizerStateRequest);
       ++state.equalizer_revision;
     });
     return true;
@@ -1220,8 +1226,10 @@ bool MonkeyMoteClient::process_frame(uint32_t type, std::vector<uint8_t> &payloa
     if (!advanced::parse_equalizer_presets(payload, presets)) {
       return false;
     }
+    advanced_requests_.complete(advanced::kEqualizerPresetsRequest);
     model_.update([presets = std::move(presets)](Snapshot &state) mutable {
       state.equalizer_presets = std::move(presets);
+      state.advanced_availability.complete(advanced::kEqualizerPresetsRequest);
       ++state.equalizer_revision;
     });
     return true;
@@ -1231,8 +1239,10 @@ bool MonkeyMoteClient::process_frame(uint32_t type, std::vector<uint8_t> &payloa
     if (!advanced::parse_sleep_timer(payload, timer)) {
       return false;
     }
+    advanced_requests_.complete(advanced::kSleepTimerStateRequest);
     model_.update([timer](Snapshot &state) {
       state.sleep_timer = timer;
+      state.advanced_availability.complete(advanced::kSleepTimerStateRequest);
       ++state.sleep_timer_revision;
     });
     return true;
@@ -1590,22 +1600,45 @@ void MonkeyMoteClient::send_command(const Command &command) {
     if (!state.capabilities_known) {
       break;
     }
+    uint8_t requested = 0;
+    uint8_t sent = 0;
+    const auto request_state = [this, &payload, &requested, &sent](
+                                   uint8_t subcommand, uint8_t request_bit) {
+      requested |= request_bit;
+      payload = advanced::make_state_request(subcommand);
+      if (send_packet(4, payload.data(), payload.size())) {
+        sent |= request_bit;
+      }
+    };
     if ((state.server_capabilities & advanced::kEqualizerCapability) != 0) {
-      payload = advanced::make_state_request(17);
-      send_packet(4, payload.data(), payload.size());
-      payload = advanced::make_state_request(18);
-      send_packet(4, payload.data(), payload.size());
+      request_state(17, advanced::kEqualizerStateRequest);
+      request_state(18, advanced::kEqualizerPresetsRequest);
     }
     if ((state.server_capabilities & advanced::kSleepTimerCapability) != 0) {
-      payload = advanced::make_state_request(19);
-      send_packet(4, payload.data(), payload.size());
+      request_state(19, advanced::kSleepTimerStateRequest);
     }
+    if (sent != 0) {
+      advanced_requests_.begin(sent, esp_timer_get_time() + kAdvancedRequestTimeoutUs);
+    }
+    const uint8_t failed = requested & static_cast<uint8_t>(~sent);
+    model_.update([sent, failed](Snapshot &current) {
+      const uint8_t changed = current.advanced_availability.begin(sent, failed);
+      if ((changed & (advanced::kEqualizerStateRequest |
+                      advanced::kEqualizerPresetsRequest)) != 0) {
+        ++current.equalizer_revision;
+      }
+      if ((changed & advanced::kSleepTimerStateRequest) != 0) {
+        ++current.sleep_timer_revision;
+      }
+    });
     break;
   }
   case CommandType::equalizer_gain: {
     const Snapshot state = model_.copy();
     std::vector<uint8_t> updated = equalizer_payload_;
     if ((state.server_capabilities & advanced::kEqualizerCapability) != 0 &&
+        advanced::equalizer_mutation_allowed(
+            state.advanced_availability.equalizer, state.equalizer) &&
         command.second >= 0 && command.second <= 300 &&
         advanced::set_equalizer_gain(updated, command.first,
                                      static_cast<uint16_t>(command.second)) &&
@@ -1617,7 +1650,9 @@ void MonkeyMoteClient::send_command(const Command &command) {
   }
   case CommandType::sleep_timer: {
     const Snapshot state = model_.copy();
-    if ((state.server_capabilities & advanced::kSleepTimerCapability) == 0) {
+    if ((state.server_capabilities & advanced::kSleepTimerCapability) == 0 ||
+        !advanced::sleep_timer_mutation_allowed(
+            state.advanced_availability.sleep_timer, state.sleep_timer)) {
       break;
     }
     const bool enabled = command.first > 0;
@@ -2536,6 +2571,19 @@ void MonkeyMoteClient::expire_requests(int64_t now_us) {
         state.lyrics =
             std::make_shared<const std::string>("Lyrics request timed out.");
         ++state.lyrics_revision;
+      }
+    });
+  }
+  const uint8_t expired_advanced = advanced_requests_.expire(now_us);
+  if (expired_advanced != 0) {
+    model_.update([expired_advanced](Snapshot &state) {
+      const uint8_t changed = state.advanced_availability.expire(expired_advanced);
+      if ((changed & (advanced::kEqualizerStateRequest |
+                      advanced::kEqualizerPresetsRequest)) != 0) {
+        ++state.equalizer_revision;
+      }
+      if ((changed & advanced::kSleepTimerStateRequest) != 0) {
+        ++state.sleep_timer_revision;
       }
     });
   }

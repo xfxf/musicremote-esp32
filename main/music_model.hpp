@@ -84,6 +84,7 @@ struct Snapshot {
   uint64_t server_capabilities{0};
   advanced::EqualizerState equalizer;
   std::vector<std::string> equalizer_presets;
+  advanced::AvailabilityState advanced_availability;
   uint64_t equalizer_revision{0};
   advanced::SleepTimerState sleep_timer;
   uint64_t sleep_timer_revision{0};

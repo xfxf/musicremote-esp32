@@ -310,6 +310,17 @@ pending because the configured Windows host did not accept TCP connections.
   0.99-1.14 seconds, while playback advanced to 0:21. Restoration returned
   volume, shuffle, repeat, and playback to the captured baseline. The hook was
   removed before the production build.
+- Issue #22 was reproduced against live AIMP: capability mask
+  `0x000000000077ffff` advertised sleep-timer support, EQ state arrived, and no
+  type-51 timer baseline arrived. On the physical board the Advanced Controls
+  screen first showed EQ `ON` and timer `LOADING`; after the bounded five-second
+  deadline it retained EQ `ON`, changed only the timer to disabled
+  `UNAVAILABLE`, and displayed the omitted-state explanation. Both physical
+  framebuffers returned HTTP 200 with exactly 460,815 bytes, and the AIMP
+  session remained online. The focused host test covers complete, partial,
+  pre-deadline, timeout, retry, late-response, reset, and mutation-gate policy
+  through the same availability state machine and readiness predicates used by
+  the client and UI, including stale-known EQ/timer state.
 
 ## Visual inspection
 
@@ -394,3 +405,9 @@ PSRAM-backed framebuffer-response fix:
 
 ![Issue #20 main screen](../artifacts/issue20-now.png)
 ![Issue #20 advanced controls](../artifacts/issue20-advanced.png)
+
+The issue #22 captures show the real advertised-but-omitted timer transition
+without using the synthetic Advanced Controls fixture:
+
+![Issue #22 advanced state loading](../artifacts/issue22-advanced-loading.png)
+![Issue #22 timer state unavailable](../artifacts/issue22-advanced-unavailable.png)
