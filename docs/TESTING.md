@@ -203,6 +203,28 @@ pending because the configured Windows host did not accept TCP connections.
   long settings route names exceeded the query buffer, and base-page selection
   did not initially dismiss a settings overlay. Entering Storage/About and then
   requesting Now Playing on the final flash proved the overlay reset.
+- The adversarial review of PR #15 found invalid editable WPA credentials,
+  incomplete first-boot persistence, and misleading NVS-failure reporting.
+  Commit `2a091d4` resolves those findings: Wi-Fi passwords are restricted to
+  open networks, 8-63 printable-ASCII passphrases, or 64 hexadecimal digits;
+  the complete settings snapshot is schema-seeded and repaired atomically;
+  newer schemas fail without mutation; and storage failures remain visible
+  instead of being reported as successful saves. The single focused blocker
+  re-review passed with no remaining P1 or P2 finding.
+- The clean `2a091d4` build passed all 13 protocol tests and the expanded host
+  settings-policy test, used 1,986,016 bytes (48%) of the app partition, and
+  was hash-verified after flashing. Boot identified the exact commit and
+  ESP-IDF 5.5.4, passed the embedded 2 MB PSRAM test, loaded the complete NVS
+  settings snapshot, mounted the 60,786 MB microSD card, and joined Wi-Fi at
+  `192.168.227.64`. The refreshed physical Storage/About framebuffer showed
+  `SETTINGS STORAGE: NVS OK` without clipping. The AIMP host still resolved to
+  `192.168.227.178`, but TCP port 19371 timed out, so live AIMP validation was
+  not claimed.
+- The blank-screen overlay is topmost and clickable before the backlight is
+  disabled, and the wake path waits for pointer release before hiding it. This
+  structurally prevents the first wake press from reaching an underlying
+  control. A literal finger-driven timeout/wake/second-touch sequence was not
+  performed during this unattended run and remains a manual hardware check.
 
 ## Visual inspection
 
