@@ -38,6 +38,8 @@ enum class ArtworkState : uint8_t { none, loading, ready, unavailable, failed };
 
 enum class LyricsState : uint8_t { none, loading, ready, unavailable, failed };
 
+using SharedText = std::shared_ptr<const std::string>;
+
 struct LibraryPath {
   std::string genre;
   std::string artist;
@@ -62,6 +64,9 @@ struct LibraryItem {
   uint16_t year{0};
 };
 
+using LibraryItems = std::vector<LibraryItem>;
+using SharedLibraryItems = std::shared_ptr<const LibraryItems>;
+
 struct ArtworkBitmap {
   uint16_t width{0};
   uint16_t height{0};
@@ -85,7 +90,7 @@ struct Snapshot {
   std::string artwork_track_key;
   uint64_t artwork_revision{0};
   LyricsState lyrics_state{LyricsState::none};
-  std::string lyrics;
+  SharedText lyrics{std::make_shared<const std::string>()};
   std::string lyrics_track_key;
   uint64_t lyrics_revision{0};
   int32_t active_queue_index{-1};
@@ -99,7 +104,7 @@ struct Snapshot {
   bool queue_filter_active{false};
   std::string queue_filter_label;
   std::vector<Playlist> playlists;
-  std::vector<LibraryItem> library_items;
+  SharedLibraryItems library_items{std::make_shared<const LibraryItems>()};
   LibraryPath library_path;
   std::string library_title{"MEDIA LIBRARY"};
   uint32_t library_total_count{0};

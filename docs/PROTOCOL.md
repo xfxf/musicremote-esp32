@@ -93,13 +93,15 @@ not the per-item ID in playlist metadata (which AIMP may report as `-1`). Type
   records. The implementation validates every record boundary before retaining
   data and caps retained results/text independently of the server count.
 - Type 40 adds a browsed library result. It carries destination playlist ID,
-  selector flags, the result row index, and the selected path strings. For
-  immediate playback, flag bit 28 requests insertion at the appended `int32_t`
-  position after clearing the active scratch/current destination; the desired
-  imported row is then selected with type 7/subcommand 10.
+  selector flags, the result row index, and the selected path strings.
 - Type 44 adds a type-24 search result. Its body is search request ID,
   destination playlist ID, selected result row, insertion position (`-2` for
   the end), and a reserved zero `uint16_t`.
+
+For immediate playback, the firmware appends only the selected type-40 or
+type-44 result to the active playlist, then selects the prior playlist count
+with type 7/subcommand 10 and sends play. It never clears the user's current
+playlist as a side effect of tapping a library result.
 - Type 10 sets a one-byte rating from 0 through 5.
 - Type 20 clears a playlist.
 - Type 21 asks AIMP's media-library delegate to add a matching item to a

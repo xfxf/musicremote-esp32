@@ -25,6 +25,7 @@ public:
                       uint32_t &stride);
   bool select_page_for_diagnostics(uint8_t page);
   bool select_overlay_for_diagnostics(uint8_t overlay);
+  bool select_library_category_for_diagnostics(uint8_t category);
 
 private:
   enum class Page { now, queue, playlists, more };

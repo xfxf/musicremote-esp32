@@ -88,6 +88,8 @@ bool MusicUi::select_page_for_diagnostics(uint8_t page) {
   std::lock_guard lock(mutex_);
   lv_obj_set_hidden(filter_overlay_, true);
   lv_obj_set_hidden(search_overlay_, true);
+  lv_obj_set_hidden(library_overlay_, true);
+  lv_obj_set_hidden(lyrics_overlay_, true);
   show_page(static_cast<Page>(page));
   return true;
 }
@@ -111,6 +113,24 @@ bool MusicUi::select_overlay_for_diagnostics(uint8_t overlay) {
   } else if (overlay == 4) {
     lv_obj_move_foreground(lyrics_overlay_);
   }
+  return true;
+}
+
+bool MusicUi::select_library_category_for_diagnostics(uint8_t category) {
+  if (category >= 4) {
+    return false;
+  }
+  std::lock_guard lock(mutex_);
+  library_root_visible_ = false;
+  library_page_start_ = 0;
+  lv_obj_set_hidden(filter_overlay_, true);
+  lv_obj_set_hidden(search_overlay_, true);
+  lv_obj_set_hidden(lyrics_overlay_, true);
+  lv_obj_set_hidden(library_overlay_, false);
+  lv_obj_move_foreground(library_overlay_);
+  lv_label_set_text(library_count_, "LOADING...");
+  lv_obj_clean(library_list_);
+  client_.enqueue({CommandType::request_library_root, category});
   return true;
 }
 
@@ -520,6 +540,7 @@ void MusicUi::show_library_root() {
 
 void MusicUi::rebuild_library(const Snapshot &snapshot) {
   constexpr size_t kPageSize = 25;
+  const LibraryItems &items = *snapshot.library_items;
   if (library_root_visible_) {
     return;
   }
@@ -533,15 +554,14 @@ void MusicUi::rebuild_library(const Snapshot &snapshot) {
     lv_obj_set_style_pad_all(loading, 16, 0);
     return;
   }
-  if (library_page_start_ >= snapshot.library_items.size()) {
-    library_page_start_ = snapshot.library_items.empty()
+  if (library_page_start_ >= items.size()) {
+    library_page_start_ = items.empty()
                               ? 0
-                              : (snapshot.library_items.size() - 1) / kPageSize * kPageSize;
+                              : (items.size() - 1) / kPageSize * kPageSize;
   }
-  const size_t end = std::min(library_page_start_ + kPageSize,
-                              snapshot.library_items.size());
+  const size_t end = std::min(library_page_start_ + kPageSize, items.size());
   char count[64];
-  if (snapshot.library_items.empty()) {
+  if (items.empty()) {
     std::snprintf(count, sizeof(count), "NO RESULTS");
   } else {
     std::snprintf(count, sizeof(count), "%u-%u OF %u%s",
@@ -552,7 +572,7 @@ void MusicUi::rebuild_library(const Snapshot &snapshot) {
   }
   lv_label_set_text(library_count_, count);
   for (size_t index = library_page_start_; index < end; ++index) {
-    const LibraryItem &item = snapshot.library_items[index];
+    const LibraryItem &item = items[index];
     lv_obj_t *row = lv_button_create(library_list_);
     lv_obj_set_width(row, lv_pct(100));
     lv_obj_set_height(row, 50);
@@ -582,7 +602,7 @@ void MusicUi::rebuild_library(const Snapshot &snapshot) {
   }
   lv_obj_set_state(library_previous_page_, LV_STATE_DISABLED, library_page_start_ == 0);
   lv_obj_set_state(library_next_page_, LV_STATE_DISABLED,
-                   end >= snapshot.library_items.size());
+                   end >= items.size());
 }
 
 void MusicUi::update_lyrics(const Snapshot &snapshot) {
@@ -597,7 +617,7 @@ void MusicUi::update_lyrics(const Snapshot &snapshot) {
   case LyricsState::ready:
   case LyricsState::unavailable:
   case LyricsState::failed:
-    lv_label_set_text(lyrics_text_, snapshot.lyrics.c_str());
+    lv_label_set_text(lyrics_text_, snapshot.lyrics->c_str());
     break;
   case LyricsState::none:
   default:
@@ -667,13 +687,16 @@ void MusicUi::create_more_page() {
   lv_obj_set_pos(volume_text, 14, 183);
   volume_slider_ = lv_slider_create(page);
   lv_obj_set_pos(volume_slider_, 110, 184);
-  lv_obj_set_size(volume_slider_, 356, 12);
+  lv_obj_set_size(volume_slider_, 198, 12);
   lv_obj_set_ext_click_area(volume_slider_, 16);
   lv_slider_set_range(volume_slider_, 0, 100);
   lv_obj_set_style_bg_color(volume_slider_, color(0x28303D), LV_PART_MAIN);
   lv_obj_set_style_bg_color(volume_slider_, color(kAccent), LV_PART_INDICATOR);
   lv_obj_set_style_bg_color(volume_slider_, color(kText), LV_PART_KNOB);
   lv_obj_add_event_cb(volume_slider_, event_handler, LV_EVENT_RELEASED, this);
+  lv_obj_t *refresh = make_button(page, "REFRESH", 144, 44);
+  lv_obj_set_pos(refresh, 322, 170);
+  lv_obj_add_event_cb(refresh, event_handler, LV_EVENT_CLICKED, this);
 }
 
 void MusicUi::show_page(Page page) {
@@ -1069,10 +1092,11 @@ void MusicUi::library_row_handler(lv_event_t *event) {
     return;
   }
   const size_t index = ui->library_page_start_ + static_cast<size_t>(local_index);
-  if (index >= ui->snapshot_.library_items.size()) {
+  const LibraryItems &items = *ui->snapshot_.library_items;
+  if (index >= items.size()) {
     return;
   }
-  const LibraryItem &item = ui->snapshot_.library_items[index];
+  const LibraryItem &item = items[index];
   if (lv_event_get_code(event) == LV_EVENT_LONG_PRESSED) {
     ui->suppress_library_click_ = true;
     ui->client_.enqueue({CommandType::enqueue_library_item, item.selection_index,
@@ -1220,7 +1244,7 @@ void MusicUi::handle_event(lv_event_t *event) {
     if (target == library_previous_page_ && library_page_start_ >= kLibraryPageSize) {
       library_page_start_ -= kLibraryPageSize;
     } else if (target == library_next_page_ &&
-               library_page_start_ + kLibraryPageSize < snapshot_.library_items.size()) {
+               library_page_start_ + kLibraryPageSize < snapshot_.library_items->size()) {
       library_page_start_ += kLibraryPageSize;
     }
     rebuild_library(snapshot_);
@@ -1289,7 +1313,7 @@ void MusicUi::handle_event(lv_event_t *event) {
     client_.enqueue({CommandType::next});
   } else if (std::strcmp(text, "STOP") == 0) {
     client_.enqueue({CommandType::stop});
-  } else if (std::strcmp(text, "REFRESH FROM AIMP") == 0) {
+  } else if (std::strcmp(text, "REFRESH") == 0) {
     client_.enqueue({CommandType::request_playlist, -1});
     const int32_t folder = playlist_folder_ids_.empty() ? -1 : playlist_folder_ids_.back();
     client_.enqueue({CommandType::request_playlists, folder});

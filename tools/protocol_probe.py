@@ -889,6 +889,23 @@ def validate_mutations_and_restore(
             request=lambda: client.send(4, struct.pack("<Bii", 10, scratch_id, 1)),
         )
         notes.append("searched library selection confirmed count=1")
+        activate_and_wait(client, scratch_id)
+        playback_command(client, 10, 0)
+        playback_command(client, 1, 0)
+        selected_track, _ = wait_for(
+            client,
+            lambda frames: (
+                info
+                if (info := latest_track_info(frames)) is not None
+                and info.title == track.title
+                else None
+            ),
+            timeout=8.0,
+        )
+        assert isinstance(selected_track, TrackInfo)
+        notes.append("searched library play confirmed at appended row=0")
+        playback_command(client, 3, 0)
+        activate_and_wait(client, baseline_playlist)
         client.send(20, clear_payload)
         final_clear_frames = client.collect(1.0)
         notes.append(

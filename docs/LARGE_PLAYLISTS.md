@@ -41,8 +41,16 @@ recovery also restores a structurally valid backup when the final file is
 absent or has an invalid header/extent. All names use FAT 8.3 form because this
 firmware intentionally disables FAT long-file-name allocation.
 
-The index header records a 64-bit hash and byte length of the compressed source.
-An identical response reuses the promoted file instead of rebuilding it. On
+The index header records a 64-bit hash and byte length of the compressed source,
+and `INDEX.DAT` remains on the selected storage across resets and power loss.
+The current format retains one promoted oversized-playlist index—the most
+recent one—not a separate cache for every AIMP playlist.
+After reboot, an identical response reuses the promoted file instead of
+rebuilding or rewriting it. MonkeyMote does not expose a playlist revision,
+delta, pagination, or changed-row notification, so AIMP must still send the
+complete compressed response before the device can verify that hash. A changed
+hash invalidates the complete local index; safe partial invalidation is not
+possible without row identities or a server revision. On
 internal flash, changed content received less than 15 minutes after boot or the
 last promotion keeps the previous index and visibly reports
 `INDEX STALE - RETRY LATER`. This bounds erase frequency during reconnect or

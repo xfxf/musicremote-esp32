@@ -541,6 +541,21 @@ bool MonkeyMoteClient::process_socket(int timeout_ms) {
         (length > kMaxPayload || advertised_size > kMaxPayload);
     if (stream_playlist || length > kMaxPayload) {
       receive_buffer_.erase(receive_buffer_.begin(), receive_buffer_.begin() + 12);
+      const bool oversized_library =
+          type == 19 || (compressed_envelope_ready && inner_type == 19);
+      if (oversized_library) {
+        ESP_LOGW(kTag, "Draining oversized library reply: %" PRIu32, length);
+        discard_remaining_ = length;
+        model_.update([](Snapshot &state) {
+          state.library_loading = false;
+          state.library_items = std::make_shared<const LibraryItems>();
+          state.library_total_count = 0;
+          state.library_truncated = true;
+          state.status = "LIBRARY RESULT TOO LARGE";
+          ++state.library_revision;
+        });
+        continue;
+      }
       if (type == 8 || type == 13 ||
           (compressed_envelope_ready &&
            (inner_type == 8 || inner_type == 13))) {
@@ -959,7 +974,15 @@ bool MonkeyMoteClient::process_frame(uint32_t type, const std::vector<uint8_t> &
     return payload.empty();
   }
   case 19:
-    return parse_library(payload);
+    if (!parse_library(payload)) {
+      model_.update([](Snapshot &state) {
+        state.library_loading = false;
+        state.status = "LIBRARY RESPONSE INVALID";
+        ++state.library_revision;
+      });
+      return false;
+    }
+    return true;
   case 23:
     send_packet(23);
     return true;
@@ -1153,7 +1176,7 @@ void MonkeyMoteClient::send_command(const Command &command) {
     append_u32(payload, library_request_id_);
     model_.update([title = pending_library_title_](Snapshot &state) {
       state.library_loading = true;
-      state.library_items.clear();
+      state.library_items = std::make_shared<const LibraryItems>();
       state.library_total_count = 0;
       state.library_title = title;
       state.status = "LOADING LIBRARY";
@@ -1185,13 +1208,19 @@ void MonkeyMoteClient::send_command(const Command &command) {
     payload.push_back(0);
     model_.update([title = pending_library_title_](Snapshot &state) {
       state.library_loading = true;
-      state.library_items.clear();
+      state.library_items = std::make_shared<const LibraryItems>();
       state.library_total_count = 0;
       state.library_title = title;
       state.status = "SEARCHING LIBRARY";
       ++state.library_revision;
     });
-    send_packet(24, payload.data(), payload.size());
+    if (!send_packet(24, payload.data(), payload.size())) {
+      model_.update([](Snapshot &state) {
+        state.library_loading = false;
+        state.status = "LIBRARY SEARCH FAILED";
+        ++state.library_revision;
+      });
+    }
     break;
   }
   case CommandType::play_library_item:
@@ -1202,15 +1231,29 @@ void MonkeyMoteClient::send_command(const Command &command) {
     break;
   case CommandType::request_lyrics:
     lyrics_request_track_key_ = cover_track_key_;
+    if (lyrics_request_track_key_.empty()) {
+      model_.update([](Snapshot &state) {
+        state.lyrics_state = LyricsState::unavailable;
+        state.lyrics = std::make_shared<const std::string>("No track is playing.");
+        ++state.lyrics_revision;
+      });
+      break;
+    }
     payload.push_back(11);
     append_i32(payload, 0);
     model_.update([key = lyrics_request_track_key_](Snapshot &state) {
       state.lyrics_state = LyricsState::loading;
-      state.lyrics.clear();
+      state.lyrics = std::make_shared<const std::string>();
       state.lyrics_track_key = key;
       ++state.lyrics_revision;
     });
-    send_packet(4, payload.data(), payload.size());
+    if (!send_packet(4, payload.data(), payload.size())) {
+      model_.update([](Snapshot &state) {
+        state.lyrics_state = LyricsState::failed;
+        state.lyrics = std::make_shared<const std::string>("Lyrics request failed.");
+        ++state.lyrics_revision;
+      });
+    }
     break;
   }
 }
@@ -1233,23 +1276,35 @@ void MonkeyMoteClient::request_library(const LibraryPath &path, std::string titl
   append_optional_string(payload, path.composer);
   model_.update([path, title = pending_library_title_](Snapshot &state) {
     state.library_loading = true;
-    state.library_items.clear();
+    state.library_items = std::make_shared<const LibraryItems>();
     state.library_total_count = 0;
     state.library_path = path;
     state.library_title = title;
     state.status = "BROWSING LIBRARY";
     ++state.library_revision;
   });
-  send_packet(39, payload.data(), payload.size());
+  if (!send_packet(39, payload.data(), payload.size())) {
+    model_.update([](Snapshot &state) {
+      state.library_loading = false;
+      state.status = "LIBRARY BROWSE FAILED";
+      ++state.library_revision;
+    });
+  }
 }
 
 void MonkeyMoteClient::select_library_item(const Command &command, bool play) {
-  const int32_t destination = play ? -1 : model_.copy().active_playlist_id;
+  const Snapshot current = model_.copy();
+  const int32_t destination = current.active_playlist_id;
+  const int32_t appended_row = static_cast<int32_t>(current.queue_total_count);
   const auto playback = [this](uint8_t subcommand, int32_t value) {
     std::vector<uint8_t> body{subcommand};
     append_i32(body, value);
     return send_packet(7, body.data(), body.size());
   };
+  if (destination < 0) {
+    model_.update([](Snapshot &state) { state.status = "NO ACTIVE PLAYLIST"; });
+    return;
+  }
   if (command.library_path.empty() && command.second > 0 && command.first >= 0) {
     std::vector<uint8_t> payload;
     append_i32(payload, command.second);
@@ -1257,19 +1312,15 @@ void MonkeyMoteClient::select_library_item(const Command &command, bool play) {
     append_i32(payload, command.first);
     append_i32(payload, -2);
     append_u16(payload, 0);
-    if (play) {
-      playback(15, 0);
-      std::vector<uint8_t> clear;
-      append_i32(clear, -1);
-      send_packet(20, clear.data(), clear.size());
-    }
-    send_packet(44, payload.data(), payload.size());
-    if (play) {
-      playback(10, command.first);
+    const bool sent = send_packet(44, payload.data(), payload.size());
+    if (play && sent) {
+      playback(10, appended_row);
       playback(1, 0);
     }
-    model_.update([play](Snapshot &state) {
-      state.status = play ? "PLAYING SEARCH RESULT" : "ENQUEUED SEARCH RESULT";
+    model_.update([play, sent](Snapshot &state) {
+      state.status = !sent                  ? "LIBRARY SELECTION FAILED"
+                     : play                 ? "PLAYING SEARCH RESULT"
+                                            : "ENQUEUED SEARCH RESULT";
     });
     return;
   }
@@ -1277,29 +1328,23 @@ void MonkeyMoteClient::select_library_item(const Command &command, bool play) {
   if (path_flags == 0) {
     return;
   }
-  const uint32_t flags = path_flags | (play ? 0x10000000u : 0u);
   std::vector<uint8_t> payload;
   append_i32(payload, destination);
-  append_u32(payload, flags);
-  append_i32(payload, play ? -1 : command.first);
+  append_u32(payload, path_flags);
+  append_i32(payload, command.first);
   append_optional_string(payload, command.library_path.genre);
   append_optional_string(payload, command.library_path.artist);
   append_optional_string(payload, command.library_path.album);
   append_optional_string(payload, command.library_path.composer);
-  if (play) {
-    append_i32(payload, 0);
-    playback(15, 0);
-    std::vector<uint8_t> clear;
-    append_i32(clear, -1);
-    send_packet(20, clear.data(), clear.size());
-    send_packet(40, payload.data(), payload.size());
-    playback(10, std::max<int32_t>(command.first, 0));
+  const bool sent = send_packet(40, payload.data(), payload.size());
+  if (play && sent) {
+    playback(10, appended_row);
     playback(1, 0);
-  } else {
-    send_packet(40, payload.data(), payload.size());
   }
-  model_.update([play](Snapshot &state) {
-    state.status = play ? "PLAYING LIBRARY ITEM" : "ENQUEUED LIBRARY ITEM";
+  model_.update([play, sent](Snapshot &state) {
+    state.status = !sent              ? "LIBRARY SELECTION FAILED"
+                   : play             ? "PLAYING LIBRARY ITEM"
+                                      : "ENQUEUED LIBRARY ITEM";
   });
 }
 
@@ -1310,8 +1355,8 @@ void MonkeyMoteClient::request_initial_state() {
 
 bool MonkeyMoteClient::parse_library(const std::vector<uint8_t> &payload) {
   constexpr uint32_t kMaxRecords = 100'000;
-  constexpr size_t kMaxRetainedRecords = 10'000;
-  constexpr size_t kMaxRetainedText = 384 * 1024;
+  constexpr size_t kMaxRetainedRecords = 2'000;
+  constexpr size_t kMaxRetainedText = 256 * 1024;
   if (payload.size() < 9) {
     return false;
   }
@@ -1330,8 +1375,15 @@ bool MonkeyMoteClient::parse_library(const std::vector<uint8_t> &payload) {
   size_t offset = 9;
   size_t retained_text = 0;
   bool truncated = false;
-  std::vector<LibraryItem> items;
-  items.reserve(std::min<size_t>(count, kMaxRetainedRecords));
+  LibraryItems items;
+  // Bound the initial allocation by both the retention cap and the minimum
+  // number of bytes required to encode each declared record. The count is
+  // untrusted and must not request a large contiguous allocation by itself.
+  const size_t min_record_size = wire_kind == 6                ? 14
+                                 : wire_kind == 7 || wire_kind == 8 ? 23
+                                                                    : 1;
+  items.reserve(std::min<size_t>(
+      {count, kMaxRetainedRecords, (payload.size() - 9) / min_record_size}));
   auto retain = [&](LibraryItem item) {
     const size_t text_size = item.title.size() + item.subtitle.size() +
                              item.path.genre.size() + item.path.artist.size() +
@@ -1426,14 +1478,15 @@ bool MonkeyMoteClient::parse_library(const std::vector<uint8_t> &payload) {
     return false;
   }
 
-  model_.update([items = std::move(items), path = pending_library_path_,
+  auto published_items = std::make_shared<const LibraryItems>(std::move(items));
+  model_.update([items = std::move(published_items), path = pending_library_path_,
                  title = pending_library_title_, count, truncated](Snapshot &state) mutable {
     state.library_items = std::move(items);
     state.library_path = std::move(path);
     state.library_title = std::move(title);
     state.library_total_count = count;
     state.library_loading = false;
-    state.library_truncated = truncated || state.library_items.size() != count;
+    state.library_truncated = truncated || state.library_items->size() != count;
     state.status = count == 0 ? "NO LIBRARY MATCHES" : "LIBRARY READY";
     ++state.library_revision;
   });
@@ -1455,7 +1508,8 @@ bool MonkeyMoteClient::parse_lyrics(const std::vector<uint8_t> &payload) {
   if (length > kMaxLyricsBytes) {
     model_.update([key = lyrics_request_track_key_](Snapshot &state) {
       state.lyrics_state = LyricsState::failed;
-      state.lyrics = "Lyrics exceed the 24 KiB display limit.";
+      state.lyrics = std::make_shared<const std::string>(
+          "Lyrics exceed the 24 KiB display limit.");
       state.lyrics_track_key = key;
       ++state.lyrics_revision;
     });
@@ -1463,10 +1517,14 @@ bool MonkeyMoteClient::parse_lyrics(const std::vector<uint8_t> &payload) {
   }
   std::string lyrics(reinterpret_cast<const char *>(payload.data() + 20), length);
   std::replace(lyrics.begin(), lyrics.end(), '\0', ' ');
-  model_.update([key = lyrics_request_track_key_, lyrics = std::move(lyrics)](
+  const bool empty = lyrics.empty();
+  auto published_lyrics = std::make_shared<const std::string>(
+      empty ? "No lyrics are available for this track." : std::move(lyrics));
+  model_.update([key = lyrics_request_track_key_, empty,
+                 lyrics = std::move(published_lyrics)](
                     Snapshot &state) mutable {
-    state.lyrics_state = lyrics.empty() ? LyricsState::unavailable : LyricsState::ready;
-    state.lyrics = lyrics.empty() ? "No lyrics are available for this track." : std::move(lyrics);
+    state.lyrics_state = empty ? LyricsState::unavailable : LyricsState::ready;
+    state.lyrics = std::move(lyrics);
     state.lyrics_track_key = key;
     ++state.lyrics_revision;
   });
@@ -1502,7 +1560,7 @@ void MonkeyMoteClient::parse_track_info(const std::vector<uint8_t> &payload) {
           state.now_playing = std::move(track);
           if (state.lyrics_track_key != track_key) {
             state.lyrics_state = LyricsState::none;
-            state.lyrics.clear();
+            state.lyrics = std::make_shared<const std::string>();
             state.lyrics_track_key = track_key;
             ++state.lyrics_revision;
           }
@@ -1746,6 +1804,17 @@ void MonkeyMoteClient::parse_compressed(const std::vector<uint8_t> &payload) {
       reject_cover_reply();
       return;
     }
+    if (inner_type == 19) {
+      model_.update([](Snapshot &state) {
+        state.library_loading = false;
+        state.library_items = std::make_shared<const LibraryItems>();
+        state.library_total_count = 0;
+        state.library_truncated = true;
+        state.status = "LIBRARY RESULT TOO LARGE";
+        ++state.library_revision;
+      });
+      return;
+    }
     queue_filter_active_ = false;
     queue_filter_.clear();
     model_.update([](Snapshot &state) {
@@ -1768,6 +1837,12 @@ void MonkeyMoteClient::parse_compressed(const std::vector<uint8_t> &payload) {
     ESP_LOGW(kTag, "LZ4 payload failed to decompress");
     if (inner_type == 8 || inner_type == 13) {
       reject_cover_reply();
+    } else if (inner_type == 19) {
+      model_.update([](Snapshot &state) {
+        state.library_loading = false;
+        state.status = "LIBRARY RESPONSE INVALID";
+        ++state.library_revision;
+      });
     }
     return;
   }
