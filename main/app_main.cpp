@@ -8,8 +8,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <inttypes.h>
+#include <limits>
 
 #include "esp_event.h"
+#include "esp_heap_caps.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -130,31 +132,71 @@ esp_err_t screenshot_handler(httpd_req_t *request) {
     return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR,
                                "LVGL snapshot failed");
   }
+  constexpr uint32_t kScreenshotWidth = 480;
+  constexpr uint32_t kScreenshotHeight = 320;
+  constexpr size_t kRgb565BytesPerPixel = 2;
+  constexpr size_t kPpmBytesPerPixel = 3;
+  constexpr size_t kSizeMax = std::numeric_limits<size_t>::max();
+  if (width != kScreenshotWidth || height != kScreenshotHeight ||
+      width > kSizeMax / kRgb565BytesPerPixel) {
+    return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR,
+                               "Unexpected screenshot geometry");
+  }
+  const size_t minimum_stride = static_cast<size_t>(width) * kRgb565BytesPerPixel;
+  if (stride < minimum_stride || stride > kSizeMax / height ||
+      pixels.size() < static_cast<size_t>(stride) * height) {
+    return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR,
+                               "Invalid screenshot buffer");
+  }
 
-  httpd_resp_set_type(request, "image/x-portable-pixmap");
-  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
   char header[40];
   const int header_length =
       std::snprintf(header, sizeof(header), "P6\n%lu %lu\n255\n",
                     static_cast<unsigned long>(width), static_cast<unsigned long>(height));
-  ESP_ERROR_CHECK_WITHOUT_ABORT(httpd_resp_send_chunk(request, header, header_length));
-
-  std::vector<uint8_t> row(static_cast<size_t>(width) * 3);
+  if (header_length <= 0 || static_cast<size_t>(header_length) >= sizeof(header)) {
+    return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR,
+                               "Screenshot header failed");
+  }
+  const size_t header_size = static_cast<size_t>(header_length);
+  if (static_cast<size_t>(width) > kSizeMax / height) {
+    return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR,
+                               "Screenshot size overflow");
+  }
+  const size_t pixel_count = static_cast<size_t>(width) * height;
+  if (pixel_count > (kSizeMax - header_size) / kPpmBytesPerPixel) {
+    return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR,
+                               "Screenshot size overflow");
+  }
+  const size_t ppm_size = header_size + pixel_count * kPpmBytesPerPixel;
+  if (ppm_size > static_cast<size_t>(std::numeric_limits<ssize_t>::max())) {
+    return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR,
+                               "Screenshot response too large");
+  }
+  auto *ppm = static_cast<uint8_t *>(
+      heap_caps_malloc(ppm_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (ppm == nullptr) {
+    return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR,
+                               "Screenshot output allocation failed");
+  }
+  std::memcpy(ppm, header, header_size);
+  size_t output = header_size;
   for (uint32_t y = 0; y < height; ++y) {
     const uint8_t *source = pixels.data() + static_cast<size_t>(y) * stride;
     for (uint32_t x = 0; x < width; ++x) {
       const uint16_t value = static_cast<uint16_t>(source[x * 2]) |
                              (static_cast<uint16_t>(source[x * 2 + 1]) << 8);
-      row[x * 3] = static_cast<uint8_t>(((value >> 11) & 0x1f) * 255 / 31);
-      row[x * 3 + 1] = static_cast<uint8_t>(((value >> 5) & 0x3f) * 255 / 63);
-      row[x * 3 + 2] = static_cast<uint8_t>((value & 0x1f) * 255 / 31);
-    }
-    if (httpd_resp_send_chunk(request, reinterpret_cast<const char *>(row.data()), row.size()) !=
-        ESP_OK) {
-      return ESP_FAIL;
+      ppm[output++] = static_cast<uint8_t>(((value >> 11) & 0x1f) * 255 / 31);
+      ppm[output++] = static_cast<uint8_t>(((value >> 5) & 0x3f) * 255 / 63);
+      ppm[output++] = static_cast<uint8_t>((value & 0x1f) * 255 / 31);
     }
   }
-  return httpd_resp_send_chunk(request, nullptr, 0);
+  std::vector<uint8_t>().swap(pixels);
+  httpd_resp_set_type(request, "image/x-portable-pixmap");
+  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+  const esp_err_t result = httpd_resp_send(
+      request, reinterpret_cast<const char *>(ppm), static_cast<ssize_t>(ppm_size));
+  heap_caps_free(ppm);
+  return result;
 }
 
 void start_diagnostics(musicremote::MusicUi &ui, musicremote::MonkeyMoteClient &client) {
