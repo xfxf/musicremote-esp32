@@ -33,6 +33,11 @@ uint32_t read_u32(const uint8_t *p) {
          (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
 }
 
+uint64_t read_u64(const uint8_t *p) {
+  return static_cast<uint64_t>(read_u32(p)) |
+         (static_cast<uint64_t>(read_u32(p + 4)) << 32);
+}
+
 int32_t read_i32(const uint8_t *p) { return static_cast<int32_t>(read_u32(p)); }
 
 int32_t resolve_playlist_id(const Snapshot &state, int32_t playlist_id,
@@ -522,6 +527,8 @@ void MonkeyMoteClient::close_socket() {
   model_.update([](Snapshot &state) {
     state.active_playlist_count_known = false;
     state.library_play_pending = false;
+    state.capabilities_known = false;
+    state.server_capabilities = 0;
     bool library_changed = false;
     bool lyrics_changed = false;
     if (state.library_loading) {
@@ -1172,7 +1179,14 @@ bool MonkeyMoteClient::process_frame(uint32_t type, std::vector<uint8_t> &payloa
     send_packet(23);
     return true;
   case 28:
-    return payload.size() == 8;
+    if (payload.size() != 8) {
+      return false;
+    }
+    model_.update([capabilities = read_u64(payload.data())](Snapshot &state) {
+      state.capabilities_known = true;
+      state.server_capabilities = capabilities;
+    });
+    return true;
   case 36:
     return parse_lyrics(payload);
   case 41:

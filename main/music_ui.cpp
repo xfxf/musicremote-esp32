@@ -1,9 +1,11 @@
 #include "music_ui.hpp"
+#include "settings_policy.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstring>
 #include <cstdio>
+#include <utility>
 
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -48,7 +50,11 @@ std::string format_time(int32_t milliseconds) {
 
 } // namespace
 
-MusicUi::MusicUi(Model &model, MonkeyMoteClient &client) : model_(model), client_(client) {
+MusicUi::MusicUi(Model &model, MonkeyMoteClient &client, DeviceSettings &settings,
+                 std::function<void(uint8_t)> brightness_callback)
+    : model_(model), client_(client), settings_(settings),
+      brightness_callback_(std::move(brightness_callback)),
+      last_interaction_us_(esp_timer_get_time()) {
   create_ui();
 }
 
@@ -86,6 +92,8 @@ bool MusicUi::select_page_for_diagnostics(uint8_t page) {
     return false;
   }
   std::lock_guard lock(mutex_);
+  last_interaction_us_ = esp_timer_get_time();
+  set_display_blank(false);
   lv_obj_set_hidden(filter_overlay_, true);
   lv_obj_set_hidden(search_overlay_, true);
   lv_obj_set_hidden(library_overlay_, true);
@@ -99,6 +107,8 @@ bool MusicUi::select_overlay_for_diagnostics(uint8_t overlay) {
     return false;
   }
   std::lock_guard lock(mutex_);
+  last_interaction_us_ = esp_timer_get_time();
+  set_display_blank(false);
   lv_obj_set_hidden(filter_overlay_, overlay != 1);
   lv_obj_set_hidden(search_overlay_, overlay != 2);
   lv_obj_set_hidden(library_overlay_, overlay != 3);
@@ -134,6 +144,18 @@ bool MusicUi::select_library_category_for_diagnostics(uint8_t category) {
   return true;
 }
 
+bool MusicUi::select_settings_for_diagnostics(uint8_t section) {
+  if (section >= std::size(settings_panels_)) {
+    return false;
+  }
+  std::lock_guard lock(mutex_);
+  last_interaction_us_ = esp_timer_get_time();
+  set_display_blank(false);
+  lv_obj_set_hidden(setting_editor_, true);
+  show_settings_section(static_cast<SettingsSection>(section));
+  return true;
+}
+
 void MusicUi::task_entry(void *context) {
   static_cast<MusicUi *>(context)->run();
   vTaskDelete(nullptr);
@@ -151,6 +173,7 @@ void MusicUi::run() {
       update_timeline(esp_timer_get_time());
       append_queue_rows(snapshot_);
       lv_timer_handler();
+      poll_display_timeout(esp_timer_get_time());
     }
     vTaskDelay(pdMS_TO_TICKS(16));
   }
@@ -192,6 +215,7 @@ void MusicUi::create_ui() {
   create_playlists_page();
   create_more_page();
   create_navigation();
+  create_settings_overlays();
   create_filter_overlays();
   create_library_overlay();
   create_lyrics_overlay();
@@ -264,8 +288,6 @@ void MusicUi::create_now_page() {
   lv_obj_set_style_border_width(art_, 0, 0);
   lv_obj_set_style_shadow_width(art_, 0, 0);
   lv_obj_clear_flag(art_, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_add_flag(art_, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(art_, event_handler, LV_EVENT_CLICKED, this);
   art_image_ = lv_image_create(art_);
   lv_obj_set_clickable(art_image_, false);
   lv_obj_add_flag(art_image_, LV_OBJ_FLAG_HIDDEN);
@@ -273,13 +295,6 @@ void MusicUi::create_now_page() {
   art_fallback_ = make_label(art_, LV_SYMBOL_AUDIO, &lv_font_montserrat_48, color(kAccent));
   lv_obj_set_clickable(art_fallback_, false);
   lv_obj_center(art_fallback_);
-  rating_label_ = make_label(art_, "RATING 0 / 5", &lv_font_montserrat_14, color(kText));
-  lv_obj_set_clickable(rating_label_, false);
-  lv_obj_set_style_bg_color(rating_label_, color(kBackground), 0);
-  lv_obj_set_style_bg_opa(rating_label_, LV_OPA_70, 0);
-  lv_obj_set_style_pad_hor(rating_label_, 4, 0);
-  lv_obj_set_style_pad_ver(rating_label_, 2, 0);
-  lv_obj_align(rating_label_, LV_ALIGN_BOTTOM_MID, 0, -8);
 
   title_label_ = make_label(page, "NOTHING PLAYING", &lv_font_montserrat_28, color(kText));
   lv_obj_set_pos(title_label_, 176, 8);
@@ -670,44 +685,382 @@ void MusicUi::create_more_page() {
   lv_obj_remove_style_all(page);
   lv_obj_set_pos(page, 0, 40);
   lv_obj_set_size(page, 480, 234);
-  lv_obj_t *title = make_label(page, "DISCOVER", &lv_font_montserrat_28, color(kText));
+  lv_obj_t *title = make_label(page, "SETTINGS", &lv_font_montserrat_28, color(kText));
   lv_obj_set_pos(title, 14, 4);
   more_status_ = make_label(page, "OFFLINE", &lv_font_montserrat_14, color(kMuted));
-  lv_obj_set_pos(more_status_, 16, 42);
+  lv_obj_set_pos(more_status_, 250, 13);
+  lv_obj_set_size(more_status_, 214, 18);
+  lv_obj_set_style_text_align(more_status_, LV_TEXT_ALIGN_RIGHT, 0);
 
-  library_button_ = make_button(page, "MEDIA LIBRARY", 214, 50);
-  lyrics_button_ = make_button(page, "LYRICS", 214, 50);
-  lv_obj_set_pos(library_button_, 14, 64);
-  lv_obj_set_pos(lyrics_button_, 252, 64);
-  lv_obj_add_event_cb(library_button_, event_handler, LV_EVENT_CLICKED, this);
-  lv_obj_add_event_cb(lyrics_button_, event_handler, LV_EVENT_CLICKED, this);
+  lv_obj_t *menu = lv_obj_create(page);
+  lv_obj_set_pos(menu, 8, 40);
+  lv_obj_set_size(menu, 464, 190);
+  lv_obj_set_style_bg_opa(menu, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(menu, 0, 0);
+  lv_obj_set_style_pad_all(menu, 0, 0);
+  lv_obj_set_style_pad_row(menu, 3, 0);
+  lv_obj_set_flex_flow(menu, LV_FLEX_FLOW_COLUMN);
 
-  more_shuffle_ = make_button(page, "SHUFFLE", 132, 44);
-  more_repeat_ = make_button(page, "REPEAT", 132, 44);
-  lv_obj_t *stop = make_button(page, "STOP", 132, 44);
-  lv_obj_set_pos(more_shuffle_, 14, 124);
-  lv_obj_set_pos(more_repeat_, 174, 124);
-  lv_obj_set_pos(stop, 334, 124);
+  auto add_row = [this, menu](const char *text) {
+    lv_obj_t *row = make_button(menu, text, 448, 48);
+    lv_obj_t *label = lv_obj_get_child(row, 0);
+    lv_obj_set_width(label, 380);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_align(label, LV_ALIGN_LEFT_MID, 4, 0);
+    lv_obj_t *arrow = make_label(row, LV_SYMBOL_RIGHT, &lv_font_montserrat_18, color(kAccent));
+    lv_obj_set_clickable(arrow, false);
+    lv_obj_align(arrow, LV_ALIGN_RIGHT_MID, -4, 0);
+    lv_obj_add_event_cb(row, event_handler, LV_EVENT_CLICKED, this);
+    return row;
+  };
+  library_button_ = add_row("MEDIA LIBRARY");
+  lyrics_button_ = add_row("LYRICS");
+  playback_settings_button_ = add_row("PLAYBACK");
+  connection_settings_button_ = add_row("CONNECTION");
+  display_settings_button_ = add_row("DISPLAY");
+  storage_settings_button_ = add_row("STORAGE / ABOUT");
+}
+
+void MusicUi::create_settings_overlays() {
+  settings_overlay_ = lv_obj_create(root_);
+  lv_obj_remove_style_all(settings_overlay_);
+  lv_obj_set_size(settings_overlay_, 480, 320);
+  lv_obj_set_style_bg_color(settings_overlay_, color(kBackground), 0);
+  lv_obj_set_style_bg_opa(settings_overlay_, LV_OPA_COVER, 0);
+  lv_obj_add_flag(settings_overlay_, LV_OBJ_FLAG_HIDDEN);
+
+  settings_title_ = make_label(settings_overlay_, "PLAYBACK", &lv_font_montserrat_22,
+                               color(kText));
+  lv_obj_set_pos(settings_title_, 14, 14);
+  settings_back_button_ = make_button(settings_overlay_, LV_SYMBOL_LEFT " BACK", 112, 48);
+  lv_obj_set_pos(settings_back_button_, 356, 4);
+  lv_obj_add_event_cb(settings_back_button_, event_handler, LV_EVENT_CLICKED, this);
+
+  for (auto &panel : settings_panels_) {
+    panel = lv_obj_create(settings_overlay_);
+    lv_obj_set_pos(panel, 8, 58);
+    lv_obj_set_size(panel, 464, 254);
+    lv_obj_set_style_bg_opa(panel, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(panel, 0, 0);
+    lv_obj_set_style_pad_all(panel, 6, 0);
+    lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  lv_obj_t *playback = settings_panels_[static_cast<size_t>(SettingsSection::playback)];
+  more_shuffle_ = make_button(playback, "SHUFFLE", 208, 52);
+  more_repeat_ = make_button(playback, "REPEAT", 208, 52);
+  lv_obj_t *stop = make_button(playback, "STOP", 208, 52);
+  lv_obj_t *refresh = make_button(playback, "REFRESH FROM AIMP", 208, 52);
+  lv_obj_set_pos(more_shuffle_, 8, 10);
+  lv_obj_set_pos(more_repeat_, 232, 10);
+  lv_obj_set_pos(stop, 8, 78);
+  lv_obj_set_pos(refresh, 232, 78);
   lv_obj_add_flag(more_shuffle_, LV_OBJ_FLAG_CHECKABLE);
   lv_obj_add_flag(more_repeat_, LV_OBJ_FLAG_CHECKABLE);
-  lv_obj_add_event_cb(more_shuffle_, event_handler, LV_EVENT_CLICKED, this);
-  lv_obj_add_event_cb(more_repeat_, event_handler, LV_EVENT_CLICKED, this);
-  lv_obj_add_event_cb(stop, event_handler, LV_EVENT_CLICKED, this);
+  for (lv_obj_t *button : {more_shuffle_, more_repeat_, stop, refresh}) {
+    lv_obj_add_event_cb(button, event_handler, LV_EVENT_CLICKED, this);
+  }
+  lv_obj_t *playback_help = make_label(
+      playback, "Long-press the main play button to stop.\nVolume and seek stay on Now Playing.",
+      &lv_font_montserrat_14, color(kMuted));
+  lv_obj_set_pos(playback_help, 8, 154);
+  lv_obj_set_width(playback_help, 420);
 
-  lv_obj_t *volume_text = make_label(page, "VOLUME", &lv_font_montserrat_18, color(kMuted));
-  lv_obj_set_pos(volume_text, 14, 183);
-  volume_slider_ = lv_slider_create(page);
-  lv_obj_set_pos(volume_slider_, 110, 184);
-  lv_obj_set_size(volume_slider_, 198, 12);
-  lv_obj_set_ext_click_area(volume_slider_, 16);
-  lv_slider_set_range(volume_slider_, 0, 100);
-  lv_obj_set_style_bg_color(volume_slider_, color(0x28303D), LV_PART_MAIN);
-  lv_obj_set_style_bg_color(volume_slider_, color(kAccent), LV_PART_INDICATOR);
-  lv_obj_set_style_bg_color(volume_slider_, color(kText), LV_PART_KNOB);
-  lv_obj_add_event_cb(volume_slider_, event_handler, LV_EVENT_RELEASED, this);
-  lv_obj_t *refresh = make_button(page, "REFRESH", 144, 44);
-  lv_obj_set_pos(refresh, 322, 170);
-  lv_obj_add_event_cb(refresh, event_handler, LV_EVENT_CLICKED, this);
+  lv_obj_t *connection = settings_panels_[static_cast<size_t>(SettingsSection::connection)];
+  lv_obj_set_style_pad_row(connection, 3, 0);
+  lv_obj_set_flex_flow(connection, LV_FLEX_FLOW_COLUMN);
+  auto setting_row = [this, connection](const char *title, lv_obj_t **value_label) {
+    lv_obj_t *row = lv_button_create(connection);
+    lv_obj_set_size(row, 440, 50);
+    lv_obj_set_style_radius(row, 3, 0);
+    lv_obj_set_style_bg_color(row, color(kPanel), 0);
+    lv_obj_set_style_bg_color(row, color(0x174148), LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_width(row, 0, 0);
+    lv_obj_t *name = make_label(row, title, &lv_font_montserrat_14, color(kMuted));
+    lv_obj_align(name, LV_ALIGN_LEFT_MID, 2, -10);
+    *value_label = make_label(row, "", &lv_font_montserrat_18, color(kText));
+    lv_obj_set_size(*value_label, 380, 22);
+    lv_label_set_long_mode(*value_label, LV_LABEL_LONG_DOT);
+    lv_obj_align(*value_label, LV_ALIGN_LEFT_MID, 2, 10);
+    lv_obj_t *arrow = make_label(row, LV_SYMBOL_RIGHT, &lv_font_montserrat_18, color(kAccent));
+    lv_obj_set_clickable(arrow, false);
+    lv_obj_align(arrow, LV_ALIGN_RIGHT_MID, -2, 0);
+    lv_obj_add_event_cb(row, event_handler, LV_EVENT_CLICKED, this);
+    return row;
+  };
+  wifi_ssid_button_ = setting_row("WI-FI NETWORK", &wifi_ssid_value_);
+  wifi_password_button_ = setting_row("WI-FI PASSWORD", &wifi_password_value_);
+  server_host_button_ = setting_row("AIMP SERVER", &server_host_value_);
+  server_port_button_ = setting_row("AIMP PORT", &server_port_value_);
+  server_password_button_ = setting_row("AIMP PASSWORD", &server_password_value_);
+  lv_obj_t *restart_note = make_label(connection, "CONNECTION CHANGES APPLY AFTER RESTART",
+                                      &lv_font_montserrat_14, color(kAccent));
+  lv_obj_set_style_pad_all(restart_note, 8, 0);
+
+  lv_obj_t *display = settings_panels_[static_cast<size_t>(SettingsSection::display)];
+  lv_obj_t *brightness_label = make_label(display, "BRIGHTNESS", &lv_font_montserrat_18,
+                                          color(kText));
+  lv_obj_set_pos(brightness_label, 8, 12);
+  brightness_value_ = make_label(display, "82%", &lv_font_montserrat_18, color(kAccent));
+  lv_obj_set_pos(brightness_value_, 372, 12);
+  lv_obj_set_width(brightness_value_, 62);
+  lv_obj_set_style_text_align(brightness_value_, LV_TEXT_ALIGN_RIGHT, 0);
+  brightness_slider_ = lv_slider_create(display);
+  lv_obj_set_pos(brightness_slider_, 8, 52);
+  lv_obj_set_size(brightness_slider_, 426, 12);
+  lv_obj_set_ext_click_area(brightness_slider_, 16);
+  lv_slider_set_range(brightness_slider_, 5, 100);
+  lv_obj_set_style_bg_color(brightness_slider_, color(0x28303D), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(brightness_slider_, color(kAccent), LV_PART_INDICATOR);
+  lv_obj_set_style_bg_color(brightness_slider_, color(kText), LV_PART_KNOB);
+  lv_obj_add_event_cb(brightness_slider_, event_handler, LV_EVENT_VALUE_CHANGED, this);
+  lv_obj_add_event_cb(brightness_slider_, event_handler, LV_EVENT_RELEASED, this);
+  auto_blank_button_ = make_button(display, "SCREEN OFF", 426, 58);
+  lv_obj_set_pos(auto_blank_button_, 8, 96);
+  lv_obj_t *blank_name = lv_obj_get_child(auto_blank_button_, 0);
+  lv_obj_set_width(blank_name, 210);
+  lv_obj_set_style_text_align(blank_name, LV_TEXT_ALIGN_LEFT, 0);
+  lv_obj_align(blank_name, LV_ALIGN_LEFT_MID, 4, 0);
+  auto_blank_value_ = make_label(auto_blank_button_, "5 MIN", &lv_font_montserrat_18,
+                                 color(kAccent));
+  lv_obj_set_width(auto_blank_value_, 170);
+  lv_obj_set_style_text_align(auto_blank_value_, LV_TEXT_ALIGN_RIGHT, 0);
+  lv_obj_align(auto_blank_value_, LV_ALIGN_RIGHT_MID, -4, 0);
+  lv_obj_set_clickable(auto_blank_value_, false);
+  lv_obj_add_event_cb(auto_blank_button_, event_handler, LV_EVENT_CLICKED, this);
+  lv_obj_t *wake_help = make_label(display, "TOUCH ANYWHERE ON THE DARK SCREEN TO WAKE",
+                                   &lv_font_montserrat_14, color(kMuted));
+  lv_obj_set_pos(wake_help, 8, 176);
+
+  lv_obj_t *storage = settings_panels_[static_cast<size_t>(SettingsSection::storage)];
+  lv_obj_set_style_pad_all(storage, 10, 0);
+  lv_obj_t *storage_text = make_label(
+      storage,
+      "LARGE PLAYLIST CACHE\n"
+      "Indexes and artwork persist on microSD when available. A matching content hash reuses the index after "
+      "reboot; changed content rebuilds safely. AIMP has no revision or delta paging, so the response is still "
+      "checked.\n\nADVANCED CONTROLS\n"
+      "Equalizer, sleep timer and computer power stay hidden until their command payloads are safely verified.",
+      &lv_font_montserrat_14, color(kText));
+  lv_obj_set_pos(storage_text, 10, 44);
+  lv_obj_set_width(storage_text, 420);
+  lv_label_set_long_mode(storage_text, LV_LABEL_LONG_WRAP);
+  capabilities_value_ = make_label(storage, "CAPABILITIES: WAITING FOR AIMP",
+                                   &lv_font_montserrat_14, color(kAccent));
+  lv_obj_set_pos(capabilities_value_, 10, 4);
+  lv_obj_set_width(capabilities_value_, 420);
+
+  setting_editor_ = lv_obj_create(root_);
+  lv_obj_remove_style_all(setting_editor_);
+  lv_obj_set_size(setting_editor_, 480, 320);
+  lv_obj_set_style_bg_color(setting_editor_, color(kBackground), 0);
+  lv_obj_set_style_bg_opa(setting_editor_, LV_OPA_COVER, 0);
+  lv_obj_add_flag(setting_editor_, LV_OBJ_FLAG_HIDDEN);
+  setting_editor_title_ = make_label(setting_editor_, "EDIT SETTING", &lv_font_montserrat_22,
+                                     color(kText));
+  lv_obj_set_pos(setting_editor_title_, 12, 10);
+  setting_editor_textarea_ = lv_textarea_create(setting_editor_);
+  lv_obj_set_pos(setting_editor_textarea_, 12, 48);
+  lv_obj_set_size(setting_editor_textarea_, 332, 48);
+  lv_textarea_set_one_line(setting_editor_textarea_, true);
+  lv_obj_set_style_text_font(setting_editor_textarea_, &lv_font_montserrat_18, 0);
+  lv_obj_set_style_bg_color(setting_editor_textarea_, color(kPanel), 0);
+  lv_obj_set_style_text_color(setting_editor_textarea_, color(kText), 0);
+  lv_obj_t *cancel = make_button(setting_editor_, "CANCEL", 116, 48);
+  lv_obj_set_pos(cancel, 352, 48);
+  lv_obj_add_event_cb(cancel, [](lv_event_t *event) {
+    auto *ui = static_cast<MusicUi *>(lv_event_get_user_data(event));
+    if (ui != nullptr) {
+      ui->finish_setting_edit(false);
+    }
+  }, LV_EVENT_CLICKED, this);
+  setting_editor_message_ = make_label(setting_editor_, "PRESS ENTER TO SAVE",
+                                       &lv_font_montserrat_14, color(kMuted));
+  lv_obj_set_pos(setting_editor_message_, 14, 105);
+  setting_editor_keyboard_ = lv_keyboard_create(setting_editor_);
+  lv_obj_set_pos(setting_editor_keyboard_, 8, 128);
+  lv_obj_set_size(setting_editor_keyboard_, 464, 184);
+  lv_keyboard_set_textarea(setting_editor_keyboard_, setting_editor_textarea_);
+  lv_obj_set_style_text_font(setting_editor_keyboard_, &lv_font_montserrat_18, LV_PART_ITEMS);
+  lv_obj_add_event_cb(setting_editor_keyboard_, event_handler, LV_EVENT_READY, this);
+  lv_obj_add_event_cb(setting_editor_keyboard_, event_handler, LV_EVENT_CANCEL, this);
+
+  blank_overlay_ = lv_obj_create(root_);
+  lv_obj_remove_style_all(blank_overlay_);
+  lv_obj_set_size(blank_overlay_, 480, 320);
+  lv_obj_set_style_bg_color(blank_overlay_, lv_color_black(), 0);
+  lv_obj_set_style_bg_opa(blank_overlay_, LV_OPA_COVER, 0);
+  lv_obj_add_flag(blank_overlay_, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(blank_overlay_, LV_OBJ_FLAG_HIDDEN);
+  refresh_setting_labels();
+}
+
+void MusicUi::show_settings_section(SettingsSection section) {
+  static constexpr std::array<const char *, 4> kTitles{
+      "PLAYBACK", "CONNECTION", "DISPLAY", "STORAGE / ABOUT"};
+  for (size_t i = 0; i < std::size(settings_panels_); ++i) {
+    lv_obj_set_hidden(settings_panels_[i], i != static_cast<size_t>(section));
+  }
+  lv_label_set_text(settings_title_, kTitles[static_cast<size_t>(section)]);
+  refresh_setting_labels();
+  lv_obj_remove_flag(settings_overlay_, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(settings_overlay_);
+}
+
+void MusicUi::refresh_setting_labels() {
+  const DeviceSettingsData data = settings_.snapshot();
+  lv_label_set_text(wifi_ssid_value_, data.wifi_ssid.c_str());
+  lv_label_set_text(wifi_password_value_, data.wifi_password.empty() ? "NOT SET" : "********");
+  lv_label_set_text(server_host_value_, data.server_host.c_str());
+  char port[8];
+  std::snprintf(port, sizeof(port), "%u", static_cast<unsigned>(data.server_port));
+  lv_label_set_text(server_port_value_, port);
+  lv_label_set_text(server_password_value_,
+                    data.server_password.empty() ? "NOT SET" : "********");
+  lv_slider_set_value(brightness_slider_, data.brightness, LV_ANIM_OFF);
+  char brightness[8];
+  std::snprintf(brightness, sizeof(brightness), "%u%%", data.brightness);
+  lv_label_set_text(brightness_value_, brightness);
+  const char *blank = "OFF";
+  switch (data.auto_blank_seconds) {
+  case 30:
+    blank = "30 SEC";
+    break;
+  case 60:
+    blank = "1 MIN";
+    break;
+  case 300:
+    blank = "5 MIN";
+    break;
+  case 900:
+    blank = "15 MIN";
+    break;
+  default:
+    break;
+  }
+  lv_label_set_text(auto_blank_value_, blank);
+}
+
+void MusicUi::begin_setting_edit(SettingField field, const char *title, bool password) {
+  const DeviceSettingsData data = settings_.snapshot();
+  const std::string *value = nullptr;
+  std::string port;
+  size_t maximum = 127;
+  switch (field) {
+  case SettingField::wifi_ssid:
+    value = &data.wifi_ssid;
+    maximum = 32;
+    break;
+  case SettingField::wifi_password:
+    value = &data.wifi_password;
+    maximum = 64;
+    break;
+  case SettingField::server_host:
+    value = &data.server_host;
+    break;
+  case SettingField::server_port:
+    port = std::to_string(data.server_port);
+    value = &port;
+    maximum = 5;
+    break;
+  case SettingField::server_password:
+    value = &data.server_password;
+    break;
+  case SettingField::none:
+    return;
+  }
+  editing_field_ = field;
+  lv_label_set_text(setting_editor_title_, title);
+  lv_label_set_text(setting_editor_message_, "PRESS ENTER TO SAVE");
+  lv_obj_set_style_text_color(setting_editor_message_, color(kMuted), 0);
+  lv_textarea_set_password_mode(setting_editor_textarea_, password);
+  lv_textarea_set_password_show_time(setting_editor_textarea_, 0);
+  lv_textarea_set_max_length(setting_editor_textarea_, maximum);
+  lv_textarea_set_text(setting_editor_textarea_, value->c_str());
+  lv_obj_remove_flag(setting_editor_, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(setting_editor_);
+  lv_obj_send_event(setting_editor_textarea_, LV_EVENT_FOCUSED, nullptr);
+}
+
+void MusicUi::finish_setting_edit(bool save) {
+  if (!save) {
+    editing_field_ = SettingField::none;
+    lv_obj_add_flag(setting_editor_, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  const char *text = lv_textarea_get_text(setting_editor_textarea_);
+  const std::string value = text == nullptr ? "" : text;
+  bool stored = false;
+  switch (editing_field_) {
+  case SettingField::wifi_ssid:
+    stored = settings_.set_wifi_ssid(value);
+    break;
+  case SettingField::wifi_password:
+    stored = settings_.set_wifi_password(value);
+    break;
+  case SettingField::server_host:
+    stored = settings_.set_server_host(value);
+    break;
+  case SettingField::server_port: {
+    char *end = nullptr;
+    const unsigned long port = std::strtoul(value.c_str(), &end, 10);
+    stored = end != value.c_str() && end != nullptr && *end == '\0' && port <= UINT16_MAX &&
+             port != 0 && settings_.set_server_port(static_cast<uint16_t>(port));
+    break;
+  }
+  case SettingField::server_password:
+    stored = settings_.set_server_password(value);
+    break;
+  case SettingField::none:
+    break;
+  }
+  if (!stored) {
+    lv_label_set_text(setting_editor_message_, "INVALID VALUE - CHECK LENGTH OR PORT");
+    lv_obj_set_style_text_color(setting_editor_message_, color(0xE04F5F), 0);
+    return;
+  }
+  editing_field_ = SettingField::none;
+  lv_obj_add_flag(setting_editor_, LV_OBJ_FLAG_HIDDEN);
+  refresh_setting_labels();
+}
+
+void MusicUi::set_display_blank(bool blank) {
+  if (blank == display_blank_) {
+    return;
+  }
+  display_blank_ = blank;
+  if (blank) {
+    lv_obj_remove_flag(blank_overlay_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(blank_overlay_);
+    brightness_callback_(0);
+  } else {
+    brightness_callback_(settings_.snapshot().brightness);
+    lv_obj_add_flag(blank_overlay_, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+void MusicUi::poll_display_timeout(int64_t now_us) {
+  lv_indev_t *input = nullptr;
+  bool pressed = false;
+  while ((input = lv_indev_get_next(input)) != nullptr) {
+    if (lv_indev_get_type(input) == LV_INDEV_TYPE_POINTER &&
+        lv_indev_get_state(input) == LV_INDEV_STATE_PRESSED) {
+      pressed = true;
+      if (!touch_was_pressed_) {
+        last_interaction_us_ = now_us;
+        if (display_blank_) {
+          set_display_blank(false);
+          lv_indev_wait_release(input);
+        }
+      }
+    }
+  }
+  touch_was_pressed_ = pressed;
+  const uint32_t timeout = settings_.snapshot().auto_blank_seconds;
+  if (!display_blank_ && timeout != 0 &&
+      now_us - last_interaction_us_ >= static_cast<int64_t>(timeout) * 1'000'000) {
+    set_display_blank(true);
+  }
 }
 
 void MusicUi::show_page(Page page) {
@@ -728,6 +1081,21 @@ void MusicUi::show_page(Page page) {
 
 void MusicUi::update(const Snapshot &snapshot) {
   snapshot_ = snapshot;
+
+  if (capabilities_value_ != nullptr) {
+    char capabilities[112];
+    if (snapshot.capabilities_known) {
+      std::snprintf(capabilities, sizeof(capabilities),
+                    "SERVER CAPS 0x%016llX\nEQ %s   SLEEP %s   POWER %s",
+                    static_cast<unsigned long long>(snapshot.server_capabilities),
+                    (snapshot.server_capabilities & (1ULL << 21)) != 0 ? "YES" : "NO",
+                    (snapshot.server_capabilities & (1ULL << 22)) != 0 ? "YES" : "NO",
+                    (snapshot.server_capabilities & (1ULL << 17)) != 0 ? "YES" : "NO");
+    } else {
+      std::snprintf(capabilities, sizeof(capabilities), "CAPABILITIES: WAITING FOR AIMP");
+    }
+    lv_label_set_text(capabilities_value_, capabilities);
+  }
   const bool online = snapshot.connection == ConnectionState::online;
   lv_label_set_text(status_label_, connection_text(snapshot.connection));
   lv_obj_set_style_bg_color(status_dot_, online ? color(kAccent) : color(0xE04F5F), 0);
@@ -769,9 +1137,6 @@ void MusicUi::update(const Snapshot &snapshot) {
     }
     rendered_artwork_revision_ = snapshot.artwork_revision;
   }
-  char rating[16];
-  std::snprintf(rating, sizeof(rating), "RATING %u / 5", snapshot.now_playing.rating);
-  lv_label_set_text(rating_label_, rating);
   lv_label_set_text(play_icon_, snapshot.playback == PlaybackState::playing ? LV_SYMBOL_PAUSE
                                                                             : LV_SYMBOL_PLAY);
   const int32_t duration_deciseconds =
@@ -779,7 +1144,7 @@ void MusicUi::update(const Snapshot &snapshot) {
   lv_slider_set_range(progress_slider_, 0, duration_deciseconds);
   update_timeline(esp_timer_get_time(), true);
   const int volume_percent = (static_cast<uint32_t>(snapshot.volume) * 100) / 65535;
-  if (!lv_slider_is_dragged(volume_slider_)) {
+  if (volume_slider_ != nullptr && !lv_slider_is_dragged(volume_slider_)) {
     lv_slider_set_value(volume_slider_, volume_percent, LV_ANIM_OFF);
   }
   if (!lv_slider_is_dragged(main_volume_slider_)) {
@@ -1159,6 +1524,69 @@ void MusicUi::handle_event(lv_event_t *event) {
       return;
     }
   }
+  if (target == settings_back_button_) {
+    lv_obj_add_flag(settings_overlay_, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  if (target == playback_settings_button_) {
+    show_settings_section(SettingsSection::playback);
+    return;
+  }
+  if (target == connection_settings_button_) {
+    show_settings_section(SettingsSection::connection);
+    return;
+  }
+  if (target == display_settings_button_) {
+    show_settings_section(SettingsSection::display);
+    return;
+  }
+  if (target == storage_settings_button_) {
+    show_settings_section(SettingsSection::storage);
+    return;
+  }
+  if (target == wifi_ssid_button_) {
+    begin_setting_edit(SettingField::wifi_ssid, "WI-FI NETWORK", false);
+    return;
+  }
+  if (target == wifi_password_button_) {
+    begin_setting_edit(SettingField::wifi_password, "WI-FI PASSWORD", true);
+    return;
+  }
+  if (target == server_host_button_) {
+    begin_setting_edit(SettingField::server_host, "AIMP SERVER", false);
+    return;
+  }
+  if (target == server_port_button_) {
+    begin_setting_edit(SettingField::server_port, "AIMP PORT", false);
+    return;
+  }
+  if (target == server_password_button_) {
+    begin_setting_edit(SettingField::server_password, "AIMP PASSWORD", true);
+    return;
+  }
+  if (target == setting_editor_keyboard_) {
+    finish_setting_edit(code == LV_EVENT_READY);
+    return;
+  }
+  if (target == brightness_slider_) {
+    const uint8_t brightness = static_cast<uint8_t>(lv_slider_get_value(brightness_slider_));
+    char text[8];
+    std::snprintf(text, sizeof(text), "%u%%", brightness);
+    lv_label_set_text(brightness_value_, text);
+    brightness_callback_(brightness);
+    last_interaction_us_ = esp_timer_get_time();
+    if (code == LV_EVENT_RELEASED) {
+      settings_.set_brightness(brightness);
+    }
+    return;
+  }
+  if (target == auto_blank_button_) {
+    const uint32_t current = settings_.snapshot().auto_blank_seconds;
+    settings_.set_auto_blank_seconds(settings_policy::next_auto_blank_seconds(current));
+    last_interaction_us_ = esp_timer_get_time();
+    refresh_setting_labels();
+    return;
+  }
   if (target == queue_previous_page_ || target == queue_next_page_) {
     if (target == queue_previous_page_ && queue_page_start_ >= 100) {
       queue_page_start_ -= 100;
@@ -1299,10 +1727,6 @@ void MusicUi::handle_event(lv_event_t *event) {
     }
     return;
   }
-  if (target == art_) {
-    client_.enqueue({CommandType::rating, (snapshot_.now_playing.rating + 1) % 6});
-    return;
-  }
   if (target == playlist_back_button_) {
     if (!playlist_folder_ids_.empty()) {
       playlist_folder_ids_.pop_back();
@@ -1346,7 +1770,7 @@ void MusicUi::handle_event(lv_event_t *event) {
     client_.enqueue({CommandType::next});
   } else if (std::strcmp(text, "STOP") == 0) {
     client_.enqueue({CommandType::stop});
-  } else if (std::strcmp(text, "REFRESH") == 0) {
+  } else if (std::strcmp(text, "REFRESH FROM AIMP") == 0) {
     client_.enqueue({CommandType::request_playlist, -1});
     const int32_t folder = playlist_folder_ids_.empty() ? -1 : playlist_folder_ids_.back();
     client_.enqueue({CommandType::request_playlists, folder});

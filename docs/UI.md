@@ -36,7 +36,14 @@ accent colour, and information hierarchy—without copying branded assets.
   keep the small-screen flow predictable.
 - The now-playing tile displays AIMP's current cover at its returned aspect
   ratio. A generated audio glyph remains visible while loading or when artwork
-  is absent, and the rating stays usable as an overlaid touch label.
+  is absent. Ratings are intentionally omitted from the device UI.
+- Settings is a scrollable menu rather than a button grid. Connection values,
+  playback actions, display controls, and storage/about details each open a
+  dedicated full-screen section. Password rows are masked and password editors
+  use concealed text.
+- Brightness changes apply immediately and persist. The configurable blanking
+  timer turns off the backlight; the first touch restores it and is consumed so
+  the hidden control beneath is not triggered.
 
 Cover JPEGs are decoded on a dedicated lower-priority task, never from the
 LVGL or socket loop. The 144 px decoded RGB888 surface uses PSRAM. Successful

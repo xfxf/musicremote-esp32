@@ -10,18 +10,19 @@ the clarity of Microsoft Zune.
 ## Implemented controls
 
 - Play, pause, stop, previous, next, seek, volume, shuffle, and repeat modes.
-- Live now-playing metadata, playback state, position, and 0–5 track rating.
+- Live now-playing metadata, playback state, position, and per-track artwork.
 - Browse AIMP playlists, switch the active playlist, and browse its queue.
 - Page, browse A-Z, and search title/artist across very large SD-backed queues.
 - Tap a queue item to play it; long-press to remove it.
 - Long-press `CLEAR` to clear the active playlist.
 - Long-press an inactive playlist to delete it.
 - Long-press `+ ESP REMOTE` to create a playlist named `ESP Remote`.
-- Automatic Wi-Fi and AIMP reconnection with `.local` host resolution.
+- Persistent on-device Wi-Fi, AIMP connection, brightness, and screen-off
+  settings, with automatic reconnection and `.local` host resolution.
 
-Current cover artwork is not downloaded: the large blue music tile is the
-intentional fallback and doubles as the rating control. A bounded cover-art
-fetch/cache implementation is tracked in GitHub issue #2.
+Current-track cover artwork is fetched, decoded off the UI thread, and cached
+on microSD when available. A generated music tile is the fallback for missing
+artwork.
 
 Destructive actions deliberately require a long press. The firmware is an
 independent interoperable client and is not affiliated with MonkeyMote or AIMP.
@@ -47,15 +48,16 @@ idf.py build
 idf.py -p /dev/ttyACM0 flash monitor
 ```
 
-The configure and build steps compile credentials into the local firmware
-image. `.env`, generated configuration, dependencies, and `build/` are ignored;
-never publish a binary built with real credentials.
+The configure step compiles first-boot defaults into the local firmware image.
+Changes made under Settings are stored in NVS and take precedence on later
+boots; connection changes apply after restart. `.env`, generated configuration,
+dependencies, and `build/` are ignored; never publish a binary built with real
+credentials.
 
 ## Touch controls
 
 | Surface | Tap | Long press |
 |---|---|---|
-| Artwork | Cycle rating 0–5 | — |
 | Main play button | Play/pause | Stop |
 | Progress / volume | Set value on release | — |
 | Queue row | Play track | Remove track |
@@ -71,10 +73,11 @@ outside their visible bounds to tolerate finger movement on release.
 
 The board exposes a LAN-only diagnostic framebuffer at
 `http://musicremote.local/screenshot.ppm?page=now`. Valid page names are
-`now`, `queue`, `playlists`, `more`, `az`, and `search`. For non-mutating index
-diagnostics, the queue capture also accepts `start=10000`, `filter=A`, or
-`search=Mars`. This endpoint has no authentication; use the firmware only on a
-trusted Wi-Fi network.
+`now`, `queue`, `playlists`, `more`, `az`, `search`, `library`, `lyrics`,
+`playback-settings`, `connection-settings`, `display-settings`, and
+`storage-settings`. For non-mutating index diagnostics, the queue capture also
+accepts `start=10000`, `filter=A`, or `search=Mars`. This endpoint has no
+authentication; use the firmware only on a trusted Wi-Fi network.
 
 See [the product specification](docs/SPEC.md), [protocol notes](docs/PROTOCOL.md),
 [UI rationale](docs/UI.md), and [test record](docs/TESTING.md).

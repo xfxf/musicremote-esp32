@@ -10,7 +10,9 @@ controls, state feedback, queue manipulation, and playlist management.
 
 ### Connectivity
 
-- Connect to WPA2 Wi-Fi from settings kept outside git.
+- Connect to Wi-Fi using gitignored first-boot defaults, then persist editable
+  Wi-Fi and AIMP host, port, and password settings in NVS without displaying or
+  logging password values.
 - Resolve an AIMP `.local` hostname, authenticate to the configured TCP port,
   and reconnect after interruption without blocking touch input.
 - Show offline, connecting, authenticating, rejected, and online states.
@@ -22,7 +24,7 @@ controls, state feedback, queue manipulation, and playlist management.
 - Retrieve, bound, decode, cache, and display current-track cover art without
   blocking LVGL or socket processing; retain a clean fallback for missing art.
 - Control play, pause, stop, previous, next, seek, volume, shuffle, repeat, and
-  rating from the touchscreen.
+  volume from the touchscreen.
 
 ### Playlists and queue
 
@@ -42,6 +44,8 @@ controls, state feedback, queue manipulation, and playlist management.
 - Use a near-black, high-contrast, type-led Zune-inspired visual system and
   touch targets near or above 44 pixels.
 - Remain responsive while socket I/O, decompression, or reconnects occur.
+- Provide persistent brightness and screen-off settings; a touch on a blanked
+  display wakes it without activating the control underneath.
 
 ### Quality gates
 
@@ -54,8 +58,9 @@ controls, state feedback, queue manipulation, and playlist management.
 
 ## Explicit follow-up scope
 
-Cover art is implemented. MonkeyMote's optional lyrics, library search, file
-browser, equalizer, and computer power commands remain tracked in issues #3
-and #4 until their wire formats and dedicated touchscreen flows are physically
-qualified.
+Cover art, lyrics, and media-library search are implemented. The server
+capability mask is surfaced for diagnostics. Equalizer, sleep-timer, and
+computer-power actions remain hidden until their command payloads and dedicated
+confirmation flows are physically qualified; automated validation must never
+invoke a destructive computer-power action.
 

@@ -2,6 +2,10 @@
 
 Date: 2026-11-08 (Australia/Melbourne)
 
+The records below describe the last physically qualified merged firmware. The
+settings/capability branch must be rebuilt, flashed, and recaptured before its
+new screens can be marked hardware-qualified.
+
 ## Build and hardware
 
 - ESP-IDF 5.5.4 build passed for `esp32s3`.

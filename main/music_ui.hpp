@@ -1,8 +1,10 @@
 #pragma once
 
+#include "device_settings.hpp"
 #include "monkeymote_client.hpp"
 #include "music_model.hpp"
 
+#include <functional>
 #include <mutex>
 #include <memory>
 #include <vector>
@@ -13,7 +15,8 @@ namespace musicremote {
 
 class MusicUi {
 public:
-  MusicUi(Model &model, MonkeyMoteClient &client);
+  MusicUi(Model &model, MonkeyMoteClient &client, DeviceSettings &settings,
+          std::function<void(uint8_t)> brightness_callback);
   ~MusicUi();
 
   void start();
@@ -26,9 +29,13 @@ public:
   bool select_page_for_diagnostics(uint8_t page);
   bool select_overlay_for_diagnostics(uint8_t overlay);
   bool select_library_category_for_diagnostics(uint8_t category);
+  bool select_settings_for_diagnostics(uint8_t section);
 
 private:
   enum class Page { now, queue, playlists, more };
+  enum class SettingsSection { playback, connection, display, storage };
+  enum class SettingField { none, wifi_ssid, wifi_password, server_host, server_port,
+                            server_password };
 
   static void task_entry(void *context);
   static void event_handler(lv_event_t *event);
@@ -44,6 +51,7 @@ private:
   void create_queue_page();
   void create_playlists_page();
   void create_more_page();
+  void create_settings_overlays();
   void create_filter_overlays();
   void create_library_overlay();
   void create_lyrics_overlay();
@@ -57,6 +65,12 @@ private:
   void show_library_root();
   void rebuild_library(const Snapshot &snapshot);
   void update_lyrics(const Snapshot &snapshot);
+  void show_settings_section(SettingsSection section);
+  void begin_setting_edit(SettingField field, const char *title, bool password);
+  void finish_setting_edit(bool save);
+  void refresh_setting_labels();
+  void poll_display_timeout(int64_t now_us);
+  void set_display_blank(bool blank);
   void handle_event(lv_event_t *event);
 
   lv_obj_t *make_button(lv_obj_t *parent, const char *text, int width, int height);
@@ -65,6 +79,8 @@ private:
 
   Model &model_;
   MonkeyMoteClient &client_;
+  DeviceSettings &settings_;
+  std::function<void(uint8_t)> brightness_callback_;
   void *task_{nullptr};
   std::recursive_mutex mutex_;
   Snapshot snapshot_;
@@ -98,6 +114,10 @@ private:
   bool suppress_playlist_click_{false};
   bool suppress_library_click_{false};
   bool library_root_visible_{true};
+  bool display_blank_{false};
+  bool touch_was_pressed_{false};
+  int64_t last_interaction_us_{0};
+  SettingField editing_field_{SettingField::none};
   enum class SearchContext { queue, library };
   SearchContext search_context_{SearchContext::queue};
   size_t library_page_start_{0};
@@ -117,7 +137,6 @@ private:
   lv_obj_t *art_{nullptr};
   lv_obj_t *art_image_{nullptr};
   lv_obj_t *art_fallback_{nullptr};
-  lv_obj_t *rating_label_{nullptr};
   lv_obj_t *artist_label_{nullptr};
   lv_obj_t *album_label_{nullptr};
   lv_obj_t *time_label_{nullptr};
@@ -142,6 +161,35 @@ private:
   lv_obj_t *more_repeat_{nullptr};
   lv_obj_t *library_button_{nullptr};
   lv_obj_t *lyrics_button_{nullptr};
+  lv_obj_t *playback_settings_button_{nullptr};
+  lv_obj_t *connection_settings_button_{nullptr};
+  lv_obj_t *display_settings_button_{nullptr};
+  lv_obj_t *storage_settings_button_{nullptr};
+  lv_obj_t *capabilities_value_{nullptr};
+  lv_obj_t *settings_overlay_{nullptr};
+  lv_obj_t *settings_title_{nullptr};
+  lv_obj_t *settings_back_button_{nullptr};
+  lv_obj_t *settings_panels_[4]{};
+  lv_obj_t *wifi_ssid_button_{nullptr};
+  lv_obj_t *wifi_password_button_{nullptr};
+  lv_obj_t *server_host_button_{nullptr};
+  lv_obj_t *server_port_button_{nullptr};
+  lv_obj_t *server_password_button_{nullptr};
+  lv_obj_t *wifi_ssid_value_{nullptr};
+  lv_obj_t *wifi_password_value_{nullptr};
+  lv_obj_t *server_host_value_{nullptr};
+  lv_obj_t *server_port_value_{nullptr};
+  lv_obj_t *server_password_value_{nullptr};
+  lv_obj_t *brightness_slider_{nullptr};
+  lv_obj_t *brightness_value_{nullptr};
+  lv_obj_t *auto_blank_button_{nullptr};
+  lv_obj_t *auto_blank_value_{nullptr};
+  lv_obj_t *setting_editor_{nullptr};
+  lv_obj_t *setting_editor_title_{nullptr};
+  lv_obj_t *setting_editor_textarea_{nullptr};
+  lv_obj_t *setting_editor_keyboard_{nullptr};
+  lv_obj_t *setting_editor_message_{nullptr};
+  lv_obj_t *blank_overlay_{nullptr};
   lv_obj_t *filter_overlay_{nullptr};
   lv_obj_t *filter_search_button_{nullptr};
   lv_obj_t *filter_close_button_{nullptr};

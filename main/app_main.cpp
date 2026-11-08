@@ -1,3 +1,4 @@
+#include "device_settings.hpp"
 #include "monkeymote_client.hpp"
 #include "musicremote_config.hpp"
 #include "music_model.hpp"
@@ -56,6 +57,14 @@ esp_err_t screenshot_handler(httpd_req_t *request) {
       ui->select_overlay_for_diagnostics(3);
     } else if (std::strcmp(page, "lyrics") == 0) {
       ui->select_overlay_for_diagnostics(4);
+    } else if (std::strcmp(page, "playback-settings") == 0) {
+      ui->select_settings_for_diagnostics(0);
+    } else if (std::strcmp(page, "connection-settings") == 0) {
+      ui->select_settings_for_diagnostics(1);
+    } else if (std::strcmp(page, "display-settings") == 0) {
+      ui->select_settings_for_diagnostics(2);
+    } else if (std::strcmp(page, "storage-settings") == 0) {
+      ui->select_settings_for_diagnostics(3);
     } else if (std::strcmp(page, "artists") == 0) {
       ui->select_library_category_for_diagnostics(0);
       render_delay_ms = 2000;
@@ -173,7 +182,12 @@ void wifi_event(void *, esp_event_base_t base, int32_t id, void *data) {
   }
 }
 
-bool connect_wifi() {
+bool connect_wifi(const musicremote::DeviceSettingsData &settings) {
+  if (!musicremote::DeviceSettings::valid_wifi_ssid(settings.wifi_ssid) ||
+      !musicremote::DeviceSettings::valid_wifi_password(settings.wifi_password)) {
+    ESP_LOGE(kTag, "Stored Wi-Fi settings are invalid");
+    return false;
+  }
   wifi_events = xEventGroupCreate();
   ESP_ERROR_CHECK(esp_netif_init());
   ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -190,15 +204,11 @@ bool connect_wifi() {
                                                        nullptr, &ip_instance));
 
   wifi_config_t wifi_config{};
-  static_assert(sizeof(MUSICREMOTE_WIFI_SSID) - 1 <= sizeof(wifi_config.sta.ssid),
-                "WIFI_SSID exceeds the supported 32-byte length");
-  static_assert(sizeof(MUSICREMOTE_WIFI_PASSWORD) - 1 <= sizeof(wifi_config.sta.password),
-                "WIFI_PASSWORD exceeds the supported 64-byte length");
-  std::memcpy(wifi_config.sta.ssid, MUSICREMOTE_WIFI_SSID,
-              sizeof(MUSICREMOTE_WIFI_SSID) - 1);
-  std::memcpy(wifi_config.sta.password, MUSICREMOTE_WIFI_PASSWORD,
-              sizeof(MUSICREMOTE_WIFI_PASSWORD) - 1);
-  wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+  std::memcpy(wifi_config.sta.ssid, settings.wifi_ssid.data(), settings.wifi_ssid.size());
+  std::memcpy(wifi_config.sta.password, settings.wifi_password.data(),
+              settings.wifi_password.size());
+  wifi_config.sta.threshold.authmode = settings.wifi_password.empty() ? WIFI_AUTH_OPEN
+                                                                      : WIFI_AUTH_WPA2_PSK;
   wifi_config.sta.pmf_cfg.capable = true;
   wifi_config.sta.pmf_cfg.required = false;
 
@@ -223,6 +233,16 @@ extern "C" void app_main() {
     ESP_ERROR_CHECK(nvs_status);
   }
 
+  static musicremote::DeviceSettings settings;
+  settings.load({.wifi_ssid = MUSICREMOTE_WIFI_SSID,
+                 .wifi_password = MUSICREMOTE_WIFI_PASSWORD,
+                 .server_host = MUSICREMOTE_AIMP_HOST,
+                 .server_port = static_cast<uint16_t>(MUSICREMOTE_AIMP_PORT),
+                 .server_password = MUSICREMOTE_AIMP_PASSWORD,
+                 .brightness = 82,
+                 .auto_blank_seconds = 300});
+  const musicremote::DeviceSettingsData boot_settings = settings.snapshot();
+
   auto &board = espp::SmartPanleeSc01Plus::get();
   if (!board.initialize_lcd() || !board.initialize_display(board.display_width() * 40)) {
     ESP_LOGE(kTag, "SC01 Plus display initialization failed");
@@ -232,7 +252,7 @@ extern "C" void app_main() {
   // "landscape", but LVGL correctly reports that geometry as portrait. Rotate
   // once here so both the 480x320 UI and BSP touch conversion use landscape.
   lv_display_set_rotation(lv_display_get_default(), LV_DISPLAY_ROTATION_90);
-  board.brightness(82.0f);
+  board.brightness(static_cast<float>(boot_settings.brightness));
 
   uint32_t sd_size_mb = 0;
   uint32_t sd_free_mb = 0;
@@ -287,19 +307,21 @@ extern "C" void app_main() {
     state.status = "CONNECTING WIFI";
   });
   static musicremote::MonkeyMoteClient client(
-      model, {.host = MUSICREMOTE_AIMP_HOST,
-              .port = static_cast<uint16_t>(MUSICREMOTE_AIMP_PORT),
-              .password = MUSICREMOTE_AIMP_PASSWORD,
+      model, {.host = boot_settings.server_host,
+              .port = boot_settings.server_port,
+              .password = boot_settings.server_password,
               .storage_directory = storage_directory,
               .storage_internal_flash = flash_ready});
-  static musicremote::MusicUi ui(model, client);
+  static musicremote::MusicUi ui(
+      model, client, settings,
+      [&board](uint8_t brightness) { board.brightness(static_cast<float>(brightness)); });
 
   if (!board.initialize_touch()) {
     ESP_LOGW(kTag, "Touch controller initialization failed");
   }
   ui.start();
 
-  const bool wifi_ready = connect_wifi();
+  const bool wifi_ready = connect_wifi(boot_settings);
   if (!wifi_ready) {
     model.update([](musicremote::Snapshot &state) {
       state.connection = musicremote::ConnectionState::offline;
