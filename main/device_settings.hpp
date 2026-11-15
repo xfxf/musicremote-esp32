@@ -17,6 +17,7 @@ struct DeviceSettingsData {
   std::string server_password;
   uint8_t brightness{82};
   uint32_t auto_blank_seconds{300};
+  bool display_flipped{false};
 };
 
 class DeviceSettings {
@@ -38,6 +39,7 @@ public:
   bool set_server_password(const std::string &value);
   bool set_brightness(uint8_t value);
   bool set_auto_blank_seconds(uint32_t value);
+  bool set_display_flipped(bool value);
 
   static bool valid_wifi_ssid(const std::string &value);
   static bool valid_wifi_password(const std::string &value);

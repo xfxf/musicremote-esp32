@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <utility>
 
+#include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -21,6 +22,7 @@ constexpr uint32_t kMuted = 0x8C96A8;
 constexpr uint32_t kText = 0xF5F7FA;
 constexpr uint32_t kAccent = 0x00D7C7;
 constexpr uint32_t kAccentBlue = 0x35A7FF;
+constexpr char kTag[] = "music_ui";
 
 const char *connection_text(ConnectionState state) {
   switch (state) {
@@ -68,6 +70,22 @@ void MusicUi::start() {
   if (xTaskCreatePinnedToCore(task_entry, "music-ui", 16 * 1024, this, 4, &handle, 1) ==
       pdPASS) {
     task_ = handle;
+  }
+}
+
+void MusicUi::apply_display_orientation(bool flipped) {
+  lv_display_t *display = lv_display_get_default();
+  if (display == nullptr) {
+    return;
+  }
+  // The 320x480 panel needs a quarter turn to present the 480x320 UI. Rotation
+  // 270 is the 180-degree complement of 90; the BSP derives both touch mapping
+  // and the ST7796 MADCTL from this value, so no other state needs changing.
+  const lv_display_rotation_t rotation =
+      flipped ? LV_DISPLAY_ROTATION_270 : LV_DISPLAY_ROTATION_90;
+  if (lv_display_get_rotation(display) != rotation) {
+    lv_display_set_rotation(display, rotation);
+    ESP_LOGI(kTag, "Display orientation: %s", flipped ? "flipped" : "normal");
   }
 }
 
@@ -906,22 +924,27 @@ void MusicUi::create_settings_overlays() {
   lv_obj_set_style_bg_color(brightness_slider_, color(kText), LV_PART_KNOB);
   lv_obj_add_event_cb(brightness_slider_, event_handler, LV_EVENT_VALUE_CHANGED, this);
   lv_obj_add_event_cb(brightness_slider_, event_handler, LV_EVENT_RELEASED, this);
-  auto_blank_button_ = make_button(display, "SCREEN OFF", 426, 58);
-  lv_obj_set_pos(auto_blank_button_, 8, 96);
-  lv_obj_t *blank_name = lv_obj_get_child(auto_blank_button_, 0);
-  lv_obj_set_width(blank_name, 210);
-  lv_obj_set_style_text_align(blank_name, LV_TEXT_ALIGN_LEFT, 0);
-  lv_obj_align(blank_name, LV_ALIGN_LEFT_MID, 4, 0);
-  auto_blank_value_ = make_label(auto_blank_button_, "5 MIN", &lv_font_montserrat_18,
-                                 color(kAccent));
-  lv_obj_set_width(auto_blank_value_, 170);
-  lv_obj_set_style_text_align(auto_blank_value_, LV_TEXT_ALIGN_RIGHT, 0);
-  lv_obj_align(auto_blank_value_, LV_ALIGN_RIGHT_MID, -4, 0);
-  lv_obj_set_clickable(auto_blank_value_, false);
-  lv_obj_add_event_cb(auto_blank_button_, event_handler, LV_EVENT_CLICKED, this);
+  auto display_value_row = [this, display](const char *title, const char *value, int y,
+                                            lv_obj_t **value_label) {
+    lv_obj_t *row = make_button(display, title, 426, 52);
+    lv_obj_set_pos(row, 8, y);
+    lv_obj_t *name = lv_obj_get_child(row, 0);
+    lv_obj_set_width(name, 210);
+    lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_align(name, LV_ALIGN_LEFT_MID, 4, 0);
+    *value_label = make_label(row, value, &lv_font_montserrat_18, color(kAccent));
+    lv_obj_set_width(*value_label, 170);
+    lv_obj_set_style_text_align(*value_label, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_align(*value_label, LV_ALIGN_RIGHT_MID, -4, 0);
+    lv_obj_set_clickable(*value_label, false);
+    lv_obj_add_event_cb(row, event_handler, LV_EVENT_CLICKED, this);
+    return row;
+  };
+  auto_blank_button_ = display_value_row("SCREEN OFF", "5 MIN", 92, &auto_blank_value_);
+  flip_button_ = display_value_row("FLIP SCREEN", "OFF", 154, &flip_value_);
   lv_obj_t *wake_help = make_label(display, "TOUCH ANYWHERE ON THE DARK SCREEN TO WAKE",
                                    &lv_font_montserrat_14, color(kMuted));
-  lv_obj_set_pos(wake_help, 8, 176);
+  lv_obj_set_pos(wake_help, 8, 218);
 
   lv_obj_t *storage = settings_panels_[static_cast<size_t>(SettingsSection::storage)];
   lv_obj_set_style_pad_all(storage, 10, 0);
@@ -1207,6 +1230,7 @@ void MusicUi::refresh_setting_labels() {
     break;
   }
   lv_label_set_text(auto_blank_value_, blank);
+  lv_label_set_text(flip_value_, data.display_flipped ? "ON" : "OFF");
   const bool persistent = settings_.persistence_available();
   lv_label_set_text(settings_storage_value_, persistent ? "SETTINGS STORAGE: NVS OK"
                                                         : "SETTINGS STORAGE: UNAVAILABLE");
@@ -2076,6 +2100,18 @@ void MusicUi::handle_event(lv_event_t *event) {
       lv_label_set_text(settings_notice_, "SAVE FAILED");
     } else {
       lv_label_set_text(settings_notice_, "");
+    }
+    last_interaction_us_ = esp_timer_get_time();
+    refresh_setting_labels();
+    return;
+  }
+  if (target == flip_button_) {
+    const bool flipped = !settings_.snapshot().display_flipped;
+    if (!settings_.set_display_flipped(flipped)) {
+      lv_label_set_text(settings_notice_, "SAVE FAILED");
+    } else {
+      lv_label_set_text(settings_notice_, "");
+      apply_display_orientation(flipped);
     }
     last_interaction_us_ = esp_timer_get_time();
     refresh_setting_labels();

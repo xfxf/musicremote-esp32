@@ -17,7 +17,7 @@ requests to include refreshed device evidence.
 | Playlists | Media library |
 | ![AIMP playlist browser](artifacts/device-playlists.png) | ![AIMP media-library browser](artifacts/device-library-root.png) |
 | Display settings | Advanced AIMP controls |
-| ![Brightness and screen-off settings](artifacts/device-settings-display.png) | ![Advanced controls with unavailable sleep timer](artifacts/issue22-advanced-unavailable.png) |
+| ![Brightness, screen-off, and flip-screen settings](artifacts/device-settings-display.png) | ![Advanced controls with unavailable sleep timer](artifacts/issue22-advanced-unavailable.png) |
 
 ## Implemented controls
 
@@ -31,8 +31,9 @@ requests to include refreshed device evidence.
 - Long-press `CLEAR` to clear the active playlist.
 - Long-press an inactive playlist to delete it.
 - Long-press `+ ESP REMOTE` to create a playlist named `ESP Remote`.
-- Persistent on-device Wi-Fi, AIMP connection, brightness, and screen-off
-  settings, with automatic reconnection and `.local` host resolution.
+- Persistent on-device Wi-Fi, AIMP connection, brightness, screen-off, and
+  flip-screen (for upside-down enclosures) settings, with automatic
+  reconnection and `.local` host resolution.
 - Capability-gated manual equalizer and sleep timer controls.
 - Explicitly confirmed computer sleep, restart, and shutdown actions when the
   AIMP plug-in advertises support.

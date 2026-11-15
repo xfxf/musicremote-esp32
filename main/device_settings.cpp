@@ -17,6 +17,7 @@ constexpr char kServerPort[] = "aimp_port";
 constexpr char kServerPassword[] = "aimp_pass";
 constexpr char kBrightness[] = "brightness";
 constexpr char kAutoBlank[] = "auto_blank";
+constexpr char kDisplayFlipped[] = "disp_flip";
 constexpr char kSchemaVersion[] = "schema";
 constexpr uint8_t kCurrentSchemaVersion = 1;
 
@@ -107,6 +108,18 @@ bool DeviceSettings::load(DeviceSettingsData defaults) {
     complete = false;
     if (auto_blank_status != ESP_OK && auto_blank_status != ESP_ERR_NVS_NOT_FOUND) {
       nvs_erase_key(handle_, kAutoBlank);
+    }
+  }
+  // Added within schema 1: an absent key marks the snapshot incomplete so the
+  // seed below persists the default without touching any user-edited field.
+  uint8_t flipped = data_.display_flipped ? 1 : 0;
+  const esp_err_t flipped_status = nvs_get_u8(handle_, kDisplayFlipped, &flipped);
+  if (flipped_status == ESP_OK && flipped <= 1) {
+    data_.display_flipped = flipped == 1;
+  } else {
+    complete = false;
+    if (flipped_status != ESP_OK && flipped_status != ESP_ERR_NVS_NOT_FOUND) {
+      nvs_erase_key(handle_, kDisplayFlipped);
     }
   }
 
@@ -214,6 +227,7 @@ bool DeviceSettings::seed_locked() {
       nvs_set_str(handle_, kServerPassword, data_.server_password.c_str()) != ESP_OK ||
       nvs_set_u8(handle_, kBrightness, data_.brightness) != ESP_OK ||
       nvs_set_u32(handle_, kAutoBlank, data_.auto_blank_seconds) != ESP_OK ||
+      nvs_set_u8(handle_, kDisplayFlipped, data_.display_flipped ? 1 : 0) != ESP_OK ||
       nvs_set_u8(handle_, kSchemaVersion, kCurrentSchemaVersion) != ESP_OK) {
     persistence_available_ = false;
     ESP_LOGE(kTag, "Could not initialize persistent settings");
@@ -308,6 +322,20 @@ bool DeviceSettings::set_auto_blank_seconds(uint32_t value) {
     return false;
   }
   data_.auto_blank_seconds = value;
+  return true;
+}
+
+bool DeviceSettings::set_display_flipped(bool value) {
+  std::lock_guard lock(mutex_);
+  if (handle_ == 0 || nvs_set_u8(handle_, kDisplayFlipped, value ? 1 : 0) != ESP_OK) {
+    persistence_available_ = false;
+    ESP_LOGE(kTag, "Could not write persistent screen orientation");
+    return false;
+  }
+  if (!commit_locked()) {
+    return false;
+  }
+  data_.display_flipped = value;
   return true;
 }
 

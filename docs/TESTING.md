@@ -470,3 +470,20 @@ reused playlist ID 2 without a queue transfer, and returned the inspected
 480x320 framebuffer below while online.
 
 ![Persisted 48,321-row queue marked cached](../artifacts/issue28-cached-queue.png)
+
+## Flip screen qualification (issue #31)
+
+The first boot of the new firmware migrated the absent `disp_flip` key within
+settings schema 1; the following boot logged `Persistent device settings
+loaded` without a migration and kept the owner's existing 26% brightness and
+15-minute screen-off values. Boot logged `Display orientation: normal`.
+
+On the physical board, tapping Settings → Display → FLIP SCREEN rotated the
+panel 180 degrees immediately, and the BACK button, navigation tabs, and
+volume slider received touches at the pressed location. After a reset, the
+setting persisted and boot logged `Display orientation: flipped`. LVGL
+snapshots are independent of panel rotation, so the captures below are
+upright in both states:
+
+![Display settings with flip off](../artifacts/device-settings-display.png)
+![Display settings with flip on](../artifacts/issue31-flip-on.png)
