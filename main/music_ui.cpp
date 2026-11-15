@@ -79,8 +79,8 @@ void MusicUi::apply_display_orientation(bool flipped) {
     return;
   }
   // The 320x480 panel needs a quarter turn to present the 480x320 UI. Rotation
-  // 270 is the 180-degree complement of 90; the BSP derives both touch mapping
-  // and the ST7796 MADCTL from this value, so no other state needs changing.
+  // 270 is the 180-degree complement of 90. LVGL rotates touch points from this
+  // value and the BSP reprograms the ST7796 MADCTL, so nothing else changes.
   const lv_display_rotation_t rotation =
       flipped ? LV_DISPLAY_ROTATION_270 : LV_DISPLAY_ROTATION_90;
   if (lv_display_get_rotation(display) != rotation) {

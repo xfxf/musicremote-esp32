@@ -312,7 +312,7 @@ extern "C" void app_main() {
   }
   // The panel is physically 320x480. The espp board enum calls rotation 0
   // "landscape", but LVGL correctly reports that geometry as portrait. Rotate
-  // once here so both the 480x320 UI and BSP touch conversion use landscape,
+  // once here so both the 480x320 UI and LVGL touch rotation use landscape,
   // turned a further 180 degrees when the enclosure mounts the panel inverted.
   musicremote::MusicUi::apply_display_orientation(boot_settings.display_flipped);
   board.brightness(static_cast<float>(boot_settings.brightness));

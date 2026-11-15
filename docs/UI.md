@@ -53,9 +53,10 @@ flash. Entries are evicted in approximate filesystem-timestamp order; the hard
 entry and byte limits do not depend on the device having a real-time clock.
 
 The physical panel is natively 320x480. LVGL rotates the display 90 degrees to
-480x320; the board support package applies the corresponding touch transform.
+480x320 and rotates touch points to match.
 The persistent FLIP SCREEN display setting selects 270 degrees instead, for
-enclosures that mount the panel upside down. It applies immediately; the BSP
-derives both the ST7796 MADCTL and the touch transform from the LVGL rotation.
+enclosures that mount the panel upside down. It applies immediately: LVGL's input
+device rotates touch points from the display rotation, and the BSP reprograms
+the ST7796 MADCTL from LVGL's resolution-changed event.
 Diagnostic screenshots are LVGL snapshots and therefore always render upright.
 
