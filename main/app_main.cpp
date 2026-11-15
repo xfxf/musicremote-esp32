@@ -298,7 +298,8 @@ extern "C" void app_main() {
                                                  MUSICREMOTE_AIMP_PORT),
                                              .server_password = MUSICREMOTE_AIMP_PASSWORD,
                                              .brightness = 82,
-                                             .auto_blank_seconds = 300});
+                                             .auto_blank_seconds = 300,
+                                             .display_flipped = false});
   if (!settings_ready) {
     ESP_LOGE(kTag, "Persistent settings unavailable; running with in-memory defaults");
   }
@@ -311,8 +312,9 @@ extern "C" void app_main() {
   }
   // The panel is physically 320x480. The espp board enum calls rotation 0
   // "landscape", but LVGL correctly reports that geometry as portrait. Rotate
-  // once here so both the 480x320 UI and BSP touch conversion use landscape.
-  lv_display_set_rotation(lv_display_get_default(), LV_DISPLAY_ROTATION_90);
+  // once here so both the 480x320 UI and LVGL touch rotation use landscape,
+  // turned a further 180 degrees when the enclosure mounts the panel inverted.
+  musicremote::MusicUi::apply_display_orientation(boot_settings.display_flipped);
   board.brightness(static_cast<float>(boot_settings.brightness));
 
   uint32_t sd_size_mb = 0;

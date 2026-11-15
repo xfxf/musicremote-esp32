@@ -46,6 +46,8 @@ controls, state feedback, queue manipulation, and playlist management.
 - Remain responsive while socket I/O, decompression, or reconnects occur.
 - Provide persistent brightness and screen-off settings; a touch on a blanked
   display wakes it without activating the control underneath.
+- Provide a persistent 180-degree screen flip for inverted enclosures; touch
+  input follows the flipped orientation.
 
 ### Advanced AIMP controls
 

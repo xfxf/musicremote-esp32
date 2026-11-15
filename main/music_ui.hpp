@@ -33,6 +33,10 @@ public:
   bool select_settings_for_diagnostics(uint8_t section);
   bool select_advanced_demo_for_diagnostics(uint8_t view);
 
+  // Applies the landscape orientation for a normally mounted (false) or
+  // upside-down (true) enclosure. Must run on the GUI task or before start().
+  static void apply_display_orientation(bool flipped);
+
 private:
   enum class Page { now, queue, playlists, more };
   enum class SettingsSection { playback, connection, display, storage, advanced };
@@ -196,6 +200,8 @@ private:
   lv_obj_t *brightness_value_{nullptr};
   lv_obj_t *auto_blank_button_{nullptr};
   lv_obj_t *auto_blank_value_{nullptr};
+  lv_obj_t *flip_button_{nullptr};
+  lv_obj_t *flip_value_{nullptr};
   lv_obj_t *setting_editor_{nullptr};
   lv_obj_t *setting_editor_title_{nullptr};
   lv_obj_t *setting_editor_textarea_{nullptr};
