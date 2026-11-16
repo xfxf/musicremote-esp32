@@ -93,7 +93,10 @@ not the per-item ID in playlist metadata (which AIMP may report as `-1`). Type
   The type 36 non-empty layout is inferred as a `uint32_t` UTF-8 byte length,
   a 16-byte track identity, and the text; live testing has so far observed only
   the empty form, so this layout remains explicitly unverified. The firmware
-  rejects inconsistent lengths and displays at most 24 KiB.
+  rejects inconsistent lengths and displays at most 24 KiB. Type 36 carries
+  no request identifier, so a lyrics request that is unanswered for 15 seconds
+  (not counting time spent receiving a large frame ahead of it) forces a
+  reconnect rather than letting a late reply match a newer request.
 - Type 4 subcommands 17, 18, and 19 plus an `int32_t` zero request equalizer
   state, equalizer preset names, and sleep-timer state respectively. They
   produce types 48, 49, and 51. The production client sends these requests

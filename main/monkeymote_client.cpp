@@ -915,6 +915,9 @@ void MonkeyMoteClient::finish_streamed_frame() {
     if (!playlist_requests_.empty()) {
       streamed_playlist_request_ = playlist_requests_.front();
       playlist_requests_.pop_front();
+      if (!playlist_requests_.empty()) {
+        playlist_requests_.front().deadline_us = esp_timer_get_time() + 15'000'000;
+      }
       streamed_playlist_generation_ = receiving_stream_generation_;
       if (streamed_playlist_request_->confirms_library_play &&
           pending_library_play_token_ == streamed_playlist_request_->id) {
@@ -1485,10 +1488,13 @@ void MonkeyMoteClient::send_command(const Command &command) {
     simple(1, 0);
     break;
   case CommandType::pause:
-    simple(2, 0);
-    break;
   case CommandType::stop:
-    simple(3, 0);
+    // A deferred library play would otherwise restart playback when its
+    // confirmation arrives. Its response token stays queued for correlation.
+    if (pending_library_play_row_ >= 0) {
+      fail_pending_library_play("LIBRARY PLAY CANCELLED");
+    }
+    simple(command.type == CommandType::pause ? 2 : 3, 0);
     break;
   case CommandType::previous:
     simple(9, 0);
@@ -2829,10 +2835,14 @@ void MonkeyMoteClient::expire_requests(int64_t now_us) {
     });
   }
   if (!lyrics_requests_.empty() &&
+      (streamed_frame_ != nullptr || discard_remaining_ != 0)) {
+    // Replies queue behind a large frame on the same stream; time them only
+    // once that frame has been received.
+    lyrics_requests_.front().deadline_us =
+        std::max(lyrics_requests_.front().deadline_us, now_us + 15'000'000);
+  }
+  if (!lyrics_requests_.empty() &&
       now_us >= lyrics_requests_.front().deadline_us) {
-    // Type 36 has no request identifier. Clear the FIFO as a unit so one
-    // missing response cannot permanently shift every later correlation.
-    lyrics_requests_.clear();
     model_.update([](Snapshot &state) {
       if (state.lyrics_state == LyricsState::loading) {
         state.lyrics_state = LyricsState::failed;
@@ -2841,6 +2851,10 @@ void MonkeyMoteClient::expire_requests(int64_t now_us) {
         ++state.lyrics_revision;
       }
     });
+    // Type 36 has no request identifier, so a late reply would match a newer
+    // request. Reconnect to reset correlation, as for playlist responses.
+    close_socket();
+    return;
   }
   const uint8_t expired_advanced = advanced_requests_.expire(now_us);
   if (expired_advanced != 0) {
