@@ -817,14 +817,17 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
       goto cleanup;
     }
     header.search_size = static_cast<uint32_t>(search_size);
-    if (std::fseek(index, 0, SEEK_SET) != 0 ||
-        !write_exact(index, &header, sizeof(header)) || std::fflush(index) != 0 ||
-        fsync(fileno(index)) != 0 || std::fclose(index) != 0) {
-      index = nullptr;
+    // Close the index even when finalization fails, so repeated storage
+    // errors cannot exhaust the mount's open-file slots.
+    const bool finalized = std::fseek(index, 0, SEEK_SET) == 0 &&
+                           write_exact(index, &header, sizeof(header)) &&
+                           std::fflush(index) == 0 && fsync(fileno(index)) == 0;
+    const bool closed = std::fclose(index) == 0;
+    index = nullptr;
+    if (!finalized || !closed) {
       result.error = "STORAGE WRITE FAILED";
       goto cleanup;
     }
-    index = nullptr;
   }
   {
     const std::string final = path("INDEX.DAT");
