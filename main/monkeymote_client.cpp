@@ -1626,7 +1626,15 @@ void MonkeyMoteClient::send_command(const Command &command) {
     break;
   case CommandType::request_playlist:
     begin_playlist_refresh("REFRESHING FROM AIMP");
-    send_playlist_request(command.first, false, command.second != 0);
+    if (!send_playlist_request(command.first, false, command.second != 0)) {
+      // A full token FIFO can hold only older-generation requests whose replies
+      // will all be discarded as stale, leaving nothing to finish this refresh.
+      // Reconnect to reset correlation; reconnection re-requests the queue.
+      model_.update([](Snapshot &state) {
+        state.status = "PLAYLIST REFRESH FAILED - RECONNECTING";
+      });
+      close_socket();
+    }
     break;
   case CommandType::activate_playlist:
     if (pending_library_play_row_ >= 0) {
@@ -2646,7 +2654,9 @@ bool MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
       ++state.queue_revision;
       state.status = "REFRESHING LIBRARY";
     });
-    consume_playlist_response(true, resolved_response_id, count);
+    // Consume as invalid: a reply predating a newer mutation must never
+    // authorize deferred cached/library playback against the changed queue.
+    consume_playlist_response(false, resolved_response_id, count);
   };
   if (count > 10000) {
     // Oversized queues are not retained, but still validate the complete
