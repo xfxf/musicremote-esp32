@@ -1156,13 +1156,14 @@ def restore_validation_baseline(
     # Query the current playlist (-1), not the baseline ID: a by-ID reply
     # echoes that ID and would hide a failed reactivation.
     restored_frames = client.collect(1.5) + request_playlist(client, -1)
+    # The root query is needed to resolve the current playlist; keep its
+    # batch too, since a delayed playback/queue snapshot may arrive in it.
+    restored_frames += request_playlists(client)
     if latest_playback(restored_frames) is None:
         restored_frames += client.collect(1.5)
     restored = latest_playback(restored_frames)
     restored_queue_index = latest_queue_index(restored_frames)
-    restored_playlist = resolved_current_playlist_id(
-        restored_frames + request_playlists(client)
-    )
+    restored_playlist = resolved_current_playlist_id(restored_frames)
     if restored is None:
         failures.append(
             "AIMP baseline restoration did not verify: "

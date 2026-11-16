@@ -568,6 +568,30 @@ class RestoreValidationBaselineTest(unittest.TestCase):
         ):
             self.restore()
 
+    def test_playback_arriving_with_root_query_is_used(self) -> None:
+        # The final playback/queue snapshot is delayed until the root-playlist
+        # query's collect window; it must still count toward restoration.
+        self.aimp.publish_playback = False
+        original_send = self.aimp.send
+
+        previous: list[tuple[int, bytes]] = []
+
+        def send(message_type: int, payload: bytes = b"") -> None:
+            original_send(message_type, payload)
+            # Release the snapshot only with the root query of the final
+            # verification: after playback restoration (a seek, 7/7) began and
+            # directly following the current-playlist (-1) query.
+            restoring = any(m == 7 and p[0] == 7 for m, p in previous)
+            if (restoring and message_type == 4 and payload[0] == 13 and previous
+                    and previous[-1][0] == 4 and previous[-1][1][0] == 10
+                    and struct.unpack_from("<i", previous[-1][1], 1)[0] == -1):
+                self.aimp.publish_playback = True
+            previous.append((message_type, payload))
+
+        self.aimp.send = send
+        notes = self.restore()
+        self.assertTrue(any(note.startswith("restored playlist=7") for note in notes))
+
     def test_missing_final_playback_state_fails(self) -> None:
         self.aimp.publish_playback = False
         with self.assertRaisesRegex(
