@@ -199,9 +199,15 @@ subscription instead of GitHub's hosted service. At a high level:
   NVS settings and credentials, the untrusted cover-art decoder, host power
   actions, the boot/diagnostics path, and the partition table.
 
-This repository runs one review round per PR by default. Further rounds, up
-to three, happen only while a `critical` finding remains in one of those
-critical files. Early PRs requested GitHub's built-in `@codex review` instead,
+This repository runs one review round per PR by default, plus a short
+incremental follow-up when fixes are pushed, so the final commit carries a
+review status. Further rounds, up to three in total, happen only while a
+`critical` finding remains in one of those critical files. Findings that are
+not fixed become GitHub issues labelled `deferred`.
+
+A `main` branch ruleset enforces the gate. Changes land only through pull
+requests, and merging requires the CI evidence check, a `ccr-local/review`
+status on the exact head commit, and every review thread resolved. Early PRs requested GitHub's built-in `@codex review` instead,
 which never responded. Those PRs were reviewed retroactively with ccr-local,
 and the findings were triaged and fixed on `main` under issue #33.
 

@@ -86,27 +86,43 @@ Pull requests are reviewed by ccr-local (a local, Copilot-like review). The
 built-in `@codex review` integration is not connected to this repository and
 never responds; do not request it or count it as a review.
 
+The `main` ruleset enforces the gate. Direct pushes, force-pushes, and branch
+deletion are blocked, and merging requires a pull request, the `validate` CI
+check, a `ccr-local/review` status on the exact PR head, and every review
+thread resolved. Only merge commits are allowed, and merged branches are
+deleted automatically.
+
 - Once the build, tests, and hardware evidence are ready and the PR head is
-  pushed, check out exactly that head with nothing uncommitted and run one
-  review round:
+  pushed, check out exactly that head with nothing uncommitted and review it:
   `"${CCR_HOME:-$HOME/tools/ccr-local}/ccr" review --pr <N> --post --engine codex --no-engine-fallback`
   Run it in the background; it takes several minutes.
-- **One round is the default.** Fix or answer every finding, then merge
-  without another review round.
-- **Further rounds (at most 3 in total)** are owed only when the latest round
-  reports a `critical` finding in a file matching `final_review.paths` in
-  `.ccr.json`. Fix it, push, and review again; when ccr-local exits 6 (a
-  final full review is owed), rerun with `--final` and count it as a round.
+- **One review round is the default.** If it finds nothing, merge. If you push
+  fixes for its findings, run one follow-up review of those fixes so the new
+  head carries the required status. The follow-up is incremental and cheap,
+  and it is round 2.
+- **Further rounds** are owed only while the latest round reports a
+  `critical` finding in a file matching `final_review.paths` in `.ccr.json`.
+  Fix it, push, and review again. When ccr-local exits 6 (a final full
+  review is owed), rerun with `--final`; that counts as a round.
   `.ccr.json` sets `max_rounds` to 3. If a critical finding in a critical
   file survives the third round, stop and ask the owner. Do not raise the
-  cap yourself.
+  cap yourself on an open PR.
+- **Retroactive reviews** of already-merged PRs, which the owner approved
+  for PRs that merged without a ccr-local review, may raise the cap for one
+  run with `AGENT_REVIEW_MAX_ROUNDS=20`. Post the reason on that PR first.
+  Pass the PR's pre-merge base with `--base <sha>`; the default
+  `main...head` diff is empty once the PR is merged. Fix the resulting
+  findings on `main` through a new PR. Critical findings must be fixed;
+  moderate and nit findings may be fixed in the same PR or deferred.
 - Answer every review thread with the action taken, then resolve it:
   `Fixed in <commit>`, `Not actioned: <reason>`, `Won't fix: <reason>`,
   `Deferred to #<issue>`, or `Resolving after: <what and when>`. ccr-local
   reads these replies, and a settled finding is not raised again.
-- When fixes land after the last permitted round, the new head carries no
-  `ccr-local/review` status. Say so in a PR comment that lists the fixing
-  commits.
+- **Deferral.** Every finding you do not fix needs a GitHub issue labelled
+  `deferred`. The issue links the review thread and states the finding, its
+  severity, and why it was deferred. Reply `Deferred to #<issue>` on the
+  thread. Never create an issue for a finding you fixed, and never defer a
+  critical finding in a critical file.
 - Never set `SKIP_REVIEW`, `SKIP_CCR`, or `SKIP_COPILOT` yourself. Use the
   Codex engine without fallback; if it is unavailable (exit 4), retry later
   rather than switching engines.
