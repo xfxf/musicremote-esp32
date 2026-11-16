@@ -2925,6 +2925,12 @@ std::string MonkeyMoteClient::take_lyrics_request() {
   }
   std::string track_key = std::move(lyrics_requests_.front().track_key);
   lyrics_requests_.pop_front();
+  if (!lyrics_requests_.empty()) {
+    // Only the head's deadline is extended while a large frame blocks the
+    // stream, so a queued request times its reply from when it reaches the head.
+    auto &head = lyrics_requests_.front();
+    head.deadline_us = std::max(head.deadline_us, esp_timer_get_time() + 15'000'000);
+  }
   return track_key;
 }
 
