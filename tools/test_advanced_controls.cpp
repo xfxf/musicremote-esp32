@@ -180,6 +180,20 @@ int main() {
                                      known_equalizer));
   assert(!equalizer_mutation_allowed(StateAvailability::unavailable,
                                      known_equalizer));
+  known_equalizer.bands = {{70, 150}, {180, 165}};
+  assert(equalizer_slider_count(StateAvailability::ready, known_equalizer) == 3);
+  assert(equalizer_slider_count(StateAvailability::loading, known_equalizer) == 0);
+  // A reply with the same rows updates them in place, even mid-drag.
+  assert(equalizer_refresh_action(3, 3, true) == EqualizerRefresh::update_in_place);
+  assert(equalizer_refresh_action(3, 3, false) == EqualizerRefresh::update_in_place);
+  // A structural change waits for the dragged slider to be released.
+  assert(equalizer_refresh_action(3, 4, true) == EqualizerRefresh::defer);
+  assert(equalizer_refresh_action(3, 0, true) == EqualizerRefresh::defer);
+  assert(equalizer_refresh_action(3, 4, false) == EqualizerRefresh::rebuild);
+  assert(equalizer_refresh_action(3, 0, false) == EqualizerRefresh::rebuild);
+  // The status message has no sliders, so it is always rebuilt.
+  assert(equalizer_refresh_action(0, 0, false) == EqualizerRefresh::rebuild);
+  assert(equalizer_refresh_action(0, 3, false) == EqualizerRefresh::rebuild);
   assert(make_computer_power(0) == std::vector<uint8_t>({14, 0}));
   assert(make_computer_power(3).empty());
 }

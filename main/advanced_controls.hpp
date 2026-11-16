@@ -163,6 +163,29 @@ inline bool equalizer_mutation_allowed(StateAvailability availability,
   return availability == StateAvailability::ready && state.known;
 }
 
+// Gain sliders the equalizer page shows: the preamp plus one per band, or none
+// while it can only show a status message.
+inline size_t equalizer_slider_count(StateAvailability availability,
+                                     const EqualizerState &state) {
+  return equalizer_mutation_allowed(availability, state) ? state.bands.size() + 1
+                                                         : 0;
+}
+
+enum class EqualizerRefresh { rebuild, update_in_place, defer };
+
+// An equalizer reply can arrive while a gain slider is being dragged.
+// Rebuilding deletes that slider and with it the command sent on release, so
+// keep matching rows and update them in place, and postpone a structural
+// rebuild until no slider is pressed.
+inline EqualizerRefresh equalizer_refresh_action(size_t rendered_sliders,
+                                                 size_t sliders,
+                                                 bool slider_pressed) {
+  if (sliders != 0 && sliders == rendered_sliders) {
+    return EqualizerRefresh::update_in_place;
+  }
+  return slider_pressed ? EqualizerRefresh::defer : EqualizerRefresh::rebuild;
+}
+
 inline uint16_t read_u16(const uint8_t *data) {
   return static_cast<uint16_t>(data[0]) |
          (static_cast<uint16_t>(data[1]) << 8);

@@ -74,6 +74,18 @@ std::string format_time(int32_t milliseconds) {
   return buffer;
 }
 
+void format_gain(char (&text)[16], int32_t value) {
+  std::snprintf(text, sizeof(text), "%+.1f dB", (value - 150) / 10.0);
+}
+
+void format_band(char (&text)[16], uint16_t frequency_hz) {
+  if (frequency_hz >= 1000 && frequency_hz % 1000 == 0) {
+    std::snprintf(text, sizeof(text), "%uK", static_cast<unsigned>(frequency_hz / 1000));
+  } else {
+    std::snprintf(text, sizeof(text), "%u", static_cast<unsigned>(frequency_hz));
+  }
+}
+
 } // namespace
 
 MusicUi::MusicUi(Model &model, MonkeyMoteClient &client, DeviceSettings &settings,
@@ -291,6 +303,10 @@ void MusicUi::run() {
       if (model_.copy_if_changed(rendered_revision_, latest)) {
         update(latest);
         rendered_revision_ = latest.revision;
+      }
+      if (!advanced_demo_active_) {
+        // Applies an equalizer rebuild deferred while a slider was dragged.
+        sync_equalizer(snapshot_);
       }
       update_timeline(esp_timer_get_time());
       append_queue_rows(snapshot_);
@@ -1197,7 +1213,7 @@ void MusicUi::rebuild_equalizer(const Snapshot &snapshot) {
     lv_obj_add_event_cb(slider, event_handler, LV_EVENT_VALUE_CHANGED, this);
     lv_obj_add_event_cb(slider, event_handler, LV_EVENT_RELEASED, this);
     char db[16];
-    std::snprintf(db, sizeof(db), "%+.1f dB", (static_cast<int>(value) - 150) / 10.0);
+    format_gain(db, value);
     lv_obj_t *value_label = make_label(row, db, &lv_font_montserrat_14, color(kText));
     lv_obj_set_pos(value_label, 354, 17);
     lv_obj_set_width(value_label, 78);
@@ -1208,15 +1224,49 @@ void MusicUi::rebuild_equalizer(const Snapshot &snapshot) {
   add_gain("PREAMP", snapshot.equalizer.preamp_tenths_offset);
   for (const auto &band : snapshot.equalizer.bands) {
     char frequency[16];
-    if (band.frequency_hz >= 1000 && band.frequency_hz % 1000 == 0) {
-      std::snprintf(frequency, sizeof(frequency), "%uK",
-                    static_cast<unsigned>(band.frequency_hz / 1000));
-    } else {
-      std::snprintf(frequency, sizeof(frequency), "%u",
-                    static_cast<unsigned>(band.frequency_hz));
-    }
+    format_band(frequency, band.frequency_hz);
     add_gain(frequency, band.gain_tenths_offset);
   }
+}
+
+void MusicUi::sync_equalizer(const Snapshot &snapshot) {
+  if (snapshot.equalizer_revision == rendered_equalizer_revision_) {
+    return;
+  }
+  bool slider_pressed = false;
+  for (lv_obj_t *slider : equalizer_gain_sliders_) {
+    slider_pressed = slider_pressed || lv_obj_has_state(slider, LV_STATE_PRESSED);
+  }
+  const size_t sliders = advanced::equalizer_slider_count(
+      snapshot.advanced_availability.equalizer, snapshot.equalizer);
+  switch (advanced::equalizer_refresh_action(equalizer_gain_sliders_.size(), sliders,
+                                             slider_pressed)) {
+  case advanced::EqualizerRefresh::defer:
+    return;
+  case advanced::EqualizerRefresh::rebuild:
+    rebuild_equalizer(snapshot);
+    break;
+  case advanced::EqualizerRefresh::update_in_place:
+    for (size_t index = 0; index < sliders; ++index) {
+      lv_obj_t *slider = equalizer_gain_sliders_[index];
+      if (lv_obj_has_state(slider, LV_STATE_PRESSED)) {
+        continue; // Keep the drag; its release sends the user's value.
+      }
+      const uint16_t value = index == 0
+                                 ? snapshot.equalizer.preamp_tenths_offset
+                                 : snapshot.equalizer.bands[index - 1].gain_tenths_offset;
+      lv_slider_set_value(slider, value, LV_ANIM_OFF);
+      char text[16];
+      format_gain(text, value);
+      lv_label_set_text(equalizer_gain_values_[index], text);
+      if (index > 0) {
+        format_band(text, snapshot.equalizer.bands[index - 1].frequency_hz);
+        lv_label_set_text(lv_obj_get_child(lv_obj_get_parent(slider), 0), text);
+      }
+    }
+    break;
+  }
+  rendered_equalizer_revision_ = snapshot.equalizer_revision;
 }
 
 void MusicUi::show_settings_section(SettingsSection section) {
@@ -1344,10 +1394,7 @@ void MusicUi::update_advanced_controls(const Snapshot &snapshot) {
                          snapshot.sleep_timer));
   }
 
-  if (snapshot.equalizer_revision != rendered_equalizer_revision_) {
-    rebuild_equalizer(snapshot);
-    rendered_equalizer_revision_ = snapshot.equalizer_revision;
-  }
+  sync_equalizer(snapshot);
   rendered_sleep_timer_revision_ = snapshot.sleep_timer_revision;
 }
 
@@ -2076,7 +2123,7 @@ void MusicUi::handle_event(lv_event_t *event) {
     }
     const int32_t value = lv_slider_get_value(target);
     char db[16];
-    std::snprintf(db, sizeof(db), "%+.1f dB", (value - 150) / 10.0);
+    format_gain(db, value);
     lv_label_set_text(equalizer_gain_values_[index], db);
     if (code == LV_EVENT_RELEASED && !advanced_demo_active_ &&
         snapshot_.connection == ConnectionState::online) {
