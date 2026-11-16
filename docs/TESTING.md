@@ -487,3 +487,20 @@ upright in both states:
 
 ![Display settings with flip off](../artifacts/device-settings-display.png)
 ![Display settings with flip on](../artifacts/issue31-flip-on.png)
+
+## Current-track cover art qualification (issue #41)
+
+While the cTrix album "A for Amiga" played, AIMP showed its cover but the
+device showed the generic tile. Live probing with the board held in reset
+showed that the type 4/3 cover request takes a queue row (`-1` = current
+track) and a maximum edge, not a width and height. Requests for rows 0, 64,
+and 100 each returned a different album's cover, and the firmware's `144,
+144` asked for queue row 144, which had no artwork.
+
+The fixed firmware requests `-1, 144`. On the SC01 Plus the request decoded a
+4,992-byte 144x144 JPEG, and pilotredsun "Achievement" tracks show their
+correct cover, matching AIMP. The cache format moved to `MRA2`, so entries
+written by earlier builds under the wrong row are refetched.
+
+![Before: generic tile while AIMP shows the cover](../artifacts/issue41-before.png)
+![After: the current track's cover](../artifacts/issue41-after.png)

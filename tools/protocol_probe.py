@@ -1803,7 +1803,9 @@ def main() -> int:
         if args.command == "cover":
             if not 1 <= args.cover_size <= 256:
                 raise RuntimeError("--cover-size must be between 1 and 256")
-            client.send(4, struct.pack("<Bii", 3, args.cover_size, args.cover_size))
+            # Queue row -1 selects the current track; the second field is the
+            # maximum edge in pixels.
+            client.send(4, struct.pack("<Bii", 3, -1, args.cover_size))
             frames = client.collect(1.5)
             covers = [
                 cover
