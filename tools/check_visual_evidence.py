@@ -10,8 +10,9 @@ import struct
 import subprocess
 import sys
 import zlib
+from collections.abc import Collection
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -230,8 +231,14 @@ def changed_paths(root: Path, base_sha: str) -> set[str]:
 
 
 def validate_changed_screenshots(
-    root: Path, paths: set[str], body: str
+    root: Path, paths: set[str], body: str, revisions: Collection[str] = ()
 ) -> tuple[bool, list[str]]:
+    """Validate changed screenshots and require After to reference one.
+
+    A github.com blob or raw.githubusercontent.com URL counts only when its
+    revision is one of ``revisions`` (the PR head branch name or head SHA).
+    The remote blob itself is not fetched, so its contents are not verified.
+    """
     errors: list[str] = []
     candidates = sorted(
         path
@@ -271,16 +278,18 @@ def validate_changed_screenshots(
         parsed = urlsplit(target)
         if parsed.scheme != "https":
             return False
-        path = parsed.path
+        path = unquote(parsed.path)
         if parsed.netloc == "github.com":
             prefix = GITHUB_REPOSITORY + "blob/"
         elif parsed.netloc == "raw.githubusercontent.com":
             prefix = GITHUB_REPOSITORY
         else:
             return False
-        return path.startswith(prefix) and path.endswith("/" + candidate) and len(
-            path
-        ) > len(prefix) + len(candidate) + 1
+        return any(
+            path == f"{prefix}{revision}/{candidate}"
+            for revision in revisions
+            if revision
+        )
 
     if valid and not any(
         references_candidate(target, candidate)
@@ -299,6 +308,12 @@ def validate_event(root: Path, event_path: Path) -> list[str]:
     base = pull_request.get("base", {}).get("sha")
     if not isinstance(base, str) or not base:
         return ["pull-request event has no base SHA"]
+    head = pull_request.get("head") or {}
+    revisions = [
+        value
+        for value in (head.get("ref"), head.get("sha"))
+        if isinstance(value, str) and value
+    ]
     paths = changed_paths(root, base)
     visual_sources_changed = bool(paths & VISUAL_SOURCES)
     body = pull_request.get("body") or ""
@@ -306,7 +321,7 @@ def validate_event(root: Path, event_path: Path) -> list[str]:
     errors: list[str] = []
     if visual_sources_changed:
         screenshots_changed, screenshot_errors = validate_changed_screenshots(
-            root, paths, body
+            root, paths, body, revisions
         )
         errors.extend(screenshot_errors)
     errors.extend(
