@@ -487,3 +487,44 @@ upright in both states:
 
 ![Display settings with flip off](../artifacts/device-settings-display.png)
 ![Display settings with flip on](../artifacts/issue31-flip-on.png)
+
+## Retroactive review fixes qualification (issue #33)
+
+Firmware fixes for the retroactive ccr-local findings on #11, #14, #15, #16,
+and #30 were built with ESP-IDF 5.5.4. `make check` passed: the build plus the
+settings, advanced-control, index-worker, and playlist-cache policy tests,
+22 visual-evidence tests, and 30 protocol-probe tests. The build was flashed
+to the SC01 Plus. It booted without a panic, kept the persisted flipped
+orientation, joined Wi-Fi, and authenticated to `aerocore.local:19371`.
+
+The owner performed these checks against the live AIMP host:
+
+- **Equalizer:** dragging one band and then quickly dragging another; neither
+  snapped back nor reset mid-drag.
+- **Sleep timer:** selecting END OF TRACK kept that label rather than
+  reverting to OFF. The timer was turned off again afterwards.
+- **Playback:** play/pause, next/previous, seek, volume, shuffle, and repeat.
+- **Playlists:** creating `ESP Remote` and deleting it again.
+- **Queue:** tapping a queue row played the selected track.
+- **Keyboards:** the settings editor keyboard was fully on screen, Enter
+  saved and closed the editor, the `1#` page offered `~ | ^` and backtick,
+  and Enter ran a queue search once.
+
+The online Storage/About capture shows both capability lines clear of the
+NVS status line. The search capture shows the keyboard anchored fully on
+screen; the previous capture clipped its bottom row.
+
+![Storage and capabilities online](../artifacts/device-settings-storage.png)
+![Search keyboard fully on screen](../artifacts/device-large-search.png)
+
+Cover art showed the generic tile during this session, including for an album
+that previously rendered. A direct probe of the AIMP host, with the board held
+in reset, returned `cover unavailable` for the current track. Firmware built
+from unmodified `main` showed the same tile. The missing artwork is therefore
+on the AIMP host, not a firmware regression.
+
+Not exercised on hardware:
+
+- **Offline cached-queue browsing:** no persisted large-playlist index was
+  present.
+- **Throttled internal-flash rebuilds:** the board uses microSD.
