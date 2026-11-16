@@ -5,6 +5,13 @@ ESP32-S3 touchscreen. It speaks the AIMP MonkeyMote plug-in protocol directly,
 uses LVGL 9, and presents a landscape, typography-first interface inspired by
 the clarity of Microsoft Zune.
 
+It is a working remote, and it is also a toy project and worked example of an
+agentic software workflow: almost all of the code, documentation, tests and
+hardware qualification were produced by AI coding agents (OpenAI Codex and
+Anthropic Claude Code) under human direction. They work from GitHub issues
+as specifications, and their pull requests are reviewed by another set of
+agents. See [How this project is built](#how-this-project-is-built).
+
 ## Device UI
 
 These are framebuffer captures from the physical 480x320 device, not desktop
@@ -120,6 +127,82 @@ The reversible mutation command requires the explicit
 baselines, and never sends a computer-power action. Do not interrupt it: a
 process kill or persistent connection loss can prevent restoration and leave
 EQ changed or a stop-playback timer active. See the protocol notes before use.
+
+## How this project is built
+
+The repository doubles as a sandbox for running a firmware project mostly
+hands-off with coding agents. The human owner writes or approves
+specifications, holds the hardware, and decides what ships; agents do the
+rest under the rules in [`AGENTS.md`](AGENTS.md).
+
+### Ship workflow
+
+1. **Issue as specification.** Each change starts as a GitHub issue from the
+   [feature template](.github/ISSUE_TEMPLATE/feature.yml), which has an
+   outcome, acceptance criteria (build, live AIMP, physical-device and visual
+   evidence), and the state that must be protected while testing. Agents
+   file the issue themselves when the request arrives in conversation.
+2. **Branch and implement.** The agent works on a branch named for the issue
+   and keeps commits narrowly tied to its acceptance criteria.
+3. **Qualify on real hardware.** It builds with the pinned ESP-IDF, runs the
+   host-side policy tests, flashes the board on the bench, watches the serial
+   log, and checks the change against a live AIMP server. When the agent
+   cannot touch the screen, it asks the human to.
+4. **Capture evidence.** UI changes are proven with framebuffer captures
+   pulled from the device's diagnostic endpoint, reviewed, and committed
+   under `artifacts/`. A CI workflow rejects UI pull requests that lack
+   before/after device images or reference a stale gallery.
+5. **Pull request.** The PR closes the issue and records commands, device
+   state, and test results in the [template](.github/pull_request_template.md).
+6. **Agent code review** with ccr-local (below). The agent answers every
+   review thread with what it did (`Fixed in <commit>`, `Won't fix: …`,
+   `Deferred to #<issue>`) and resolves it.
+7. **Merge**, then flash the merged build back onto the device.
+
+[`docs/TESTING.md`](docs/TESTING.md) is the running hardware-qualification
+log the agents keep as they go.
+
+### ccr-local code review
+
+ccr-local is the maintainer's local code-review tool (not currently
+published). It is modelled on the pipeline behind GitHub Copilot code
+review, but runs on a local machine against an existing Claude or Codex
+subscription instead of GitHub's hosted service. At a high level:
+
+- **A council of reviewers.** Several independent agent sessions (four by
+  default) review the same pull request in parallel. Each sees the diff, the
+  PR description, and the repository's instruction files such as
+  `AGENTS.md`. Each has read-only access to the whole checkout and one
+  sandboxed, offline shell for a narrow verification step. Findings are
+  structured tool calls with a file, line, category, and rationale, not
+  free-form prose.
+- **Deduplication and voting.** Findings are merged across members,
+  classified as `critical`, `moderate`, or `nit` with the diff in view, and
+  kept only if enough members independently raised them. Findings also get
+  titles, grouping, and a check against comments already on the PR.
+- **Publication.** Surviving findings become inline PR review threads plus an
+  overview with an approval-readiness verdict. The tool sets a
+  `ccr-local/review` commit status: failure when a finding blocks, success
+  otherwise.
+- **Converging rounds.** The first review of a PR is full. Later rounds
+  review only what changed, know every earlier finding, and treat a
+  settled thread reply as final, so the same issue isn't raised twice.
+- **Per-repository configuration** lives in [`.ccr.json`](.ccr.json):
+  - extra instruction files;
+  - paths kept out of the reviewed diff, such as secrets;
+  - `max_rounds`;
+  - `final_review.paths`, the critical files whose changes owe a final full
+    review.
+
+  Here those are the AIMP protocol client, the on-disk playlist index,
+  NVS settings and credentials, the untrusted cover-art decoder, host power
+  actions, the boot/diagnostics path, and the partition table.
+
+This repository runs one review round per PR by default. Further rounds, up
+to three, happen only while a `critical` finding remains in one of those
+critical files. Early PRs requested GitHub's built-in `@codex review` instead,
+which never responded. Those PRs were reviewed retroactively with ccr-local,
+and the findings were triaged and fixed on `main` under issue #33.
 
 ## Security note
 

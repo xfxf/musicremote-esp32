@@ -45,11 +45,37 @@ independent AIMP remote that interoperates with the MonkeyMote AIMP plugin.
 - Protocol research notes and packet IDs live in `docs/PROTOCOL.md`; update that
   document whenever behavior is learned from the live server.
 - Specifications are tracked as GitHub issues. Reference the issue in each PR
-  and keep commits narrowly aligned with an acceptance criterion.
+  and keep commits narrowly aligned with an acceptance criterion. See the ship
+  workflow below.
 - Every PR body must complete the Before and After sections in the repository
   template. Visual changes require device-rendered images in both; non-visual
   changes require an explicit `N/A:` explanation in both. UI-source changes
   must commit refreshed PNG evidence under `artifacts/`.
+
+## Ship workflow
+
+Every change, including one requested in conversation, follows these steps.
+"Ship" means all of them.
+
+1. **Issue.** Find or file a GitHub issue using
+   `.github/ISSUE_TEMPLATE/feature.yml`, with outcome, acceptance criteria,
+   and state restoration/safety. A request that arrives in conversation
+   becomes an issue before any code is written.
+2. **Branch** from up-to-date `main`, named for the issue (for example
+   `claude/31-flip-screen`).
+3. **Implement and validate** using the required validation steps above.
+   Ask the owner to perform physical touch interactions you cannot do
+   yourself, and record what they confirmed.
+4. **Evidence.** Commit reviewed device captures under `artifacts/`, and
+   record hardware qualification in `docs/TESTING.md`.
+5. **Pull request** from the template, with `Closes #<issue>` (or
+   `Refs #<issue>` when the issue has remaining work) and completed Before
+   and After sections.
+6. **Review** with ccr-local per the review workflow below. Answer and resolve
+   every thread.
+7. **Merge** once CI passes and review is settled. Delete the branch, update
+   local `main`, and flash the merged build when the device is attached.
+   Confirm the issue closed.
 
 ## Code Review Rules
 
