@@ -9,7 +9,7 @@ Closes #
 - [ ] Physical board flashed and monitored
 - [ ] Device-rendered screenshots inspected when UI changed
 - [ ] Live state restored after testing
-- [ ] Built-in Codex review requested with `@codex review`
+- [ ] ccr-local review posted (`ccr review --pr <N> --post --engine codex --no-engine-fallback`), and every thread answered and resolved
 
 ## Evidence
 

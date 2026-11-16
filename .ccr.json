@@ -6,8 +6,20 @@
   "exclude_re": "(?i)(^|/)(\\.env[^/]*|.*\\.(pem|key|p12|pfx|keystore|jks)|.*(secret|credential|password|token)[^/]*\\.(json|ya?ml|ini|cfg|conf|toml|txt|properties))$",
   "review_config_files": [
     "**/AGENTS.md",
-    ".agents/**",
-    ".codex/**",
-    ".github/copilot-instructions.md"
-  ]
+    ".github/pull_request_template.md"
+  ],
+  "max_rounds": 3,
+  "final_review": {
+    "paths": [
+      "main/monkeymote_client.*",
+      "main/playlist_index.*",
+      "main/playlist_cache_policy.hpp",
+      "main/device_settings.*",
+      "main/settings_policy.hpp",
+      "main/artwork_decoder.*",
+      "main/advanced_controls.hpp",
+      "main/app_main.cpp",
+      "partitions.csv"
+    ]
+  }
 }
