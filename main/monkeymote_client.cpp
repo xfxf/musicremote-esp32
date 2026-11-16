@@ -1022,7 +1022,9 @@ bool MonkeyMoteClient::build_streamed_index() {
     completion.second = result.count <= static_cast<uint32_t>(INT32_MAX)
                             ? static_cast<int32_t>(result.count)
                             : -1;
-    completion.text = result.success && !superseded ? "valid" : "invalid";
+    // A throttled (stale) build describes the previous source, not this
+    // response, so it cannot confirm a cached or library play.
+    completion.text = result.success && !result.stale && !superseded ? "valid" : "invalid";
     completion.request_token = response_token->id;
     completion.stream_generation = response_generation;
     enqueue(std::move(completion));
@@ -1046,19 +1048,39 @@ bool MonkeyMoteClient::build_streamed_index() {
   } else {
     ESP_LOGI(kTag, "Indexed %" PRIu32 " tracks for playlist %" PRId32, result.count,
              result.playlist_id);
-    if (!superseded) {
+    if (!superseded && result.stale) {
       using_persisted_playlist_cache_ = false;
-      // A throttled (stale) build republishes the previous index, so its rows
-      // stay unverified. Its count is current only if no queue mutation was
-      // sent after the request that produced this response.
-      const bool verified = !result.stale;
+      playlist_index_.clear_active();
+      // A throttled build keeps the previous INDEX.DAT for reuse by source
+      // hash, but its rows, playlist ID, and count no longer match AIMP's
+      // queue. Publish none of them, so no stale row can be played or
+      // mutated, and keep the unverified-identity guard until a matching
+      // index or small playlist response arrives.
+      model_.update([this](Snapshot &state) {
+        if (!state.queue_indexing || index_superseded_) {
+          return;
+        }
+        state.queue.clear();
+        state.queue_total_count = 0;
+        state.active_playlist_count_known = false;
+        state.queue_page_start = 0;
+        state.queue_index_ready = false;
+        state.queue_indexing = false;
+        state.queue_from_persisted_cache = true;
+        ++state.queue_revision;
+        state.active_playlist_name = "INDEX STALE";
+        state.status = "INDEX STALE - RETRY LATER";
+      });
+    } else if (!superseded) {
+      using_persisted_playlist_cache_ = false;
+      // The count is current only if no queue mutation was sent after the
+      // request that produced this response.
       const bool count_current =
-          verified && response_token &&
+          response_token &&
           response_token->mutation_generation == playlist_mutation_generation_.load();
-      load_index_page(0, true, verified, count_current);
+      load_index_page(0, true, count_current);
       const Snapshot indexed = model_.copy();
-      const bool cacheable_active = response_token && response_token->cacheable_active &&
-                                    !result.stale;
+      const bool cacheable_active = response_token && response_token->cacheable_active;
       if (cacheable_active && indexed.queue_index_ready &&
           indexed.active_playlist_id >= 0 &&
           playlist_index_.mark_active(indexed.active_playlist_id) &&
@@ -1068,9 +1090,6 @@ bool MonkeyMoteClient::build_streamed_index() {
       } else {
         playlist_index_.clear_active();
         ESP_LOGW(kTag, "Could not persist active playlist marker");
-      }
-      if (result.stale) {
-        model_.update([](Snapshot &state) { state.status = "INDEX STALE - RETRY LATER"; });
       }
     }
   }
@@ -1099,7 +1118,7 @@ void MonkeyMoteClient::abort_streamed_frame(const char *status) {
   });
 }
 
-void MonkeyMoteClient::load_index_page(uint32_t start, bool require_indexing, bool verified,
+void MonkeyMoteClient::load_index_page(uint32_t start, bool require_indexing,
                                        bool count_current) {
   std::vector<Track> tracks;
   uint32_t total = 0;
@@ -1133,7 +1152,7 @@ void MonkeyMoteClient::load_index_page(uint32_t start, bool require_indexing, bo
     }
     return;
   }
-  model_.update([this, start, total, playlist_id, require_indexing, verified, count_current,
+  model_.update([this, start, total, playlist_id, require_indexing, count_current,
                  name = std::move(name), tracks = std::move(tracks)](Snapshot &state) mutable {
     // The network task sets index_superseded_ before its deferral update. Check
     // it while publishing under the model lock so an older page cannot replace
@@ -1183,10 +1202,11 @@ void MonkeyMoteClient::load_index_page(uint32_t start, bool require_indexing, bo
     state.queue_page_start = start;
     state.queue_indexing = false;
     state.queue_index_ready = true;
+    // A build publishes only an index that matches its response; paging keeps
+    // the existing trust state.
     state.queue_from_persisted_cache =
-        require_indexing ? !verified
-                         : state.queue_from_persisted_cache ||
-                               using_persisted_playlist_cache_.load();
+        !require_indexing &&
+        (state.queue_from_persisted_cache || using_persisted_playlist_cache_.load());
     state.queue_filter_active = false;
     state.queue_filter_label.clear();
     state.status = "LIBRARY READY";

@@ -142,7 +142,7 @@ private:
   void finish_streamed_frame();
   bool build_streamed_index();
   void abort_streamed_frame(const char *status);
-  void load_index_page(uint32_t start, bool require_indexing = false, bool verified = false,
+  void load_index_page(uint32_t start, bool require_indexing = false,
                        bool count_current = false);
   void search_index_page(uint32_t start, bool require_indexing = false);
 

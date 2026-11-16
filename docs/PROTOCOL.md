@@ -254,9 +254,11 @@ The persisted-index policy therefore remains deliberately bounded:
   mutations remain disabled in that state, including while a replacement is
   transferred and indexed and after a failed or throttled (stale) build, until
   an authoritative index or small playlist response replaces it. Paging, A-Z,
-  and search of the local index are served while AIMP is offline. Tapping a cached row first activates
+  and search of the local index are served while AIMP is offline. A throttled
+  build publishes no rows, playlist ID, or count from the kept index. Tapping a cached row first activates
   the recorded playlist ID, requests the authoritative current playlist, and
   sends the global queue row only after the response confirms that identity.
+  A throttled build never confirms it.
   The manual refresh is the authoritative escape hatch.
 
 This avoids the large transfer on an unchanged second connection without
