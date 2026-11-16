@@ -2665,10 +2665,13 @@ bool MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
     if (!name.empty()) {
       state.active_playlist_name = std::move(name);
     }
+    // Compare queue_row too: an index or search page can match the new rows'
+    // metadata while carrying different global rows, which play and delete use.
     const bool queue_changed = tracks.size() != state.queue.size() ||
                                !std::equal(tracks.begin(), tracks.end(), state.queue.begin(),
                                            [](const Track &a, const Track &b) {
-                                             return a.index == b.index &&
+                                             return a.queue_row == b.queue_row &&
+                                                    a.index == b.index &&
                                                     a.duration_ms == b.duration_ms &&
                                                     a.bitrate == b.bitrate && a.rating == b.rating &&
                                                     a.year == b.year && a.title == b.title &&
