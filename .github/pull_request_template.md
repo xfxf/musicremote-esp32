@@ -25,5 +25,7 @@ Visual change: yes / no
 
 ### After
 
-<!-- Visual change: add a Markdown image. Non-visual: write `N/A: reason`. -->
+<!-- Visual change: add a Markdown image. Non-visual: write `N/A: reason`.
+     A music_ui change must show a changed artifacts/*.png, by repository path or by a
+     github.com blob/raw URL at this PR's head branch name or head SHA. -->
 

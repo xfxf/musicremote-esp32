@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import json
 import struct
 import tempfile
 import unittest
 import zlib
 from pathlib import Path
+from unittest import mock
+
+import check_visual_evidence
 
 from check_visual_evidence import (
     ValidationError,
     read_png_size,
     validate_changed_screenshots,
+    validate_event,
     validate_pr_body,
     validate_readme,
 )
@@ -226,7 +231,7 @@ N/A: none.
 ![After](https://github.com/xfxf/musicremote-esp32/blob/topic/artifacts/after.png?raw=true)
 """
             changed, errors = validate_changed_screenshots(
-                root, {"artifacts/after.png"}, body
+                root, {"artifacts/after.png"}, body, {"topic"}
             )
             self.assertTrue(changed)
             self.assertEqual(errors, [])
@@ -257,6 +262,110 @@ N/A: none.
             )
             self.assertFalse(changed)
             self.assertTrue(any("expected 480x320" in error for error in errors))
+
+
+HEAD_REF = "claude/33-topic"
+HEAD_SHA = "0123456789abcdef0123456789abcdef01234567"
+
+
+class EvidenceRevisionTests(unittest.TestCase):
+    """GitHub evidence URLs must name the PR head and a changed artifact."""
+
+    def check(self, url: str, changed: set[str] | None = None) -> list[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "artifacts").mkdir()
+            (root / "artifacts" / "after.png").write_bytes(make_png())
+            (root / "artifacts" / "other.png").write_bytes(make_png())
+            _, errors = validate_changed_screenshots(
+                root,
+                changed or {"artifacts/after.png"},
+                f"### After\n![After]({url})\n",
+                (HEAD_REF, HEAD_SHA),
+            )
+            return errors
+
+    def test_head_branch_and_sha_urls_are_accepted(self) -> None:
+        for url in (
+            f"https://github.com/xfxf/musicremote-esp32/blob/{HEAD_REF}/artifacts/after.png?raw=true",
+            f"https://github.com/xfxf/musicremote-esp32/blob/{HEAD_SHA}/artifacts/after.png",
+            f"https://raw.githubusercontent.com/xfxf/musicremote-esp32/{HEAD_SHA}/artifacts/after.png",
+            f"https://raw.githubusercontent.com/xfxf/musicremote-esp32/{HEAD_REF}/artifacts/after.png",
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(self.check(url), [])
+
+    def test_other_revisions_are_rejected(self) -> None:
+        zero = "0" * 40
+        for url in (
+            "https://github.com/xfxf/musicremote-esp32/blob/main/artifacts/after.png",
+            f"https://raw.githubusercontent.com/xfxf/musicremote-esp32/{zero}/artifacts/after.png",
+            "https://raw.githubusercontent.com/xfxf/musicremote-esp32/main/artifacts/after.png",
+            "https://github.com/xfxf/musicremote-esp32/blob/main/nonexistent/artifacts/after.png",
+            f"https://github.com/xfxf/musicremote-esp32/blob/{HEAD_REF}/x/artifacts/after.png",
+            f"https://github.com/xfxf/musicremote-esp32/blob/{HEAD_SHA[:12]}/artifacts/after.png",
+            f"https://github.com/someone/musicremote-esp32/blob/{HEAD_SHA}/artifacts/after.png",
+        ):
+            with self.subTest(url=url):
+                self.assertTrue(
+                    any("does not reference" in error for error in self.check(url))
+                )
+
+    def test_unchanged_artifact_at_head_is_rejected(self) -> None:
+        url = f"https://github.com/xfxf/musicremote-esp32/blob/{HEAD_SHA}/artifacts/other.png"
+        self.assertTrue(any("does not reference" in error for error in self.check(url)))
+
+    def test_without_head_revisions_only_local_paths_count(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "artifacts").mkdir()
+            (root / "artifacts" / "after.png").write_bytes(make_png())
+            url = f"https://github.com/xfxf/musicremote-esp32/blob/{HEAD_SHA}/artifacts/after.png"
+            _, errors = validate_changed_screenshots(
+                root, {"artifacts/after.png"}, f"### After\n![After]({url})\n"
+            )
+            self.assertTrue(any("does not reference" in error for error in errors))
+
+    def test_event_head_revisions_gate_after_urls(self) -> None:
+        def body(revision: str) -> str:
+            return f"""Visual change: yes
+
+### Before
+![Before](https://example.invalid/before.png)
+
+### After
+![After](https://github.com/xfxf/musicremote-esp32/blob/{revision}/artifacts/after.png)
+"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "artifacts").mkdir()
+            (root / "artifacts" / "after.png").write_bytes(make_png())
+            event_path = root / "event.json"
+            changed = {"main/music_ui.cpp", "artifacts/after.png"}
+            results = {}
+            for revision in (HEAD_SHA, "main"):
+                event_path.write_text(
+                    json.dumps(
+                        {
+                            "pull_request": {
+                                "base": {"sha": "base"},
+                                "head": {"ref": HEAD_REF, "sha": HEAD_SHA},
+                                "body": body(revision),
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                # changed_paths() shells out to git; fake it to stay hermetic.
+                with mock.patch.object(
+                    check_visual_evidence, "changed_paths", return_value=changed
+                ):
+                    results[revision] = validate_event(root, event_path)
+            self.assertEqual(results[HEAD_SHA], [])
+            self.assertTrue(
+                any("does not reference" in error for error in results["main"])
+            )
 
 
 if __name__ == "__main__":
