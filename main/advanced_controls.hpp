@@ -158,9 +158,14 @@ inline bool sleep_timer_mutation_allowed(StateAvailability availability,
   return availability == StateAvailability::ready && state.known;
 }
 
+// Every gain edit triggers a readback. An already validated band layout stays
+// editable while it loads, so a second quick drag is neither rebuilt away nor
+// discarded on release; the edit overlay keeps the readback from reverting it.
 inline bool equalizer_mutation_allowed(StateAvailability availability,
                                        const EqualizerState &state) {
-  return availability == StateAvailability::ready && state.known;
+  return (availability == StateAvailability::ready ||
+          availability == StateAvailability::loading) &&
+         state.known;
 }
 
 // Gain sliders the equalizer page shows: the preamp plus one per band, or none

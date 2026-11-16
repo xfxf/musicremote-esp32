@@ -191,6 +191,9 @@ only one gain in the last strictly validated response, then requests
 authoritative state again. Because a type-48 reply to a readback sent before an
 edit still reports the old gains, each sent gain is kept for five seconds and
 applied over any reply received meanwhile, so a later setter cannot revert it.
+An already validated band layout stays editable while that readback is
+outstanding, so successive slider edits are sent without waiting for it; the
+sliders are withdrawn only when no layout is known or the readback times out.
 
 Type 49 starts with a little-endian `uint16_t` count and a reserved zero word,
 followed by that many NUL-terminated preset names. The firmware bounds this to

@@ -176,13 +176,44 @@ int main() {
   EqualizerState known_equalizer;
   known_equalizer.known = true;
   assert(equalizer_mutation_allowed(StateAvailability::ready, known_equalizer));
-  assert(!equalizer_mutation_allowed(StateAvailability::loading,
-                                     known_equalizer));
+  // The readback each gain edit triggers keeps a validated layout editable.
+  assert(equalizer_mutation_allowed(StateAvailability::loading, known_equalizer));
   assert(!equalizer_mutation_allowed(StateAvailability::unavailable,
                                      known_equalizer));
+  assert(!equalizer_mutation_allowed(StateAvailability::not_requested,
+                                     known_equalizer));
+  EqualizerState unknown_equalizer;
+  assert(!equalizer_mutation_allowed(StateAvailability::loading, unknown_equalizer));
+  assert(!equalizer_mutation_allowed(StateAvailability::ready, unknown_equalizer));
   known_equalizer.bands = {{70, 150}, {180, 165}};
   assert(equalizer_slider_count(StateAvailability::ready, known_equalizer) == 3);
-  assert(equalizer_slider_count(StateAvailability::loading, known_equalizer) == 0);
+  assert(equalizer_slider_count(StateAvailability::loading, known_equalizer) == 3);
+  assert(equalizer_slider_count(StateAvailability::loading, unknown_equalizer) == 0);
+  assert(equalizer_slider_count(StateAvailability::unavailable, known_equalizer) == 0);
+  {
+    // Two quick edits: the first edit's readback begins while the second
+    // slider is held. The sliders stay in place and the release is allowed.
+    AvailabilityState availability;
+    availability.begin(kEqualizerStateRequest, 0);
+    availability.complete(kEqualizerStateRequest);
+    const size_t rendered =
+        equalizer_slider_count(availability.equalizer, known_equalizer);
+    availability.begin(kEqualizerStateRequest, 0);
+    assert(availability.equalizer == StateAvailability::loading);
+    assert(equalizer_refresh_action(
+               rendered, equalizer_slider_count(availability.equalizer, known_equalizer),
+               true) == EqualizerRefresh::update_in_place);
+    assert(equalizer_refresh_action(
+               rendered, equalizer_slider_count(availability.equalizer, known_equalizer),
+               false) == EqualizerRefresh::update_in_place);
+    assert(equalizer_mutation_allowed(availability.equalizer, known_equalizer));
+    // A readback that never arrives still withdraws the sliders.
+    availability.expire(kEqualizerStateRequest);
+    assert(!equalizer_mutation_allowed(availability.equalizer, known_equalizer));
+    assert(equalizer_refresh_action(
+               rendered, equalizer_slider_count(availability.equalizer, known_equalizer),
+               false) == EqualizerRefresh::rebuild);
+  }
   // A reply with the same rows updates them in place, even mid-drag.
   assert(equalizer_refresh_action(3, 3, true) == EqualizerRefresh::update_in_place);
   assert(equalizer_refresh_action(3, 3, false) == EqualizerRefresh::update_in_place);

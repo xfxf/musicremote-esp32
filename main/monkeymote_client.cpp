@@ -1902,6 +1902,15 @@ void MonkeyMoteClient::send_command(const Command &command) {
       equalizer_payload_ = std::move(updated);
       equalizer_edits_.record(command.first, static_cast<uint16_t>(command.second),
                               esp_timer_get_time() + kAdvancedRequestTimeoutUs);
+      // Publish the sent gains so the sliders, which stay in place during the
+      // readback, do not snap back to the pre-edit values until it arrives.
+      advanced::EqualizerState sent;
+      if (advanced::parse_equalizer(equalizer_payload_, sent)) {
+        model_.update([sent = std::move(sent)](Snapshot &current) mutable {
+          current.equalizer = std::move(sent);
+          ++current.equalizer_revision;
+        });
+      }
       enqueue({CommandType::request_advanced_controls});
     }
     break;
