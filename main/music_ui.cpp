@@ -24,6 +24,30 @@ constexpr uint32_t kAccent = 0x00D7C7;
 constexpr uint32_t kAccentBlue = 0x35A7FF;
 constexpr char kTag[] = "music_ui";
 
+// LVGL's default symbol page lacks ~ | ^ and `, which are valid in Wi-Fi and
+// AIMP passwords. This copy of its 1# page adds them to the bottom row, so
+// together with the letter pages every printable ASCII character is typeable.
+constexpr lv_buttonmatrix_ctrl_t key_control(uint32_t flags, uint32_t width) {
+  return static_cast<lv_buttonmatrix_ctrl_t>(flags | width);
+}
+constexpr lv_buttonmatrix_ctrl_t kKey = key_control(LV_BUTTONMATRIX_CTRL_POPOVER, 1);
+constexpr lv_buttonmatrix_ctrl_t kWideKey = key_control(LV_BUTTONMATRIX_CTRL_POPOVER, 2);
+constexpr lv_buttonmatrix_ctrl_t kSpaceKey = key_control(0, 4);
+constexpr lv_buttonmatrix_ctrl_t kModeKey = key_control(LV_KEYBOARD_CTRL_BUTTON_FLAGS, 2);
+constexpr lv_buttonmatrix_ctrl_t kCheckedKey = key_control(LV_BUTTONMATRIX_CTRL_CHECKED, 2);
+const char *const kSymbolKeyboardMap[] = {
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", LV_SYMBOL_BACKSPACE, "\n",
+    "abc", "+", "&", "/", "*", "=", "%", "!", "?", "#", "<", ">", "\n",
+    "\\", "@", "$", "(", ")", "{", "}", "[", "]", ";", "\"", "'", "\n",
+    LV_SYMBOL_KEYBOARD, "~", "|", "^", "`", LV_SYMBOL_LEFT, " ", LV_SYMBOL_RIGHT, LV_SYMBOL_OK, ""};
+const lv_buttonmatrix_ctrl_t kSymbolKeyboardControls[] = {
+    kKey, kKey, kKey, kKey, kKey, kKey, kKey, kKey, kKey, kKey, kCheckedKey,
+    kModeKey, kKey, kKey, kKey, kKey, kKey, kKey, kKey, kKey, kKey, kKey, kKey,
+    kKey, kKey, kKey, kKey, kKey, kKey, kKey, kKey, kKey, kKey, kKey, kKey,
+    kModeKey, kWideKey, kWideKey, kWideKey, kWideKey, kCheckedKey, kSpaceKey, kCheckedKey, kModeKey};
+static_assert(std::size(kSymbolKeyboardMap) == 48);
+static_assert(std::size(kSymbolKeyboardControls) == 44);
+
 const char *connection_text(ConnectionState state) {
   switch (state) {
   case ConnectionState::online:
@@ -1059,6 +1083,9 @@ void MusicUi::create_settings_overlays() {
   lv_obj_align(setting_editor_keyboard_, LV_ALIGN_TOP_LEFT, 8, 128);
   lv_obj_set_size(setting_editor_keyboard_, 464, 184);
   lv_keyboard_set_textarea(setting_editor_keyboard_, setting_editor_textarea_);
+  // LVGL keeps one map table for all keyboards, so search also gains these keys.
+  lv_keyboard_set_map(setting_editor_keyboard_, LV_KEYBOARD_MODE_SPECIAL, kSymbolKeyboardMap,
+                      kSymbolKeyboardControls);
   lv_obj_set_style_text_font(setting_editor_keyboard_, &lv_font_montserrat_18, LV_PART_ITEMS);
   // As for search: READY from both Enter and the checkmark reaches the textarea.
   lv_obj_add_event_cb(setting_editor_textarea_, event_handler, LV_EVENT_READY, this);
