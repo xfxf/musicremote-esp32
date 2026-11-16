@@ -957,7 +957,9 @@ void MusicUi::create_settings_overlays() {
       "Equalizer, sleep timer and confirmed computer actions are available from their own settings page when "
       "the connected plug-in advertises support.",
       &lv_font_montserrat_14, color(kText));
-  lv_obj_set_pos(storage_text, 10, 44);
+  // The connected capability label wraps to two lines, so the NVS status and
+  // this text start below the second line instead of overlapping it.
+  lv_obj_set_pos(storage_text, 10, 64);
   lv_obj_set_width(storage_text, 420);
   lv_label_set_long_mode(storage_text, LV_LABEL_LONG_WRAP);
   capabilities_value_ = make_label(storage, "CAPABILITIES: WAITING FOR AIMP",
@@ -966,7 +968,7 @@ void MusicUi::create_settings_overlays() {
   lv_obj_set_width(capabilities_value_, 420);
   settings_storage_value_ = make_label(storage, "SETTINGS STORAGE: NVS OK",
                                        &lv_font_montserrat_14, color(kAccent));
-  lv_obj_set_pos(settings_storage_value_, 10, 24);
+  lv_obj_set_pos(settings_storage_value_, 10, 44);
   lv_obj_set_width(settings_storage_value_, 420);
 
   lv_obj_t *advanced_panel =
