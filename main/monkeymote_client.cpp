@@ -548,6 +548,7 @@ bool MonkeyMoteClient::connect_and_authenticate() {
   cover_track_key_.clear();
   lyrics_requests_.clear();
   equalizer_payload_.clear();
+  equalizer_edits_.reset();
   advanced_requests_.reset();
   library_request_deadline_us_ = 0;
   pending_library_play_row_ = -1;
@@ -596,6 +597,7 @@ void MonkeyMoteClient::close_socket() {
   }
   lyrics_requests_.clear();
   equalizer_payload_.clear();
+  equalizer_edits_.reset();
   advanced_requests_.reset();
   library_request_deadline_us_ = 0;
   pending_library_play_row_ = -1;
@@ -1327,6 +1329,10 @@ bool MonkeyMoteClient::process_frame(uint32_t type, std::vector<uint8_t> &payloa
       return false;
     }
     advanced_requests_.complete(advanced::kEqualizerStateRequest);
+    // A readback sent before a recent edit still reports the old gains.
+    if (equalizer_edits_.apply(payload, esp_timer_get_time())) {
+      advanced::parse_equalizer(payload, equalizer);
+    }
     equalizer_payload_ = payload;
     model_.update([equalizer = std::move(equalizer)](Snapshot &state) mutable {
       state.equalizer = std::move(equalizer);
@@ -1800,6 +1806,8 @@ void MonkeyMoteClient::send_command(const Command &command) {
                                      static_cast<uint16_t>(command.second)) &&
         send_packet(48, updated.data(), updated.size())) {
       equalizer_payload_ = std::move(updated);
+      equalizer_edits_.record(command.first, static_cast<uint16_t>(command.second),
+                              esp_timer_get_time() + kAdvancedRequestTimeoutUs);
       enqueue({CommandType::request_advanced_controls});
     }
     break;
@@ -1811,9 +1819,9 @@ void MonkeyMoteClient::send_command(const Command &command) {
             state.advanced_availability.sleep_timer, state.sleep_timer)) {
       break;
     }
-    const bool enabled = command.first > 0;
     const uint8_t trigger = static_cast<uint8_t>((command.second >> 8) & 0xff);
     const uint8_t action = static_cast<uint8_t>(command.second & 0xff);
+    const bool enabled = advanced::sleep_timer_command_enabled(command.first, trigger);
     payload = advanced::make_sleep_timer(enabled, trigger, action,
                                          static_cast<uint32_t>(std::max(command.first, int32_t{0})));
     if (!payload.empty() && send_packet(51, payload.data(), payload.size())) {

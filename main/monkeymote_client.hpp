@@ -168,6 +168,7 @@ private:
   };
   std::deque<PendingLyricsRequest> lyrics_requests_;
   std::vector<uint8_t> equalizer_payload_;
+  advanced::EqualizerEditOverlay equalizer_edits_;
   advanced::RequestTracker advanced_requests_;
   uint32_t library_request_id_{0};
   int64_t library_request_deadline_us_{0};

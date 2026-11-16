@@ -172,7 +172,9 @@ validated type-48 body as the preamp/manual-band setter. Its AIMP 5 command
 handler does not apply byte 1, so enabled is display-only rather than a false
 toggle. The firmware never constructs a setter from partial state: it mutates
 only one gain in the last strictly validated response, then requests
-authoritative state again.
+authoritative state again. Because a type-48 reply to a readback sent before an
+edit still reports the old gains, each sent gain is kept for five seconds and
+applied over any reply received meanwhile, so a later setter cannot revert it.
 
 Type 49 starts with a little-endian `uint16_t` count and a reserved zero word,
 followed by that many NUL-terminated preset names. The firmware bounds this to
@@ -185,6 +187,8 @@ little-endian seconds value. Trigger 1 means the duration and trigger 2 means
 the end of the current track. Actions 1, 2, and 3 mean stop playback, exit the
 player, and shut down the computer. The device UI intentionally sends only
 action 1 and cycles through off, 15, 30, and 60 minutes and end-of-track.
+End-of-track is sent as enabled, trigger 2, and zero seconds; off is disabled,
+trigger 1, and zero seconds.
 
 Type 4 subcommand 14 followed by one action byte performs a computer action:
 0 sleeps, 1 restarts, and 2 shuts down the AIMP computer. These controls remain

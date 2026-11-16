@@ -49,6 +49,50 @@ int main() {
   assert(timer.enabled && timer.seconds_remaining == 900);
   assert(make_sleep_timer(true, 3, 1, 10).empty());
   assert(make_sleep_timer(true, 1, 4, 10).empty());
+  // End-of-track carries no duration but must still enable the timer.
+  assert(sleep_timer_command_enabled(0, 2));
+  assert(sleep_timer_command_enabled(900, 1));
+  assert(!sleep_timer_command_enabled(0, 1));
+  assert(!sleep_timer_command_enabled(-1, 1));
+
+  {
+    // A reply to a readback sent before an edit still reports the old gains.
+    const std::vector<uint8_t> stale{
+        2, 1, 15, 0, 44, 1, 150, 0, 0, 0,
+        70, 0, 150, 0, 232, 3, 120, 0,
+    };
+    EqualizerEditOverlay overlay;
+    overlay.record(0, 180, 100);
+    overlay.record(-1, 160, 100);
+    overlay.record(0, 190, 100);
+    assert(overlay.size() == 2);
+    auto merged = stale;
+    assert(overlay.apply(merged, 50));
+    EqualizerState merged_state;
+    assert(parse_equalizer(merged, merged_state));
+    assert(merged_state.bands[0].gain_tenths_offset == 190);
+    assert(merged_state.bands[1].gain_tenths_offset == 120);
+    assert(merged_state.preamp_tenths_offset == 160);
+    // A reply that already reports the edits is left unchanged.
+    auto confirmed = merged;
+    assert(!overlay.apply(confirmed, 60));
+    assert(confirmed == merged);
+    // Expired edits are dropped and no longer override replies.
+    auto later = stale;
+    assert(!overlay.apply(later, 100));
+    assert(later == stale && overlay.size() == 0);
+    // Edits for bands absent from the reply are discarded.
+    overlay.record(5, 200, 100);
+    later = stale;
+    assert(!overlay.apply(later, 10));
+    assert(overlay.size() == 0);
+    auto malformed = stale;
+    malformed.pop_back();
+    overlay.record(0, 200, 100);
+    assert(!overlay.apply(malformed, 10));
+    overlay.reset();
+    assert(overlay.size() == 0);
+  }
 
   const auto request = make_state_request(19);
   assert(request == std::vector<uint8_t>({19, 0, 0, 0, 0}));

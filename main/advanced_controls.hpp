@@ -299,6 +299,71 @@ inline std::vector<uint8_t> make_sleep_timer(bool enabled, uint8_t trigger,
   return payload;
 }
 
+// The UI encodes end-of-track (trigger 2) with a zero duration. Only a
+// zero-duration trigger-1 command means "off".
+inline bool sleep_timer_command_enabled(int32_t seconds, uint8_t trigger) {
+  return seconds > 0 || trigger == 2;
+}
+
+// Type-48 replies carry no request identifier, and a readback sent before a
+// gain edit returns the pre-edit gains. Each sent edit is kept for a bounded
+// period and applied over every reply received meanwhile, so the next setter,
+// which carries all bands, cannot revert an earlier edit.
+class EqualizerEditOverlay {
+public:
+  void record(int32_t band_index, uint16_t gain_tenths_offset, int64_t expires_us) {
+    for (auto &edit : edits_) {
+      if (edit.band_index == band_index) {
+        edit.gain_tenths_offset = gain_tenths_offset;
+        edit.expires_us = expires_us;
+        return;
+      }
+    }
+    if (edits_.size() <= kMaximumEqualizerBands) {
+      edits_.push_back({band_index, gain_tenths_offset, expires_us});
+    }
+  }
+
+  // Applies unexpired edits to a validated reply. Returns whether it changed.
+  bool apply(std::vector<uint8_t> &payload, int64_t now_us) {
+    EqualizerState reply;
+    if (!parse_equalizer(payload, reply)) {
+      return false;
+    }
+    bool changed = false;
+    for (auto edit = edits_.begin(); edit != edits_.end();) {
+      const bool preamp = edit->band_index == -1;
+      const bool in_range =
+          preamp || (edit->band_index >= 0 &&
+                     static_cast<size_t>(edit->band_index) < reply.bands.size());
+      if (now_us >= edit->expires_us || !in_range) {
+        edit = edits_.erase(edit);
+        continue;
+      }
+      const uint16_t reported =
+          preamp ? reply.preamp_tenths_offset
+                 : reply.bands[static_cast<size_t>(edit->band_index)].gain_tenths_offset;
+      if (reported != edit->gain_tenths_offset &&
+          set_equalizer_gain(payload, edit->band_index, edit->gain_tenths_offset)) {
+        changed = true;
+      }
+      ++edit;
+    }
+    return changed;
+  }
+
+  void reset() { edits_.clear(); }
+  [[nodiscard]] size_t size() const { return edits_.size(); }
+
+private:
+  struct Edit {
+    int32_t band_index;
+    uint16_t gain_tenths_offset;
+    int64_t expires_us;
+  };
+  std::vector<Edit> edits_;
+};
+
 inline std::vector<uint8_t> make_computer_power(uint8_t action) {
   if (action > 2) {
     return {};
