@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+    # `edited` reruns the check when the PR body's evidence changes.
+    types: [opened, synchronize, reopened, edited]
 
 permissions:
   contents: read
