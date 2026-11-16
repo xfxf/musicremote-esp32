@@ -67,7 +67,7 @@ controls, state feedback, queue manipulation, and playlist management.
 - Capture and inspect all four pages from the actual LVGL framebuffer.
 - Exercise live state and controls against the configured AIMP machine while
   restoring deliberately changed state when practical.
-- Open a pull request and request built-in Codex review with `@codex review`.
+- Open a pull request and review it with ccr-local as described in `AGENTS.md`.
 
 ## Qualification boundary
 

@@ -55,20 +55,55 @@ independent AIMP remote that interoperates with the MonkeyMote AIMP plugin.
 
 ### Review workflow
 
-- For each implementation pull request, run one adversarial review in a
-  dedicated subagent after the build, tests, and hardware evidence are ready.
-- The reviewer must inspect the diff and validation evidence for correctness,
-  protocol safety, bounded memory use, responsive touch behavior, secrets, and
-  regressions on the physical device.
-- Resolve all actionable findings before merge. A single focused follow-up
-  review may verify fixes for blocking findings; do not run repeated broad or
-  token-heavy review loops.
-- Record the reviewer outcome on the pull request. Built-in pull-request review
-  may supplement this workflow, but it is not a prerequisite for local work.
-- Do not run `ccr-local` as a routine review step. It is permitted only when an
-  actual merge gate requires it, for any pull request; use the Codex engine,
-  disable engine fallback, and run the minimum rounds needed to satisfy that
-  gate.
+Pull requests are reviewed by ccr-local (a local, Copilot-like review). The
+built-in `@codex review` integration is not connected to this repository and
+never responds; do not request it or count it as a review.
+
+- Once the build, tests, and hardware evidence are ready and the PR head is
+  pushed, check out exactly that head with nothing uncommitted and run one
+  review round:
+  `"${CCR_HOME:-$HOME/tools/ccr-local}/ccr" review --pr <N> --post --engine codex --no-engine-fallback`
+  Run it in the background; it takes several minutes.
+- **One round is the default.** Fix or answer every finding, then merge
+  without another review round.
+- **Further rounds (at most 3 in total)** are owed only when the latest round
+  reports a `critical` finding in a file matching `final_review.paths` in
+  `.ccr.json`. Fix it, push, and review again; when ccr-local exits 6 (a
+  final full review is owed), rerun with `--final` and count it as a round.
+  `.ccr.json` sets `max_rounds` to 3. If a critical finding in a critical
+  file survives the third round, stop and ask the owner. Do not raise the
+  cap yourself.
+- Answer every review thread with the action taken, then resolve it:
+  `Fixed in <commit>`, `Not actioned: <reason>`, `Won't fix: <reason>`,
+  `Deferred to #<issue>`, or `Resolving after: <what and when>`. ccr-local
+  reads these replies, and a settled finding is not raised again.
+- When fixes land after the last permitted round, the new head carries no
+  `ccr-local/review` status. Say so in a PR comment that lists the fixing
+  commits.
+- Never set `SKIP_REVIEW`, `SKIP_CCR`, or `SKIP_COPILOT` yourself. Use the
+  Codex engine without fallback; if it is unavailable (exit 4), retry later
+  rather than switching engines.
+- Reviewers apply the rules below, and should also check bounded memory use,
+  responsive touch behavior, secrets, and regressions on the physical device.
+
+### Critical files (`final_review.paths`)
+
+`.ccr.json` lists, as `final_review.paths` globs, the code where a defect
+corrupts persisted state, mishandles untrusted input, leaks credentials, or
+acts on the host computer:
+
+- the AIMP wire protocol, authentication, and parsers (`monkeymote_client`);
+- the on-disk playlist index and cache-trust policy;
+- NVS settings, schema migration, and credential storage;
+- the untrusted cover-art decoder and its disk cache;
+- host power actions (`advanced_controls.hpp`);
+- the boot path, Wi-Fi credentials, and the network diagnostics endpoint
+  (`app_main.cpp`);
+- the flash partition table.
+
+A PR that adds such a path adds its glob in the same PR, and a PR that
+renames or moves one updates the glob in the same PR. Reviewers flag a PR
+that does not. UI-only code is deliberately excluded.
 
 ### Protocol compatibility
 
