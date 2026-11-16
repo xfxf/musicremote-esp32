@@ -542,7 +542,9 @@ void MusicUi::create_filter_overlays() {
   lv_obj_set_pos(cancel, 352, 8);
 
   search_keyboard_ = lv_keyboard_create(search_overlay_);
-  lv_obj_set_pos(search_keyboard_, 8, 64);
+  // lv_keyboard_create() aligns to BOTTOM_MID and lv_obj_set_pos() keeps that
+  // alignment, so anchor explicitly to keep the keyboard inside the screen.
+  lv_obj_align(search_keyboard_, LV_ALIGN_TOP_LEFT, 8, 64);
   lv_obj_set_size(search_keyboard_, 464, 248);
   lv_keyboard_set_textarea(search_keyboard_, search_textarea_);
   lv_obj_set_style_text_font(search_keyboard_, &lv_font_montserrat_18, LV_PART_ITEMS);
@@ -1052,7 +1054,7 @@ void MusicUi::create_settings_overlays() {
                                        &lv_font_montserrat_14, color(kMuted));
   lv_obj_set_pos(setting_editor_message_, 14, 105);
   setting_editor_keyboard_ = lv_keyboard_create(setting_editor_);
-  lv_obj_set_pos(setting_editor_keyboard_, 8, 128);
+  lv_obj_align(setting_editor_keyboard_, LV_ALIGN_TOP_LEFT, 8, 128);
   lv_obj_set_size(setting_editor_keyboard_, 464, 184);
   lv_keyboard_set_textarea(setting_editor_keyboard_, setting_editor_textarea_);
   lv_obj_set_style_text_font(setting_editor_keyboard_, &lv_font_montserrat_18, LV_PART_ITEMS);
