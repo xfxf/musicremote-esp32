@@ -147,8 +147,13 @@ responses cannot become mis-correlated. The token FIFO is capped, duplicate
 refreshes are coalesced, and a missing head response or unclassifiable envelope
 forces a bounded reconnect rather than shifting correlation. Streamed index
 results also carry a monotonic generation, so a newer playlist response
-invalidates an older completion before it can authorize playback. The firmware
-never clears the user's current playlist as a side effect of tapping a library
+invalidates an older completion before it can authorize playback. A playlist
+count is authoritative only when it comes from a current response to a request
+sent after the latest queue mutation or type 12/17/30/35 notification. Pages
+read from the local index, throttled (stale) index builds, and responses to
+earlier requests never restore it, and duplicate refreshes are coalesced only
+with a request of the same mutation generation. Stop and pause cancel a
+deferred library play. The firmware never clears the user's current playlist as a side effect of tapping a library
 result.
 - Type 10 sets a one-byte rating from 0 through 5.
 - Type 20 clears a playlist.
@@ -237,11 +242,15 @@ The persisted-index policy therefore remains deliberately bounded:
 - type 12/17/30/35 notifications, explicit playlist activation, queue edits,
   library additions, or manual `REFRESH FROM AIMP` clear the marker and force
   the complete playlist request; cache-format or extent validation failures do
-  the same;
+  the same. A failed page or search read also marks the stored index unusable,
+  so the following response rebuilds it instead of reusing it by source hash;
 - because same-count edits and active-playlist changes made while the client is
   offline cannot be proven from this protocol, reused rows are visibly labelled
   `CACHED` rather than claimed fresh. Destructive queue, playlist, and library
-  mutations remain disabled in that state. Tapping a cached row first activates
+  mutations remain disabled in that state, including while a replacement is
+  transferred and indexed and after a failed or throttled (stale) build, until
+  an authoritative index or small playlist response replaces it. Paging, A-Z,
+  and search of the local index are served while AIMP is offline. Tapping a cached row first activates
   the recorded playlist ID, requests the authoritative current playlist, and
   sends the global queue row only after the response confirms that identity.
   The manual refresh is the authoritative escape hatch.

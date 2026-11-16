@@ -484,6 +484,8 @@ void PlaylistIndex::clear_active() const {
   unlink(path("ACTIVE.DAT").c_str());
 }
 
+void PlaylistIndex::mark_current_unusable() const { current_unusable_ = true; }
+
 PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &progress) {
   BuildResult result;
   if (!available()) {
@@ -525,7 +527,8 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
     IndexHeader header{};
     struct stat current_stat {};
     const bool valid_current =
-        current != nullptr && read_exact(current, &header, sizeof(header)) &&
+        !current_unusable_.load() && current != nullptr &&
+        read_exact(current, &header, sizeof(header)) &&
         valid_header(header) && fstat(fileno(current), &current_stat) == 0 &&
         static_cast<uint64_t>(header.search_offset) + header.search_size ==
             static_cast<uint64_t>(current_stat.st_size);
@@ -830,6 +833,7 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
     unlink(backup.c_str());
   }
   result.success = true;
+  current_unusable_ = false;
   if (internal_flash_) {
     last_internal_promotion_us_ = esp_timer_get_time();
   }

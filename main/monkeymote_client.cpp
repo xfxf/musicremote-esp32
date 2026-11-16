@@ -378,6 +378,7 @@ void MonkeyMoteClient::run() {
         }
       });
       for (int i = 0; i < retry_seconds * 10 && running_; ++i) {
+        process_offline_commands();
         vTaskDelay(pdMS_TO_TICKS(100));
       }
       retry_seconds = std::min(retry_seconds * 2, 15);
@@ -424,6 +425,28 @@ void MonkeyMoteClient::run() {
     }
   }
   task_ = nullptr;
+}
+
+void MonkeyMoteClient::process_offline_commands() {
+  // Queue paging, A-Z and search read only the local index, so serve them
+  // while AIMP is unreachable. Every other command waits for a connection.
+  std::deque<Command> local;
+  {
+    std::lock_guard lock(commands_mutex_);
+    for (auto command = commands_.begin(); command != commands_.end();) {
+      if (command->type == CommandType::request_queue_page ||
+          command->type == CommandType::filter_queue ||
+          command->type == CommandType::clear_queue_filter) {
+        local.push_back(std::move(*command));
+        command = commands_.erase(command);
+      } else {
+        ++command;
+      }
+    }
+  }
+  for (const auto &command : local) {
+    send_command(command);
+  }
 }
 
 bool MonkeyMoteClient::connect_and_authenticate() {
@@ -853,7 +876,8 @@ bool MonkeyMoteClient::start_streamed_frame(uint32_t type, uint32_t length,
     state.queue_page_start = 0;
     state.queue_index_ready = false;
     state.queue_indexing = true;
-    state.queue_from_persisted_cache = false;
+    // Keep any cached-playlist mutation guard until an authoritative index
+    // replaces the cached identity.
     state.queue_filter_active = false;
     state.queue_filter_label.clear();
     ++state.queue_revision;
@@ -1015,7 +1039,6 @@ bool MonkeyMoteClient::build_streamed_index() {
       state.queue_page_start = 0;
       state.queue_index_ready = false;
       state.queue_indexing = false;
-      state.queue_from_persisted_cache = false;
       ++state.queue_revision;
       state.active_playlist_name = "PLAYLIST TOO LARGE";
       state.status = message;
@@ -1025,7 +1048,14 @@ bool MonkeyMoteClient::build_streamed_index() {
              result.playlist_id);
     if (!superseded) {
       using_persisted_playlist_cache_ = false;
-      load_index_page(0, true);
+      // A throttled (stale) build republishes the previous index, so its rows
+      // stay unverified. Its count is current only if no queue mutation was
+      // sent after the request that produced this response.
+      const bool verified = !result.stale;
+      const bool count_current =
+          verified && response_token &&
+          response_token->mutation_generation == playlist_mutation_generation_.load();
+      load_index_page(0, true, verified, count_current);
       const Snapshot indexed = model_.copy();
       const bool cacheable_active = response_token && response_token->cacheable_active &&
                                     !result.stale;
@@ -1063,14 +1093,14 @@ void MonkeyMoteClient::abort_streamed_frame(const char *status) {
     state.queue_page_start = 0;
     state.queue_index_ready = false;
     state.queue_indexing = false;
-    state.queue_from_persisted_cache = false;
     ++state.queue_revision;
     state.active_playlist_name = "PLAYLIST UNAVAILABLE";
     state.status = status;
   });
 }
 
-void MonkeyMoteClient::load_index_page(uint32_t start, bool require_indexing) {
+void MonkeyMoteClient::load_index_page(uint32_t start, bool require_indexing, bool verified,
+                                       bool count_current) {
   std::vector<Track> tracks;
   uint32_t total = 0;
   int32_t playlist_id = -1;
@@ -1082,6 +1112,7 @@ void MonkeyMoteClient::load_index_page(uint32_t start, bool require_indexing) {
     const bool server_online = before_failure.connection == ConnectionState::online;
     using_persisted_playlist_cache_ = false;
     playlist_index_.clear_active();
+    playlist_index_.mark_current_unusable();
     model_.update([this, require_indexing](Snapshot &state) {
       if (require_indexing && (!state.queue_indexing || index_superseded_)) {
         return;
@@ -1092,18 +1123,18 @@ void MonkeyMoteClient::load_index_page(uint32_t start, bool require_indexing) {
       state.queue_page_start = 0;
       state.queue_indexing = false;
       state.queue_index_ready = false;
-      state.queue_from_persisted_cache = false;
       ++state.queue_revision;
       state.active_playlist_name = "PLAYLIST UNAVAILABLE";
       state.status = "INDEX READ FAILED";
     });
-    if (cached_rows_visible && server_online) {
+    // A failed build-path read must not refetch: that would loop transfers.
+    if (cached_rows_visible && server_online && !require_indexing) {
       enqueue({CommandType::request_playlist, -1});
     }
     return;
   }
-  model_.update([this, start, total, playlist_id, require_indexing, name = std::move(name),
-                 tracks = std::move(tracks)](Snapshot &state) mutable {
+  model_.update([this, start, total, playlist_id, require_indexing, verified, count_current,
+                 name = std::move(name), tracks = std::move(tracks)](Snapshot &state) mutable {
     // The network task sets index_superseded_ before its deferral update. Check
     // it while publishing under the model lock so an older page cannot replace
     // the refresh state with tappable rows.
@@ -1144,13 +1175,18 @@ void MonkeyMoteClient::load_index_page(uint32_t start, bool require_indexing) {
     }
     state.queue = std::move(tracks);
     state.queue_total_count = total;
-    state.active_playlist_track_count = total;
-    state.active_playlist_count_known = true;
+    // Cached page reads must not restore a count invalidated by a mutation.
+    if (count_current) {
+      state.active_playlist_track_count = total;
+      state.active_playlist_count_known = true;
+    }
     state.queue_page_start = start;
     state.queue_indexing = false;
     state.queue_index_ready = true;
     state.queue_from_persisted_cache =
-        state.queue_from_persisted_cache || using_persisted_playlist_cache_.load();
+        require_indexing ? !verified
+                         : state.queue_from_persisted_cache ||
+                               using_persisted_playlist_cache_.load();
     state.queue_filter_active = false;
     state.queue_filter_label.clear();
     state.status = "LIBRARY READY";
@@ -1171,6 +1207,7 @@ void MonkeyMoteClient::search_index_page(uint32_t start, bool require_indexing) 
     const bool server_online = before_failure.connection == ConnectionState::online;
     using_persisted_playlist_cache_ = false;
     playlist_index_.clear_active();
+    playlist_index_.mark_current_unusable();
     model_.update([this, require_indexing](Snapshot &state) {
       if (require_indexing && (!state.queue_indexing || index_superseded_)) {
         return;
@@ -1180,7 +1217,6 @@ void MonkeyMoteClient::search_index_page(uint32_t start, bool require_indexing) 
       state.queue_page_start = 0;
       state.queue_indexing = false;
       state.queue_index_ready = false;
-      state.queue_from_persisted_cache = false;
       state.queue_filter_active = false;
       state.queue_filter_label.clear();
       ++state.queue_revision;
@@ -1278,6 +1314,7 @@ bool MonkeyMoteClient::process_frame(uint32_t type, std::vector<uint8_t> &payloa
   case 30:
   case 35:
     playlist_stream_generation_.fetch_add(1);
+    playlist_mutation_generation_.fetch_add(1);
     if (index_building_) {
       index_superseded_ = true;
     }
@@ -1425,13 +1462,16 @@ bool MonkeyMoteClient::send_packet(uint32_t type, const void *data, size_t size)
 bool MonkeyMoteClient::send_playlist_request(int32_t playlist_id,
                                              bool confirms_library_play,
                                              bool cacheable_active) {
+  const uint64_t mutation_generation = playlist_mutation_generation_.load();
   {
     std::lock_guard lock(playlist_requests_mutex_);
+    // Coalesce only with a request that already observes the latest mutation.
     if (!confirms_library_play && playlist_id == -1 &&
         std::any_of(playlist_requests_.begin(), playlist_requests_.end(),
-                    [playlist_id](const PlaylistRequestToken &token) {
+                    [playlist_id, mutation_generation](const PlaylistRequestToken &token) {
                       return !token.confirms_library_play &&
-                             token.playlist_id == playlist_id;
+                             token.playlist_id == playlist_id &&
+                             token.mutation_generation == mutation_generation;
                     })) {
       return true;
     }
@@ -1462,7 +1502,8 @@ bool MonkeyMoteClient::send_playlist_request(int32_t playlist_id,
                                   .cacheable_active = cacheable_active,
                                   .deadline_us = becomes_head
                                                      ? esp_timer_get_time() + 15'000'000
-                                                     : 0});
+                                                     : 0,
+                                  .mutation_generation = mutation_generation});
   }
   if (confirms_library_play) {
     pending_library_play_token_ = token_id;
@@ -1479,6 +1520,7 @@ void MonkeyMoteClient::send_command(const Command &command) {
   };
   auto invalidate_streamed_playlist = [this]() {
     playlist_stream_generation_.fetch_add(1);
+    playlist_mutation_generation_.fetch_add(1);
     if (index_building_) {
       index_superseded_ = true;
     }
@@ -1919,6 +1961,7 @@ void MonkeyMoteClient::select_library_item(const Command &command, bool play) {
       static_cast<int32_t>(current.active_playlist_track_count);
   const auto invalidate_streamed_playlist = [this]() {
     playlist_stream_generation_.fetch_add(1);
+    playlist_mutation_generation_.fetch_add(1);
     if (index_building_) {
       index_superseded_ = true;
     }
@@ -2514,10 +2557,15 @@ bool MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
   // AIMP can encode an explicitly requested active playlist as -1. Only use
   // the destination from the exact FIFO request token paired with this reply.
   int32_t requested_playlist_id = -1;
+  // A response to a request sent before the latest queue mutation describes
+  // the pre-mutation playlist; its count must not become authoritative.
+  bool count_current = false;
   {
     std::lock_guard lock(playlist_requests_mutex_);
     if (!playlist_requests_.empty()) {
       requested_playlist_id = playlist_requests_.front().playlist_id;
+      count_current = playlist_requests_.front().mutation_generation ==
+                      playlist_mutation_generation_.load();
     }
   }
   if (resolved_response_id < 0 && requested_playlist_id >= 0) {
@@ -2548,14 +2596,16 @@ bool MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
     }
     queue_filter_active_ = false;
     queue_filter_.clear();
-    model_.update([resolved_playlist_id = resolved_response_id, count,
+    model_.update([resolved_playlist_id = resolved_response_id, count, count_current,
                    name = std::move(name)](Snapshot &state) mutable {
       state.active_playlist_id = resolved_playlist_id;
       state.active_playlist_name = name.empty() ? "PLAYLIST TOO LARGE" : std::move(name);
       state.queue.clear();
       state.queue_total_count = 0;
-      state.active_playlist_track_count = count;
-      state.active_playlist_count_known = true;
+      if (count_current) {
+        state.active_playlist_track_count = count;
+        state.active_playlist_count_known = true;
+      }
       state.queue_page_start = 0;
       state.queue_index_ready = false;
       state.queue_indexing = false;
@@ -2609,7 +2659,7 @@ bool MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
     }
   }
   model_.update([resolved_playlist_id = resolved_response_id, name = std::move(name), flags, count,
-                 tracks = std::move(tracks)](Snapshot &state) mutable {
+                 count_current, tracks = std::move(tracks)](Snapshot &state) mutable {
     const bool replaced_index_build = state.queue_indexing;
     state.active_playlist_id = resolved_playlist_id;
     if (!name.empty()) {
@@ -2630,8 +2680,10 @@ bool MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
       ++state.queue_revision;
     }
     state.queue_total_count = count;
-    state.active_playlist_track_count = count;
-    state.active_playlist_count_known = true;
+    if (count_current) {
+      state.active_playlist_track_count = count;
+      state.active_playlist_count_known = true;
+    }
     state.queue_page_start = 0;
     state.queue_index_ready = false;
     state.queue_indexing = false;

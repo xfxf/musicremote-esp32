@@ -2,6 +2,7 @@
 
 #include "music_model.hpp"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -45,6 +46,9 @@ public:
   bool load_active_identity(ActiveIdentity &identity) const;
   bool mark_active(int32_t resolved_playlist_id) const;
   void clear_active() const;
+  // A failed page read means INDEX.DAT is damaged even when its header and
+  // extent validate. Rebuild it from the next response instead of reusing it.
+  void mark_current_unusable() const;
 
 private:
   std::string path(const char *name) const;
@@ -54,6 +58,7 @@ private:
   std::string incoming_path_;
   bool internal_flash_{false};
   int64_t last_internal_promotion_us_{0};
+  mutable std::atomic<bool> current_unusable_{false};
 };
 
 } // namespace musicremote
