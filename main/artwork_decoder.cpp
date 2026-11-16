@@ -22,7 +22,9 @@ constexpr char kTag[] = "cover-art";
 constexpr size_t kMaxJpegBytes = 256 * 1024;
 constexpr uint16_t kMaxDimension = 256;
 constexpr size_t kWorkBufferBytes = 8 * 1024;
-constexpr char kCacheMagic[] = "MRA1";
+// MRA2 invalidates MRA1 entries, which firmware before issue #41 filled with
+// queue row 144's artwork instead of each track's own cover.
+constexpr char kCacheMagic[] = "MRA2";
 constexpr size_t kCacheHeaderBytes = 4 + 32;
 
 struct DecodeContext {

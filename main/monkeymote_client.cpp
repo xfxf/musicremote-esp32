@@ -2515,8 +2515,10 @@ void MonkeyMoteClient::parse_track_info(const std::vector<uint8_t> &payload) {
     cover_track_key_ = track_key;
     artwork_decoder_.select_track(track_key);
     if (!track_key.empty()) {
+      // Type 4/3 takes a queue row (-1 = the current track) and a maximum
+      // edge in pixels, not width and height.
       std::vector<uint8_t> request{3};
-      append_i32(request, 144);
+      append_i32(request, -1);
       append_i32(request, 144);
       if (cover_requests_.size() >= 32 ||
           !send_packet(4, request.data(), request.size())) {

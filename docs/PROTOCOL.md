@@ -87,9 +87,19 @@ not the per-item ID in playlist metadata (which AIMP may report as `-1`). Type
 - Type 4 subcommand 10 requests a playlist and queue. Its payload is the
   subcommand byte, playlist ID (`int32_t`, with `-1` meaning current), and an
   observed constant `int32_t` value of 1.
-- Type 4 subcommand 3 requests current-track artwork. Two following `int32_t`
-  values are the maximum width and height. The production UI requests 144 by
-  144 pixels and receives type 8 or the empty type 13 result.
+- Type 4 subcommand 3 requests artwork. The first `int32_t` is a queue row in
+  the current playlist, with `-1` meaning the current track. The second is
+  the maximum edge in pixels: `0` gives a default size, and `-1` gives the
+  original. The production UI requests `-1, 144` and receives a 144x144 type 8
+  reply, or the empty type 13 result when that item has no artwork.
+
+  Live probing on 2026-11-17 established this. Requests `(0,144)`, `(64,64)`,
+  and `(100,100)` returned the covers of queue rows 0, 64, and 100 at that
+  size; rows without artwork (128, 143, 144) returned type 13. Earlier
+  firmware sent `144, 144`, misread as width and height. It therefore showed
+  queue row 144's artwork, or none, rather than the current track's.
+  The on-disk artwork cache format moved from `MRA1` to `MRA2` so those
+  wrongly keyed entries are refetched rather than reused.
 - Type 4 subcommands 7, 16, 9, and 12 request the media-library artist,
   album, genre, and composer roots respectively. Each carries an `int32_t`
   request ID and receives type 19.
