@@ -51,7 +51,11 @@ two reserved bytes, then a raw LZ4 block. Normal messages reject output beyond
 responses of at most 4 MiB on the wire and 64 MiB decoded take a separate
 persistent-storage path: the wire body is streamed to microSD or the fitting
 internal SPIFFS fallback, the raw block is decoded with a bounded 64 KiB
-history, and only a 100-row index page is loaded into the model. Larger and
+history, and only a 100-row index page is loaded into the model. The decoded
+row count is bounded by the bytes left after the playlist header (each row
+needs at least 36: a 32-byte base and four terminators) before the record table
+is reserved, and a stored title or artist longer than the 2048-byte field cap
+marks the index unreadable rather than sizing an allocation. Larger and
 other oversized frames are drained without allocation.
 
 ## Commands
