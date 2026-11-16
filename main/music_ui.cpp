@@ -548,7 +548,9 @@ void MusicUi::create_filter_overlays() {
   lv_obj_set_size(search_keyboard_, 464, 248);
   lv_keyboard_set_textarea(search_keyboard_, search_textarea_);
   lv_obj_set_style_text_font(search_keyboard_, &lv_font_montserrat_18, LV_PART_ITEMS);
-  lv_obj_add_event_cb(search_keyboard_, event_handler, LV_EVENT_READY, this);
+  // Enter on a one-line textarea sends READY only to the textarea, while the
+  // checkmark sends it to both; listening on the textarea submits exactly once.
+  lv_obj_add_event_cb(search_textarea_, event_handler, LV_EVENT_READY, this);
   lv_obj_add_event_cb(search_keyboard_, event_handler, LV_EVENT_CANCEL, this);
   lv_obj_add_event_cb(cancel, [](lv_event_t *event) {
     auto *ui = static_cast<MusicUi *>(lv_event_get_user_data(event));
@@ -1058,7 +1060,8 @@ void MusicUi::create_settings_overlays() {
   lv_obj_set_size(setting_editor_keyboard_, 464, 184);
   lv_keyboard_set_textarea(setting_editor_keyboard_, setting_editor_textarea_);
   lv_obj_set_style_text_font(setting_editor_keyboard_, &lv_font_montserrat_18, LV_PART_ITEMS);
-  lv_obj_add_event_cb(setting_editor_keyboard_, event_handler, LV_EVENT_READY, this);
+  // As for search: READY from both Enter and the checkmark reaches the textarea.
+  lv_obj_add_event_cb(setting_editor_textarea_, event_handler, LV_EVENT_READY, this);
   lv_obj_add_event_cb(setting_editor_keyboard_, event_handler, LV_EVENT_CANCEL, this);
 
   blank_overlay_ = lv_obj_create(root_);
@@ -2075,7 +2078,7 @@ void MusicUi::handle_event(lv_event_t *event) {
     begin_setting_edit(SettingField::server_password, "AIMP PASSWORD", true);
     return;
   }
-  if (target == setting_editor_keyboard_) {
+  if (target == setting_editor_keyboard_ || target == setting_editor_textarea_) {
     finish_setting_edit(code == LV_EVENT_READY);
     return;
   }
@@ -2173,7 +2176,7 @@ void MusicUi::handle_event(lv_event_t *event) {
     }
     return;
   }
-  if (target == search_keyboard_) {
+  if (target == search_keyboard_ || target == search_textarea_) {
     if (code == LV_EVENT_CANCEL) {
       lv_obj_add_flag(search_overlay_, LV_OBJ_FLAG_HIDDEN);
       if (search_context_ == SearchContext::library) {
