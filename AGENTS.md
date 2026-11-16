@@ -75,7 +75,8 @@ Every change, including one requested in conversation, follows these steps.
    every thread.
 7. **Merge** once CI passes and review is settled. Delete the branch, update
    local `main`, and flash the merged build when the device is attached.
-   Confirm the issue closed.
+   Confirm that completed issues are closed; leave issues with remaining work
+   open.
 
 ## Code Review Rules
 

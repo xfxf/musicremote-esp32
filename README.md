@@ -150,8 +150,9 @@ rest under the rules in [`AGENTS.md`](AGENTS.md).
    cannot touch the screen, it asks the human to.
 4. **Capture evidence.** UI changes are proven with framebuffer captures
    pulled from the device's diagnostic endpoint, reviewed, and committed
-   under `artifacts/`. A CI workflow rejects UI pull requests that lack
-   before/after device images or reference a stale gallery.
+   under `artifacts/`. CI requires before/after images and refreshed artifact
+   evidence for UI-source changes, and checks README screenshot integrity.
+   Reviewers verify device provenance and gallery freshness.
 5. **Pull request.** The PR closes the issue and records commands, device
    state, and test results in the [template](.github/pull_request_template.md).
 6. **Agent code review** with ccr-local (below). The agent answers every
