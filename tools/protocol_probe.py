@@ -137,6 +137,9 @@ class Client:
         self.buffer = bytearray()
 
     def connect(self) -> None:
+        # Bytes left from a previous session (e.g. a frame cut off by a
+        # disconnect) must not be parsed ahead of the new hello.
+        self.buffer.clear()
         self.sock = socket.create_connection((self.host, self.port), self.timeout)
         self.sock.settimeout(self.timeout)
         hello = self.read_frame()
@@ -1086,7 +1089,13 @@ def restore_validation_baseline(
     test_rating: int | None,
     rating_restored: bool,
 ) -> None:
-    """Delete the scratch playlist, reapply the baseline, and verify it."""
+    """Delete the scratch playlist, reapply the baseline, and verify it.
+
+    A failed deletion does not stop the remaining restoration, but it is
+    raised once restoration has run so validation cannot pass with the
+    scratch playlist left behind.
+    """
+    failures: list[str] = []
     if test_rating is not None and not rating_restored:
         client.send(10, bytes((test_rating,)))
         client.collect(0.5)
@@ -1121,7 +1130,8 @@ def restore_validation_baseline(
             )
             notes.append("scratch playlist deletion confirmed")
         except RuntimeError as exc:
-            notes.append(f"WARNING: scratch playlist deletion not confirmed: {exc}")
+            failures.append(f"scratch playlist deletion not confirmed: {exc}")
+            notes.append(f"WARNING: {failures[-1]}")
 
     # Reapply every observable baseline field even though the scratch
     # workflow changes only playback, active playlist, position and rating.
@@ -1143,14 +1153,21 @@ def restore_validation_baseline(
             playback_command(client, 3, 0)
     elif baseline_playback.state in (1, 2, 3):
         playback_command(client, baseline_playback.state, 0)
-    restored_frames = client.collect(1.5) + request_playlist(client, baseline_playlist)
+    # Query the current playlist (-1), not the baseline ID: a by-ID reply
+    # echoes that ID and would hide a failed reactivation.
+    restored_frames = client.collect(1.5) + request_playlist(client, -1)
+    if latest_playback(restored_frames) is None:
+        restored_frames += client.collect(1.5)
     restored = latest_playback(restored_frames)
     restored_queue_index = latest_queue_index(restored_frames)
     restored_playlist = resolved_current_playlist_id(
         restored_frames + request_playlists(client)
     )
     if restored is None:
-        notes.append("WARNING: final playback state was not published")
+        failures.append(
+            "AIMP baseline restoration did not verify: "
+            "final playback state was not published"
+        )
     else:
         notes.append(
             "restored "
@@ -1172,16 +1189,21 @@ def restore_validation_baseline(
             or restored_queue_index != baseline_queue_index
             or not position_restored
         ):
-            raise RuntimeError("AIMP baseline restoration did not verify")
+            failures.append("AIMP baseline restoration did not verify")
     if baseline_track is not None:
         notes.append(
             f"baseline track rating captured before run={baseline_track.rating}; "
             "scratch-item rating restoration was verified separately"
         )
+    if failures:
+        raise RuntimeError("; ".join(failures))
 
 
 def cleanup_validation_playlists(client: Client, restore_playlist_id: int) -> list[str]:
     """Remove only probe-owned scratch playlists left by an interrupted run."""
+    if restore_playlist_id < 0:
+        # activate_and_wait() can only confirm a concrete playlist ID.
+        raise RuntimeError("cleanup-validation requires a non-negative --playlist-id")
     notes: list[str] = []
     frames = request_playlists(client)
     scratch_ids = sorted(

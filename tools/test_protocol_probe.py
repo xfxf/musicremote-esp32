@@ -1,5 +1,7 @@
 import struct
+import types
 import unittest
+from unittest import mock
 
 import protocol_probe as probe
 
@@ -438,6 +440,185 @@ class AdvancedControlsFrameTest(unittest.TestCase):
         self.assertGreaterEqual(client.confirmation_queries, 2)
         self.assertEqual(client.equalizer, baseline_equalizer)
         self.assertTrue(any("equalizer preamp confirmed" in note for note in notes))
+
+
+class FakeClock:
+    """Monotonic clock that advances only when the fake client collects."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+def playlist_root_frame(playlists: dict[int, tuple[str, int]]) -> probe.Frame:
+    payload = struct.pack("<I", len(playlists)) + bytes(8)
+    for playlist_id, (name, count) in playlists.items():
+        payload += struct.pack("<iiHH", playlist_id, count, 0, 0) + name.encode() + b"\0"
+    return probe.Frame(41, payload)
+
+
+def playlist_contents_frame(playlist_id: int, name: str, count: int) -> probe.Frame:
+    encoded = name.encode()
+    return probe.Frame(
+        9, struct.pack("<IiHB", count, playlist_id, len(encoded), 0) + encoded + b"\0"
+    )
+
+
+class FakeAimp:
+    """Just enough AIMP to exercise the mutation-validation finalizer."""
+
+    def __init__(self, clock: FakeClock) -> None:
+        self.clock = clock
+        self.playlists = {
+            7: ("Baseline", 3),
+            99: ("ESP validation 1", 1),
+        }
+        self.active = 99
+        self.playback = probe.PlaybackSnapshot(12_000, 2, False, 0, 32_768)
+        self.queue_index = 1
+        self.accept_activation = True
+        self.accept_delete = True
+        self.publish_playback = True
+        self.pending: list[probe.Frame] = []
+        self.sent: list[tuple[int, bytes]] = []
+
+    def send(self, message_type: int, payload: bytes = b"") -> None:
+        self.sent.append((message_type, payload))
+        if message_type == 7 and payload[0] == 12 and self.accept_activation:
+            self.active = struct.unpack_from("<i", payload, 1)[0]
+        elif message_type == 7 and payload[0] == 16 and self.accept_delete:
+            self.playlists.pop(struct.unpack_from("<i", payload, 1)[0], None)
+        elif message_type == 4 and payload[0] == 13:
+            self.pending.append(playlist_root_frame(self.playlists))
+        elif message_type == 4 and payload[0] == 10:
+            requested = struct.unpack_from("<i", payload, 1)[0]
+            # Like AIMP, a by-ID reply echoes the requested ID; -1 asks for
+            # the active playlist and is answered with the -1 sentinel.
+            shown = self.active if requested == -1 else requested
+            name, count = self.playlists[shown]
+            self.pending.append(playlist_contents_frame(requested, name, count))
+
+    def collect(self, seconds: float = 0.8) -> list[probe.Frame]:
+        self.clock.now += seconds
+        frames = self.pending
+        self.pending = []
+        if self.publish_playback:
+            p = self.playback
+            frames.append(
+                probe.Frame(
+                    6,
+                    struct.pack(
+                        "<iBBBBH", p.position_ms, p.state, int(p.shuffle),
+                        p.repeat, 0, p.volume,
+                    ),
+                )
+            )
+            frames.append(probe.Frame(11, struct.pack("<i", self.queue_index)))
+        return frames
+
+
+class RestoreValidationBaselineTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.clock = FakeClock()
+        patcher = mock.patch.object(
+            probe, "time", types.SimpleNamespace(monotonic=self.clock.monotonic)
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.aimp = FakeAimp(self.clock)
+
+    def restore(self) -> list[str]:
+        notes: list[str] = []
+        probe.restore_validation_baseline(
+            self.aimp,
+            notes,
+            baseline_playback=probe.PlaybackSnapshot(12_000, 2, False, 0, 32_768),
+            baseline_playlist=7,
+            baseline_queue_index=1,
+            baseline_track=None,
+            scratch_id=99,
+            test_rating=None,
+            rating_restored=True,
+        )
+        return notes
+
+    def test_confirmed_restoration_passes(self) -> None:
+        notes = self.restore()
+        self.assertIn("scratch playlist deletion confirmed", notes)
+        self.assertNotIn(99, self.aimp.playlists)
+        self.assertTrue(any(note.startswith("restored playlist=7") for note in notes))
+
+    def test_unconfirmed_deletion_fails_after_restoring(self) -> None:
+        self.aimp.accept_delete = False
+        with self.assertRaisesRegex(RuntimeError, "deletion not confirmed"):
+            self.restore()
+        # Restoration still ran: volume, shuffle and repeat were reapplied.
+        self.assertIn((7, struct.pack("<BHH", 6, 128, 32_768)), self.aimp.sent)
+        self.assertIn((7, struct.pack("<Bi", 4, 0)), self.aimp.sent)
+
+    def test_inactive_baseline_playlist_fails(self) -> None:
+        # Reactivation silently fails, so another playlist stays active.
+        self.aimp.accept_activation = False
+        self.aimp.playlists[42] = ("Elsewhere", 5)
+        self.aimp.active = 42
+        with self.assertRaisesRegex(
+            RuntimeError, "^AIMP baseline restoration did not verify$"
+        ):
+            self.restore()
+
+    def test_missing_final_playback_state_fails(self) -> None:
+        self.aimp.publish_playback = False
+        with self.assertRaisesRegex(
+            RuntimeError, "final playback state was not published"
+        ):
+            self.restore()
+
+
+class CleanupValidationTest(unittest.TestCase):
+    def test_requires_concrete_restore_playlist_before_mutating(self) -> None:
+        client = FakeAimp(FakeClock())
+        with self.assertRaisesRegex(RuntimeError, "non-negative --playlist-id"):
+            probe.cleanup_validation_playlists(client, -1)
+        self.assertEqual(client.sent, [])
+
+
+class FakeSocket:
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.chunks = list(chunks)
+        self.sent: list[bytes] = []
+
+    def settimeout(self, _timeout: float) -> None:
+        pass
+
+    def recv(self, _size: int) -> bytes:
+        return self.chunks.pop(0) if self.chunks else b""
+
+    def sendall(self, data: bytes) -> None:
+        self.sent.append(data)
+
+    def close(self) -> None:
+        pass
+
+
+class ClientReconnectTest(unittest.TestCase):
+    def test_reconnect_discards_partial_frame_from_previous_session(self) -> None:
+        hello = probe.packet(1, bytes(11))
+        auth = probe.packet(3, b"\x01")
+        truncated = probe.packet(48, bytes(14))[:20]
+        sockets = [FakeSocket([hello, auth, truncated]), FakeSocket([hello, auth])]
+        with mock.patch.object(
+            probe.socket, "create_connection", side_effect=lambda *_: sockets.pop(0)
+        ):
+            client = probe.Client("aimp.invalid", 3333, "")
+            client.connect()
+            with self.assertRaisesRegex(RuntimeError, "connection closed"):
+                client.read_frame()
+            self.assertTrue(client.buffer)
+            client.close()
+            client.connect()
+        self.assertEqual(client.buffer, bytearray())
 
 
 if __name__ == "__main__":
