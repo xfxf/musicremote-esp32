@@ -156,7 +156,11 @@ count is authoritative only when it comes from a current response to a request
 sent after the latest queue mutation or type 12/17/30/35 notification. Pages
 read from the local index, throttled (stale) index builds, and responses to
 earlier requests never restore it, and duplicate refreshes are coalesced only
-with a request of the same mutation generation. Stop and pause cancel a
+with a request of the same mutation generation. A response to an earlier
+request, small or streamed, also publishes no rows, playlist ID, or active
+marker and keeps the mutation guard: after a switch its rows would play in the
+newly active playlist, and the mutation has already queued a newer request.
+Stop and pause cancel a
 deferred library play. The firmware never clears the user's current playlist as a side effect of tapping a library
 result.
 - Type 10 sets a one-byte rating from 0 through 5.

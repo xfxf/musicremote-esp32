@@ -1011,6 +1011,14 @@ bool MonkeyMoteClient::build_streamed_index() {
       });
   unlink(playlist_index_.incoming_path().c_str());
   bool superseded = index_superseded_.exchange(false);
+  // A playlist switch or queue mutation sent while this frame was still being
+  // received cannot set index_superseded_, because index_building_ is false
+  // until the frame is complete. Its generation shows that these rows predate
+  // it. Every such mutation already enqueues a newer request, so publish
+  // nothing and keep the mutation guard until that response arrives.
+  const bool stale_generation =
+      response_token &&
+      response_token->mutation_generation != playlist_mutation_generation_.load();
   if (response_token && response_token->confirms_library_play) {
     Command completion{CommandType::streamed_playlist_result};
     completion.first = model_.read([&result](const Snapshot &state) {
@@ -1024,7 +1032,9 @@ bool MonkeyMoteClient::build_streamed_index() {
                             : -1;
     // A throttled (stale) build describes the previous source, not this
     // response, so it cannot confirm a cached or library play.
-    completion.text = result.success && !result.stale && !superseded ? "valid" : "invalid";
+    completion.text = result.success && !result.stale && !superseded && !stale_generation
+                          ? "valid"
+                          : "invalid";
     completion.request_token = response_token->id;
     completion.stream_generation = response_generation;
     enqueue(std::move(completion));
@@ -1048,7 +1058,23 @@ bool MonkeyMoteClient::build_streamed_index() {
   } else {
     ESP_LOGI(kTag, "Indexed %" PRIu32 " tracks for playlist %" PRId32, result.count,
              result.playlist_id);
-    if (!superseded && result.stale) {
+    if (!superseded && stale_generation) {
+      ESP_LOGI(kTag, "Discarding playlist index that predates a newer request");
+      playlist_index_.clear_active();
+      model_.update([this](Snapshot &state) {
+        // A newer small response may already have published its rows.
+        if (!state.queue_indexing || index_superseded_) {
+          return;
+        }
+        state.queue.clear();
+        state.queue_total_count = 0;
+        state.active_playlist_count_known = false;
+        state.queue_page_start = 0;
+        state.queue_index_ready = false;
+        ++state.queue_revision;
+        state.status = "REFRESHING LIBRARY";
+      });
+    } else if (!superseded && result.stale) {
       using_persisted_playlist_cache_ = false;
       playlist_index_.clear_active();
       // A throttled build keeps the previous INDEX.DAT for reuse by source
@@ -2580,17 +2606,39 @@ bool MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
   // A response to a request sent before the latest queue mutation describes
   // the pre-mutation playlist; its count must not become authoritative.
   bool count_current = false;
+  // Its rows also belong to the pre-mutation playlist: after a switch, a tap
+  // on one would play that row in the newly active playlist.
+  bool stale_generation = false;
   {
     std::lock_guard lock(playlist_requests_mutex_);
     if (!playlist_requests_.empty()) {
       requested_playlist_id = playlist_requests_.front().playlist_id;
       count_current = playlist_requests_.front().mutation_generation ==
                       playlist_mutation_generation_.load();
+      stale_generation = !count_current;
     }
   }
   if (resolved_response_id < 0 && requested_playlist_id >= 0) {
     resolved_response_id = requested_playlist_id;
   }
+  // Every mutation that advances the generation already enqueues a newer
+  // request. Publish no rows, playlist ID, or trust state from this response
+  // and keep the mutation guard until that request is answered.
+  const auto discard_stale_response = [&]() {
+    model_.update([](Snapshot &state) {
+      state.queue.clear();
+      state.queue_total_count = 0;
+      state.active_playlist_count_known = false;
+      state.queue_page_start = 0;
+      state.queue_index_ready = false;
+      state.queue_indexing = true;
+      state.queue_filter_active = false;
+      state.queue_filter_label.clear();
+      ++state.queue_revision;
+      state.status = "REFRESHING LIBRARY";
+    });
+    consume_playlist_response(true, resolved_response_id, count);
+  };
   if (count > 10000) {
     // Oversized queues are not retained, but still validate the complete
     // record structure before allowing an untrusted frame to alter the model.
@@ -2616,6 +2664,10 @@ bool MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
     }
     queue_filter_active_ = false;
     queue_filter_.clear();
+    if (stale_generation) {
+      discard_stale_response();
+      return true;
+    }
     model_.update([resolved_playlist_id = resolved_response_id, count, count_current,
                    name = std::move(name)](Snapshot &state) mutable {
       state.active_playlist_id = resolved_playlist_id;
@@ -2677,6 +2729,10 @@ bool MonkeyMoteClient::parse_playlist(const std::vector<uint8_t> &payload) {
     if (tracks.size() < 1000) {
       tracks.push_back(std::move(track));
     }
+  }
+  if (stale_generation) {
+    discard_stale_response();
+    return true;
   }
   model_.update([resolved_playlist_id = resolved_response_id, name = std::move(name), flags, count,
                  count_current, tracks = std::move(tracks)](Snapshot &state) mutable {
