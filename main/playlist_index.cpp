@@ -6,10 +6,14 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string_view>
+#include <tuple>
+#include <utility>
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "esp_heap_caps.h"
 #include "esp_vfs_fat.h"
 #include "esp_spiffs.h"
 #include "esp_timer.h"
@@ -26,9 +30,16 @@ constexpr uint16_t kActiveVersion = 1;
 constexpr uint32_t kMaxDecodedBytes = 64 * 1024 * 1024;
 constexpr size_t kHistoryBytes = 64 * 1024;
 constexpr size_t kCopyBufferBytes = 4096;
+// stdio buffer for the build's sequential files: fewer, larger FAT transfers.
+constexpr size_t kBuildFileBuffer = 16 * 1024;
+// Rebuild progress, in thousandths, weighted by measured phase durations.
+constexpr uint32_t kProgressTotal = 1000;
+constexpr uint32_t kDecodeWeight = 171;
+constexpr uint32_t kRowsWeight = 678;
+constexpr uint32_t kSearchWeight = 148;
 constexpr uint16_t kMaxStoredField = 2048;
 constexpr int64_t kInternalFlashRebuildIntervalUs = 15LL * 60 * 1000 * 1000;
-constexpr uint64_t kFnvOffset = 14695981039346656037ULL;
+constexpr uint64_t kFnvOffset = PlaylistIndex::kSourceHashSeed;
 constexpr uint64_t kFnvPrime = 1099511628211ULL;
 
 #pragma pack(push, 1)
@@ -152,6 +163,34 @@ private:
   std::vector<uint8_t> buffer_;
   size_t cursor_{0};
   size_t available_{0};
+};
+
+// A stdio buffer for one of the build's sequential files. Internal,
+// DMA-capable memory lets the SD driver move whole multi-sector runs; a PSRAM
+// buffer is bounced through 512 bytes at a time, which made the rows pass
+// write at about 80 KB/s. Falls back to stdio's own buffer when internal
+// memory is short.
+class BuildFileBuffer {
+public:
+  BuildFileBuffer() {
+    if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL) >= kInternalReserve + kBuildFileBuffer) {
+      data_ = static_cast<char *>(
+          heap_caps_malloc(kBuildFileBuffer, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+    }
+  }
+  ~BuildFileBuffer() { heap_caps_free(data_); }
+  BuildFileBuffer(const BuildFileBuffer &) = delete;
+  BuildFileBuffer &operator=(const BuildFileBuffer &) = delete;
+
+  // The file must be closed before this buffer is destroyed.
+  void attach(FILE *file) const {
+    std::setvbuf(file, data_, _IOFBF, kBuildFileBuffer);
+  }
+  char *data() const { return data_; }
+
+private:
+  static constexpr size_t kInternalReserve = 64 * 1024;
+  char *data_{nullptr};
 };
 
 // Receives each decoded chunk in order; returning false aborts the decode.
@@ -430,6 +469,72 @@ bool load_track(FILE *file, const IndexHeader &header, uint32_t row, Track &trac
          load_string(record.album_offset, record.album_length, track.album);
 }
 
+// Loads consecutive rows with two reads: the fixed records, then the string
+// span they reference (title, artist, and album of neighbouring rows are
+// adjacent). Each seek in a large FAT file walks its cluster chain, so the
+// per-row path took about 2 s for a 100-row page on microSD. Falls back to
+// per-row reads when the span is unexpectedly large.
+bool load_tracks(FILE *file, const IndexHeader &header, uint32_t start, uint32_t count,
+                 std::vector<Track> &tracks) {
+  constexpr uint64_t kMaxBulkSpan = 128 * 1024;
+  std::vector<IndexRecord> records(count);
+  const uint64_t record_position = static_cast<uint64_t>(header.records_offset) +
+                                   static_cast<uint64_t>(start) * sizeof(IndexRecord);
+  if (count == 0) {
+    return true;
+  }
+  if (start >= header.count || count > header.count - start || record_position > LONG_MAX ||
+      std::fseek(file, static_cast<long>(record_position), SEEK_SET) != 0 ||
+      !read_exact(file, records.data(), records.size() * sizeof(IndexRecord))) {
+    return false;
+  }
+  uint64_t span_begin = UINT64_MAX;
+  uint64_t span_end = 0;
+  for (const IndexRecord &record : records) {
+    for (const auto &[offset, length] : {std::pair{record.title_offset, record.title_length},
+                                        std::pair{record.artist_offset, record.artist_length},
+                                        std::pair{record.album_offset, record.album_length}}) {
+      // The builder never stores a field longer than kMaxStoredField. Reject
+      // a corrupt record before it can size an allocation.
+      if (length > kMaxStoredField ||
+          static_cast<uint64_t>(offset) + length > header.strings_size) {
+        return false;
+      }
+      span_begin = std::min<uint64_t>(span_begin, offset);
+      span_end = std::max<uint64_t>(span_end, static_cast<uint64_t>(offset) + length);
+    }
+  }
+  if (span_end - span_begin > kMaxBulkSpan) {
+    for (uint32_t i = 0; i < count; ++i) {
+      Track track;
+      if (!load_track(file, header, start + i, track)) {
+        return false;
+      }
+      tracks.push_back(std::move(track));
+    }
+    return true;
+  }
+  std::vector<char> span(static_cast<size_t>(span_end - span_begin));
+  const uint64_t span_position = static_cast<uint64_t>(header.strings_offset) + span_begin;
+  if (span_position > LONG_MAX ||
+      std::fseek(file, static_cast<long>(span_position), SEEK_SET) != 0 ||
+      !read_exact(file, span.data(), span.size())) {
+    return false;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    const IndexRecord &record = records[i];
+    Track track;
+    track.index = record.item_id;
+    track.queue_row = static_cast<int32_t>(start + i);
+    track.duration_ms = record.duration_ms;
+    track.title.assign(span.data() + (record.title_offset - span_begin), record.title_length);
+    track.artist.assign(span.data() + (record.artist_offset - span_begin), record.artist_length);
+    track.album.assign(span.data() + (record.album_offset - span_begin), record.album_length);
+    tracks.push_back(std::move(track));
+  }
+  return true;
+}
+
 } // namespace
 
 PlaylistIndex::PlaylistIndex(std::string directory, bool internal_flash)
@@ -557,8 +662,13 @@ void PlaylistIndex::clear_active() const {
 
 void PlaylistIndex::mark_current_unusable() const { current_unusable_ = true; }
 
-PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &progress) {
+PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(
+    const Progress &progress, std::optional<uint64_t> known_source_hash) {
   BuildResult result;
+  // Declared first: every file using them is closed before they are freed.
+  const BuildFileBuffer raw_buffer;
+  const BuildFileBuffer index_buffer;
+  const BuildFileBuffer search_buffer;
   if (!available()) {
     result.error = "NO STORAGE";
     return result;
@@ -570,6 +680,8 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
     result.error = "WIRE FILE MISSING";
     return result;
   }
+  // INDEX.TMP is opened only after WIRE.TMP is closed; they share a buffer.
+  index_buffer.attach(wire);
   std::array<uint8_t, 10> envelope{};
   struct stat wire_stat {};
   if (!read_exact(wire, envelope.data(), envelope.size()) ||
@@ -586,8 +698,14 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
     result.error = "UNSUPPORTED LARGE FRAME";
     return result;
   }
-  uint64_t source_hash = 0;
-  if (!hash_file(wire, source_hash) || std::fseek(wire, envelope.size(), SEEK_SET) != 0) {
+  const auto elapsed_ms = [](int64_t since_us) {
+    return static_cast<uint32_t>((esp_timer_get_time() - since_us) / 1000);
+  };
+  const int64_t hash_started_us = esp_timer_get_time();
+  uint64_t source_hash = known_source_hash.value_or(0);
+  const bool hashed = known_source_hash.has_value() || hash_file(wire, source_hash);
+  result.source_hash_ms = elapsed_ms(hash_started_us);
+  if (!hashed || std::fseek(wire, envelope.size(), SEEK_SET) != 0) {
     std::fclose(wire);
     result.error = "STORAGE READ FAILED";
     return result;
@@ -630,6 +748,7 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
   const std::string stored_name(current_header.name,
                                 strnlen(current_header.name, sizeof(current_header.name)));
   if (valid_current) {
+    const int64_t check_started_us = esp_timer_get_time();
     ContentDigest digest;
     bool incompatible = false;
     const auto compare = [&](const uint8_t *data, size_t size) {
@@ -647,6 +766,7 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
     };
     const bool decoded =
         decompress_lz4(wire, static_cast<size_t>(wire_stat.st_size) - 10, decoded_size, compare);
+    result.content_check_ms = elapsed_ms(check_started_us);
     if (decoded && !incompatible && digest.header_known() &&
         digest.hash() == current_header.content_hash) {
       std::fclose(wire);
@@ -710,18 +830,27 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
     result.error = internal_flash_ ? "FLASH INDEX TOO LARGE" : "SD CARD FULL";
     return result;
   }
+  const int64_t rebuild_started_us = esp_timer_get_time();
   FILE *raw = std::fopen(raw_path.c_str(), "wb");
   if (raw == nullptr) {
     std::fclose(wire);
     result.error = "INDEX FILE OPEN FAILED";
     return result;
   }
+  raw_buffer.attach(raw);
   ContentDigest digest;
+  uint64_t decoded_bytes = 0;
   const bool decoded = decompress_lz4(
       wire, static_cast<size_t>(wire_stat.st_size) - 10, decoded_size,
       [&](const uint8_t *data, size_t size) {
+        decoded_bytes += size;
+        if (progress && (decoded_bytes % (64 * 1024)) < size) {
+          progress(static_cast<uint32_t>(decoded_bytes * kDecodeWeight / decoded_size),
+                   kProgressTotal);
+        }
         return digest.add(data, size) && write_exact(raw, data, size);
       });
+  result.decode_ms = elapsed_ms(rebuild_started_us);
   const uint64_t content_hash = digest.hash();
   bool read_failed = std::ferror(wire) != 0;
   bool write_failed = std::ferror(raw) != 0 || std::fflush(raw) != 0;
@@ -741,11 +870,15 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
   unlink(incoming_path_.c_str());
   raw = std::fopen(raw_path.c_str(), "rb");
   FILE *index = nullptr;
+  FILE *search = nullptr;
+  const std::string search_path = path("SEA.TMP");
+  int64_t phase_started_us = esp_timer_get_time();
   std::array<uint8_t, 11> playlist_header{};
   if (raw == nullptr || !read_exact(raw, playlist_header.data(), playlist_header.size())) {
     result.error = "INDEX FILE OPEN FAILED";
     goto cleanup;
   }
+  raw_buffer.attach(raw);
   result.count = read_u32(playlist_header.data());
   result.playlist_id = read_i32(playlist_header.data() + 4);
   {
@@ -756,10 +889,16 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
     }
   }
   index = std::fopen(index_path.c_str(), "w+b");
-  if (index == nullptr) {
+  // Search entries are written sequentially to their own file during the row
+  // pass, then appended once. Gathering them from INDEX.TMP afterwards took
+  // 48,321 seeks in a large FAT file (about 58 s for NAS:Music).
+  search = std::fopen(search_path.c_str(), "w+b");
+  if (index == nullptr || search == nullptr) {
     result.error = "INDEX FILE OPEN FAILED";
     goto cleanup;
   }
+  index_buffer.attach(index);
+  search_buffer.attach(search);
   {
     // Every wire row needs a 32-byte base and four field terminators. Bound the
     // untrusted count by the decoded bytes left before reserving its table.
@@ -804,10 +943,12 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
       vTaskDelay(1);
     }
 
-    constexpr uint32_t kRecordBatch = 128;
+    // Each flush seeks back to the record table and forward to the end.
+    constexpr uint32_t kRecordBatch = 1024;
     std::vector<IndexRecord> record_batch;
     record_batch.reserve(kRecordBatch);
     uint32_t batch_start = 0;
+    uint64_t search_bytes = 0;
     auto flush_records = [&]() {
       if (record_batch.empty()) {
         return true;
@@ -866,12 +1007,23 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
     record.album_offset -= header.strings_offset;
     record.key_offset -= header.strings_offset;
     record_batch.push_back(record);
+    {
+      const SearchEntry entry{.queue_row = row, .key_length = record.key_length};
+      if (!write_exact(search, &entry, sizeof(entry)) ||
+          !write_exact(search, key.data(), key.size())) {
+        result.error = "STORAGE WRITE FAILED";
+        goto cleanup;
+      }
+      search_bytes += sizeof(entry) + key.size();
+    }
     if (record_batch.size() == kRecordBatch && !flush_records()) {
       result.error = "STORAGE WRITE FAILED";
       goto cleanup;
     }
     if (progress && (row % 512 == 0 || row + 1 == result.count)) {
-      progress(row + 1, result.count);
+      progress(kDecodeWeight + static_cast<uint32_t>(static_cast<uint64_t>(row + 1) *
+                                                     kRowsWeight / result.count),
+               kProgressTotal);
     }
     if ((row & 0xff) == 0) {
       vTaskDelay(1);
@@ -898,58 +1050,51 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
     header.strings_size = static_cast<uint32_t>(strings_end - header.strings_offset);
     header.search_offset = static_cast<uint32_t>(strings_end);
 
-    struct SearchItem {
-      SearchEntry entry;
-      std::string key;
-    };
-    std::vector<IndexRecord> records(kRecordBatch);
-    std::vector<SearchItem> search_batch;
-    search_batch.reserve(kRecordBatch);
+    result.rows_ms = elapsed_ms(phase_started_us);
+    phase_started_us = esp_timer_get_time();
     uint64_t search_size = 0;
-    for (uint32_t start = 0; start < result.count; start += kRecordBatch) {
-      const uint32_t count = std::min<uint32_t>(kRecordBatch, result.count - start);
-      const uint64_t record_position = static_cast<uint64_t>(header.records_offset) +
-                                       static_cast<uint64_t>(start) * sizeof(IndexRecord);
-      if (record_position > LONG_MAX ||
-          std::fseek(index, static_cast<long>(record_position), SEEK_SET) != 0 ||
-          !read_exact(index, records.data(), count * sizeof(IndexRecord))) {
-        result.error = "STORAGE READ FAILED";
-        goto cleanup;
+    {
+      // RAW.TMP is closed by now, so its internal buffer carries the copy.
+      std::vector<uint8_t> fallback;
+      if (raw_buffer.data() == nullptr) {
+        fallback.resize(kBuildFileBuffer);
       }
-      search_batch.clear();
-      for (uint32_t i = 0; i < count; ++i) {
-        const IndexRecord &record = records[i];
-        if (static_cast<uint64_t>(record.key_offset) + record.key_length >
-            header.strings_size) {
-          result.error = "INDEX SIZE FAILED";
-          goto cleanup;
-        }
-        const uint64_t key_position =
-            static_cast<uint64_t>(header.strings_offset) + record.key_offset;
-        SearchItem item{{.queue_row = start + i, .key_length = record.key_length},
-                        std::string(record.key_length, '\0')};
-        if (key_position > LONG_MAX ||
-            std::fseek(index, static_cast<long>(key_position), SEEK_SET) != 0 ||
-            !read_exact(index, item.key.data(), item.key.size())) {
-          result.error = "STORAGE READ FAILED";
-          goto cleanup;
-        }
-        search_batch.push_back(std::move(item));
-      }
-      if (std::fseek(index, 0, SEEK_END) != 0) {
+      uint8_t *const copy = raw_buffer.data() != nullptr
+                                ? reinterpret_cast<uint8_t *>(raw_buffer.data())
+                                : fallback.data();
+      if (std::fflush(search) != 0 || std::fseek(search, 0, SEEK_SET) != 0 ||
+          std::fseek(index, 0, SEEK_END) != 0) {
         result.error = "STORAGE WRITE FAILED";
         goto cleanup;
       }
-      for (const auto &item : search_batch) {
-        if (!write_exact(index, &item.entry, sizeof(item.entry)) ||
-            !write_exact(index, item.key.data(), item.key.size())) {
+      while (true) {
+        const size_t count = std::fread(copy, 1, kBuildFileBuffer, search);
+        if (count != 0 && !write_exact(index, copy, count)) {
           result.error = "STORAGE WRITE FAILED";
           goto cleanup;
         }
-        search_size += sizeof(item.entry) + item.key.size();
+        search_size += count;
+        if (progress && search_bytes != 0) {
+          progress(kDecodeWeight + kRowsWeight +
+                       static_cast<uint32_t>(std::min(search_size, search_bytes) *
+                                             kSearchWeight / search_bytes),
+                   kProgressTotal);
+        }
+        if (count < kBuildFileBuffer) {
+          break;
+        }
+        vTaskDelay(1);
       }
-      vTaskDelay(1);
+      if (std::ferror(search) != 0 || search_size != search_bytes) {
+        result.error = "STORAGE READ FAILED";
+        goto cleanup;
+      }
+      std::fclose(search);
+      search = nullptr;
+      unlink(search_path.c_str());
     }
+    result.search_ms = elapsed_ms(phase_started_us);
+    phase_started_us = esp_timer_get_time();
     if (search_size > UINT32_MAX) {
       result.error = "INDEX SIZE FAILED";
       goto cleanup;
@@ -966,6 +1111,9 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
       result.error = "STORAGE WRITE FAILED";
       goto cleanup;
     }
+  }
+  if (progress) {
+    progress(kDecodeWeight + kRowsWeight + kSearchWeight, kProgressTotal);
   }
   {
     const std::string final = path("INDEX.DAT");
@@ -987,11 +1135,18 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
   if (internal_flash_) {
     last_internal_promotion_us_ = esp_timer_get_time();
   }
+  result.finalize_ms = elapsed_ms(phase_started_us);
+  if (progress) {
+    progress(kProgressTotal, kProgressTotal);
+  }
 
 cleanup:
+  result.rebuild_ms = elapsed_ms(rebuild_started_us);
   if (raw != nullptr) std::fclose(raw);
   if (index != nullptr) std::fclose(index);
+  if (search != nullptr) std::fclose(search);
   unlink(raw_path.c_str());
+  unlink(path("SEA.TMP").c_str());
   if (!result.success) unlink(index_path.c_str());
   return result;
 }
@@ -1020,14 +1175,10 @@ bool PlaylistIndex::load_page(uint32_t start, uint32_t limit, std::vector<Track>
   }
   const uint32_t count = std::min(limit, total - start);
   tracks.reserve(count);
-  for (uint32_t i = 0; i < count; ++i) {
-    Track track;
-    if (!load_track(file, header, start + i, track)) {
-      std::fclose(file);
-      tracks.clear();
-      return false;
-    }
-    tracks.push_back(std::move(track));
+  if (!load_tracks(file, header, start, count, tracks)) {
+    std::fclose(file);
+    tracks.clear();
+    return false;
   }
   std::fclose(file);
   return true;
@@ -1036,10 +1187,15 @@ bool PlaylistIndex::load_page(uint32_t start, uint32_t limit, std::vector<Track>
 bool PlaylistIndex::search_page(std::string_view query, SearchMode mode, uint32_t start,
                                 uint32_t limit, std::vector<Track> &tracks,
                                 uint32_t &total, int32_t &playlist_id,
-                                std::string &name) const {
+                                std::string &name, const Progress &progress) const {
   tracks.clear();
   total = 0;
+  // Declared before the file, which is closed before this buffer is freed.
+  const BuildFileBuffer stream_buffer;
   FILE *file = std::fopen(path("INDEX.DAT").c_str(), "rb");
+  if (file != nullptr) {
+    stream_buffer.attach(file);
+  }
   IndexHeader header{};
   struct stat file_stat {};
   if (file == nullptr || !read_exact(file, &header, sizeof(header)) || !valid_header(header) ||
@@ -1057,14 +1213,50 @@ bool PlaylistIndex::search_page(std::string_view query, SearchMode mode, uint32_
     std::fclose(file);
     return false;
   }
+  // The search area is scanned sequentially through one large buffer, with
+  // no allocation per entry.
+  // The stream's 16 KiB internal DMA buffer takes multi-sector SD reads; the
+  // scan copies out of it in small chunks. Measured on the board: reading
+  // 16 KiB at a time straight into PSRAM took about 5 s for the 48k-row area,
+  // and an unbuffered stream 81 s.
+  constexpr size_t kScanBuffer = 4 * 1024;
+  std::vector<uint8_t> scan_buffer(kScanBuffer);
+  uint8_t *const buffer = scan_buffer.data();
+  size_t buffered = 0;
+  size_t cursor = 0;
+  uint32_t remaining = header.search_size;
+  const auto take = [&](void *out, size_t size) {
+    auto *target = static_cast<uint8_t *>(out);
+    while (size != 0) {
+      if (cursor == buffered) {
+        const size_t want = std::min<size_t>(kScanBuffer, remaining);
+        if (want == 0) {
+          return false;
+        }
+        buffered = std::fread(buffer, 1, want, file);
+        cursor = 0;
+        if (buffered == 0) {
+          return false;
+        }
+        remaining -= static_cast<uint32_t>(buffered);
+      }
+      const size_t chunk = std::min(size, buffered - cursor);
+      std::memcpy(target, buffer + cursor, chunk);
+      cursor += chunk;
+      target += chunk;
+      size -= chunk;
+    }
+    return true;
+  };
   std::vector<uint32_t> rows;
   rows.reserve(limit);
+  std::string key;
+  key.reserve(kMaxStoredField);
   uint32_t consumed = 0;
   uint32_t entries = 0;
   while (consumed < header.search_size) {
     SearchEntry entry{};
-    if (header.search_size - consumed < sizeof(entry) ||
-        !read_exact(file, &entry, sizeof(entry))) {
+    if (header.search_size - consumed < sizeof(entry) || !take(&entry, sizeof(entry))) {
       std::fclose(file);
       return false;
     }
@@ -1074,8 +1266,8 @@ bool PlaylistIndex::search_page(std::string_view query, SearchMode mode, uint32_
       std::fclose(file);
       return false;
     }
-    std::string key(entry.key_length, '\0');
-    if (!read_exact(file, key.data(), key.size())) {
+    key.resize(entry.key_length);
+    if (!take(key.data(), key.size())) {
       std::fclose(file);
       return false;
     }
@@ -1095,7 +1287,10 @@ bool PlaylistIndex::search_page(std::string_view query, SearchMode mode, uint32_
       }
       ++total;
     }
-    if ((entries & 0x3ff) == 0) {
+    if ((entries & 0xfff) == 0) {
+      if (progress) {
+        progress(entries, header.count);
+      }
       vTaskDelay(1);
     }
   }
@@ -1103,12 +1298,47 @@ bool PlaylistIndex::search_page(std::string_view query, SearchMode mode, uint32_
     std::fclose(file);
     return false;
   }
-  for (const uint32_t row : rows) {
-    Track track;
-    if (!load_track(file, header, row, track)) {
+  if (progress) {
+    progress(entries, header.count);
+  }
+  // Matching rows ascend, and so do their records and strings: read every
+  // record first, then every string, so each seek moves forward. A backward
+  // seek in a large FAT file walks its cluster chain from the start.
+  std::vector<IndexRecord> records(rows.size());
+  for (size_t i = 0; i < rows.size(); ++i) {
+    const uint64_t position = static_cast<uint64_t>(header.records_offset) +
+                              static_cast<uint64_t>(rows[i]) * sizeof(IndexRecord);
+    if (position > LONG_MAX || std::fseek(file, static_cast<long>(position), SEEK_SET) != 0 ||
+        !read_exact(file, &records[i], sizeof(IndexRecord))) {
       std::fclose(file);
-      tracks.clear();
       return false;
+    }
+  }
+  tracks.reserve(rows.size());
+  for (size_t i = 0; i < rows.size(); ++i) {
+    const IndexRecord &record = records[i];
+    Track track;
+    track.index = record.item_id;
+    track.queue_row = static_cast<int32_t>(rows[i]);
+    track.duration_ms = record.duration_ms;
+    for (const auto &[offset, length, value] :
+         {std::tuple{record.title_offset, record.title_length, &track.title},
+          std::tuple{record.artist_offset, record.artist_length, &track.artist},
+          std::tuple{record.album_offset, record.album_length, &track.album}}) {
+      const uint64_t position = static_cast<uint64_t>(header.strings_offset) + offset;
+      if (length > kMaxStoredField ||
+          static_cast<uint64_t>(offset) + length > header.strings_size || position > LONG_MAX ||
+          std::fseek(file, static_cast<long>(position), SEEK_SET) != 0) {
+        std::fclose(file);
+        tracks.clear();
+        return false;
+      }
+      value->resize(length);
+      if (!read_exact(file, value->data(), length)) {
+        std::fclose(file);
+        tracks.clear();
+        return false;
+      }
     }
     tracks.push_back(std::move(track));
   }
