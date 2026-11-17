@@ -11,6 +11,32 @@ For password-protected sessions, type 2 contains `MD5(password || nonce)` plus
 client capability bytes `0x81, 0x05`. Type 3 with payload `01` accepts the
 session. Passwords and digests must never be logged.
 
+## Keepalive and client liveness
+
+Live probing on 2026-11-17 (issue #48) established the session timing. AIMP
+sends an empty type 23 keepalive about every 6 seconds; the client echoes it.
+A client-initiated type 23 receives no reply. AIMP closes a client that has
+sent it nothing for about 10 seconds: a probe that stopped answering
+closed 10.5 seconds after its last packet.
+
+AIMP's keepalives are queued on the same TCP stream as its replies, so a
+client that is still receiving a large frame cannot see, or echo, them. A
+probe reading the 1.2 MB `NAS:Music` response at 20 KB/s was disconnected
+after 13 seconds and 268 KB; at 120 KB/s it received the whole frame and was
+still disconnected at 10.2 seconds. The same 20 KB/s read with a client
+keepalive every 3 seconds stayed connected for the full 90-second test.
+Earlier firmware sent a keepalive only after 10 seconds without receiving
+data, which never happens during a transfer, so a frame written to slow
+storage (about 20 KB/s on the internal SPIFFS fallback) was cut off every
+time. The firmware now sends a type 23 whenever it has sent nothing for
+4 seconds, whether or not it is receiving.
+
+Its request deadlines likewise pause while a frame is partially received,
+including a large playlist frame streamed to storage or an oversized frame
+being drained, because every later reply is queued behind it. A stalled
+transfer still ends the session after 30 seconds without data. Every
+deliberate disconnect logs `Closing AIMP connection: <reason>`.
+
 ## Received messages
 
 | Type | Meaning |
@@ -115,7 +141,8 @@ not the per-item ID in playlist metadata (which AIMP may report as `-1`). Type
   state, equalizer preset names, and sleep-timer state respectively. They
   produce types 48, 49, and 51. The production client sends these requests
   only after the corresponding capability bit is known. Each outstanding
-  response kind has a five-second deadline. A missing response marks only that
+  response kind has a five-second deadline, paused like every other request
+  deadline while a large frame is received. A missing response marks only that
   state unavailable without disconnecting the otherwise healthy session; a
   later valid response remains authoritative and restores the ready state.
   Sleep-timer writes additionally require a received type-51 baseline, not

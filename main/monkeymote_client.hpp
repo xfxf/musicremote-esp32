@@ -1,6 +1,7 @@
 #pragma once
 
 #include "artwork_decoder.hpp"
+#include "connection_policy.hpp"
 #include "music_model.hpp"
 #include "playlist_index.hpp"
 #include "freertos/FreeRTOS.h"
@@ -93,8 +94,10 @@ private:
   static void index_task_entry(void *context);
   void run();
   bool connect_and_authenticate();
-  void close_socket();
-  bool process_socket(int timeout_ms);
+  // Every deliberate disconnect names its reason so a reconnect loop is
+  // attributable from the serial log.
+  void close_socket(const char *reason);
+  bool process_socket(int timeout_ms, const char *&failure);
   bool process_frame(uint32_t type, std::vector<uint8_t> &payload);
   bool send_packet(uint32_t type, const void *data = nullptr, size_t size = 0);
   bool send_playlist_request(int32_t playlist_id, bool confirms_library_play = false,
@@ -157,6 +160,7 @@ private:
   ArtworkDecoder artwork_decoder_;
   FILE *streamed_frame_{nullptr};
   size_t streamed_remaining_{0};
+  int64_t streamed_started_us_{0};
   std::atomic<bool> index_building_{false};
   std::atomic<bool> index_superseded_{false};
   TaskHandle_t index_task_{nullptr};
@@ -203,7 +207,8 @@ private:
   std::atomic<bool> using_persisted_playlist_cache_{false};
   int64_t persisted_cache_validation_deadline_us_{0};
   int64_t last_receive_us_{0};
-  int64_t last_ping_us_{0};
+  int64_t last_send_us_{0};
+  connection_policy::StreamPauseClock stream_pause_clock_;
   std::mutex commands_mutex_;
   std::deque<Command> commands_;
 };

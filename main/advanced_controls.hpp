@@ -117,6 +117,13 @@ public:
     return expired;
   }
 
+  // Moves an outstanding deadline while a large frame blocks the stream.
+  void defer(int64_t delta_us) {
+    if (deadline_us_ != 0 && delta_us > 0) {
+      deadline_us_ += delta_us;
+    }
+  }
+
   void reset() {
     pending_mask_ = 0;
     deadline_us_ = 0;
@@ -378,6 +385,17 @@ public:
       ++edit;
     }
     return changed;
+  }
+
+  // A reply queued behind a large frame arrives late but is still stale, so
+  // the overlay's lifetime pauses with the stream (connection_policy.hpp).
+  void defer(int64_t delta_us) {
+    if (delta_us <= 0) {
+      return;
+    }
+    for (auto &edit : edits_) {
+      edit.expires_us += delta_us;
+    }
   }
 
   void reset() { edits_.clear(); }
