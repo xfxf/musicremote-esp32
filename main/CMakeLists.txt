@@ -103,6 +103,10 @@ idf_component_register(
         "fonts/ui_font_18.c"
         "fonts/ui_font_22.c"
         "fonts/ui_font_28.c"
+        "fonts/ui_font_ext_14.c"
+        "fonts/ui_font_ext_18.c"
+        "fonts/ui_font_ext_22.c"
+        "fonts/ui_font_ext_28.c"
     INCLUDE_DIRS "." "${generated_include_dir}"
     REQUIRES
         esp_event
