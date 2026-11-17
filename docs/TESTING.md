@@ -504,3 +504,15 @@ written by earlier builds under the wrong row are refetched.
 
 ![Before: generic tile while AIMP shows the cover](../artifacts/issue41-before.png)
 ![After: the current track's cover](../artifacts/issue41-after.png)
+
+## Cover linger qualification (issue #43)
+
+On the SC01 Plus against the live AIMP host, the owner confirmed these cases:
+
+- Skipping between tracks of one album keeps the cover on screen with no
+  blank flash.
+- Skipping to a different album swaps directly to its cover.
+- Skipping to a track without artwork shows the generic tile within about
+  2 seconds.
+
+![Now playing with cover after a track change](../artifacts/issue43-now.png)
