@@ -1666,6 +1666,10 @@ void MonkeyMoteClient::send_command(const Command &command) {
             activated && send_playlist_request(-1, true, true);
         if (!confirming) {
           fail_pending_library_play("CACHED PLAY CONFIRM FAILED");
+          // The generation bump above makes every outstanding reply stale; if
+          // the confirmation could not be queued nothing would finish the
+          // refresh. Reconnect to reset correlation and re-request the queue.
+          close_socket();
         } else {
           model_.update([](Snapshot &state) {
             state.library_play_pending = true;
