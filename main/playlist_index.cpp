@@ -102,20 +102,15 @@ bool write_exact(FILE *file, const void *data, size_t size) {
   return size == 0 || std::fwrite(data, 1, size, file) == size;
 }
 
-// FNV-1a over the whole file, leaving out bytes [skip_begin, skip_end).
-bool hash_file(FILE *file, uint64_t &hash, uint64_t skip_begin = 0, uint64_t skip_end = 0) {
+bool hash_file(FILE *file, uint64_t &hash) {
   if (std::fseek(file, 0, SEEK_SET) != 0) {
     return false;
   }
   hash = kFnvOffset;
   std::vector<uint8_t> buffer(kCopyBufferBytes);
-  uint64_t position = 0;
   while (true) {
     const size_t count = std::fread(buffer.data(), 1, buffer.size(), file);
-    for (size_t i = 0; i < count; ++i, ++position) {
-      if (position >= skip_begin && position < skip_end) {
-        continue;
-      }
+    for (size_t i = 0; i < count; ++i) {
       hash ^= buffer[i];
       hash *= kFnvPrime;
     }
@@ -159,8 +154,61 @@ private:
   size_t available_{0};
 };
 
-bool decompress_lz4(FILE *source, size_t compressed_size, FILE *target,
-                    uint32_t expected_size) {
+// Receives each decoded chunk in order; returning false aborts the decode.
+using DecodeSink = std::function<bool(const uint8_t *data, size_t size)>;
+
+// Identity of a decoded playlist response without writing it anywhere:
+// FNV-1a over every byte except the playlist ID (offsets 4-7) and flags byte
+// (offset 10), plus the header fields needed to compare it with INDEX.DAT. A
+// request for the current playlist (-1) and one for its explicit ID differ
+// only in those bytes, yet compress to different frames.
+class ContentDigest {
+public:
+  bool add(const uint8_t *data, size_t size) {
+    for (size_t i = 0; i < size; ++i, ++position_) {
+      const uint8_t value = data[i];
+      if (position_ < prefix_.size()) {
+        prefix_[position_] = value;
+      }
+      if (position_ >= 4 && position_ < 11) {
+        continue;
+      }
+      hash_ ^= value;
+      hash_ *= kFnvPrime;
+    }
+    return true;
+  }
+
+  uint64_t hash() const { return hash_; }
+  // Whether the count, ID, and name (or as much of it as is kept) are known.
+  bool header_known() const {
+    if (position_ < 11) {
+      return false;
+    }
+    const uint64_t name_end = 11U + read_u16(prefix_.data() + 8);
+    return position_ >= std::min<uint64_t>(name_end, prefix_.size());
+  }
+  // Valid once header_known().
+  uint32_t count() const { return read_u32(prefix_.data()); }
+  int32_t playlist_id() const { return read_i32(prefix_.data() + 4); }
+  // The name when it fits the INDEX.DAT header field, otherwise empty with
+  // `fits` false: a longer name can never be compared with a stored one.
+  std::string name(bool &fits) const {
+    const uint16_t length = read_u16(prefix_.data() + 8);
+    fits = position_ >= 11 && length < sizeof(IndexHeader::name) &&
+           11U + length <= std::min<uint64_t>(position_, prefix_.size());
+    return fits ? std::string(reinterpret_cast<const char *>(prefix_.data() + 11), length)
+                : std::string{};
+  }
+
+private:
+  uint64_t hash_{kFnvOffset};
+  uint64_t position_{0};
+  std::array<uint8_t, 11 + sizeof(IndexHeader::name)> prefix_{};
+};
+
+bool decompress_lz4(FILE *source, size_t compressed_size, uint32_t expected_size,
+                    const DecodeSink &sink) {
   ByteReader input(source, compressed_size);
   // This must live in the external-capable heap, not on the 12 KiB index-task
   // stack. It is the only full LZ4 history window retained in RAM.
@@ -177,7 +225,7 @@ bool decompress_lz4(FILE *source, size_t compressed_size, FILE *target,
     output_buffer[buffered++] = value;
     ++output;
     if (buffered == output_buffer.size()) {
-      if (!write_exact(target, output_buffer.data(), buffered)) {
+      if (!sink(output_buffer.data(), buffered)) {
         return false;
       }
       buffered = 0;
@@ -237,8 +285,7 @@ bool decompress_lz4(FILE *source, size_t compressed_size, FILE *target,
       }
     }
   }
-  return output == expected_size && write_exact(target, output_buffer.data(), buffered) &&
-         std::fflush(target) == 0;
+  return output == expected_size && (buffered == 0 || sink(output_buffer.data(), buffered));
 }
 
 // The search key is `title<TAB>artist<TAB>album`, ASCII case-folded and
@@ -571,15 +618,62 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
       result.name.assign(header.name, strnlen(header.name, sizeof(header.name)));
       return result;
     }
+  }
+  // The compressed frame differs, but a response for the current playlist
+  // (-1) and one for its explicit ID describe the same rows. Before any
+  // storage write, space reservation, or wear throttle, decode the frame into
+  // a digest only and reuse the index when its content, name, and count match.
+  // A `-1` response never reuses an index stored under an explicit ID: it does
+  // not show that this ID is still the active playlist, and the stored ID is
+  // published as the active one. A stored `-1` makes no ID claim; the client
+  // resolves it from its active playlist or a unique name and count.
+  const std::string stored_name(current_header.name,
+                                strnlen(current_header.name, sizeof(current_header.name)));
+  if (valid_current) {
+    ContentDigest digest;
+    bool incompatible = false;
+    const auto compare = [&](const uint8_t *data, size_t size) {
+      const bool header_was_known = digest.header_known();
+      digest.add(data, size);
+      if (!header_was_known && digest.header_known()) {
+        bool name_fits = false;
+        const std::string name = digest.name(name_fits);
+        const bool compatible_id = current_header.playlist_id < 0 ||
+                                   current_header.playlist_id == digest.playlist_id();
+        incompatible = !compatible_id || !name_fits || name != stored_name ||
+                       digest.count() != current_header.count;
+      }
+      return !incompatible;
+    };
+    const bool decoded =
+        decompress_lz4(wire, static_cast<size_t>(wire_stat.st_size) - 10, decoded_size, compare);
+    if (decoded && !incompatible && digest.header_known() &&
+        digest.hash() == current_header.content_hash) {
+      std::fclose(wire);
+      result.success = true;
+      result.reused = Reuse::content_hash;
+      result.playlist_id = digest.playlist_id();
+      result.count = current_header.count;
+      result.name = stored_name;
+      return result;
+    }
+    if (std::ferror(wire) != 0 || std::fseek(wire, envelope.size(), SEEK_SET) != 0) {
+      std::fclose(wire);
+      result.error = "STORAGE READ FAILED";
+      return result;
+    }
+  }
+  {
+    // A confirmed rebuild on internal flash is throttled to bound erase wear.
     if (internal_flash_ && valid_current && last_internal_promotion_us_ != 0 &&
         esp_timer_get_time() - last_internal_promotion_us_ <
             kInternalFlashRebuildIntervalUs) {
       std::fclose(wire);
       result.success = true;
       result.stale = true;
-      result.playlist_id = header.playlist_id;
-      result.count = header.count;
-      result.name.assign(header.name, strnlen(header.name, sizeof(header.name)));
+      result.playlist_id = current_header.playlist_id;
+      result.count = current_header.count;
+      result.name = stored_name;
       return result;
     }
   }
@@ -622,10 +716,15 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
     result.error = "INDEX FILE OPEN FAILED";
     return result;
   }
+  ContentDigest digest;
   const bool decoded = decompress_lz4(
-      wire, static_cast<size_t>(wire_stat.st_size) - 10, raw, decoded_size);
+      wire, static_cast<size_t>(wire_stat.st_size) - 10, decoded_size,
+      [&](const uint8_t *data, size_t size) {
+        return digest.add(data, size) && write_exact(raw, data, size);
+      });
+  const uint64_t content_hash = digest.hash();
   bool read_failed = std::ferror(wire) != 0;
-  bool write_failed = std::ferror(raw) != 0;
+  bool write_failed = std::ferror(raw) != 0 || std::fflush(raw) != 0;
   read_failed = std::fclose(wire) != 0 || read_failed;
   write_failed = std::fclose(raw) != 0 || write_failed;
   if (!decoded || read_failed || write_failed) {
@@ -643,7 +742,6 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
   raw = std::fopen(raw_path.c_str(), "rb");
   FILE *index = nullptr;
   std::array<uint8_t, 11> playlist_header{};
-  uint64_t content_hash = 0;
   if (raw == nullptr || !read_exact(raw, playlist_header.data(), playlist_header.size())) {
     result.error = "INDEX FILE OPEN FAILED";
     goto cleanup;
@@ -654,32 +752,6 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
     const uint16_t name_length = read_u16(playlist_header.data() + 8);
     if (name_length > kMaxStoredField || !read_field(raw, name_length, result.name)) {
       result.error = "BAD PLAYLIST NAME";
-      goto cleanup;
-    }
-  }
-  {
-    // A response for the current playlist (-1) and one for its explicit ID
-    // differ only in the playlist ID (decoded offsets 4-7) and the flags byte
-    // (offset 10), yet compress differently. Hash the decoded content without
-    // offsets 4-10; the name length at 8-9 is covered by the name comparison
-    // below. A switch away and back then reuses the index instead of
-    // rebuilding it. Two distinct explicit IDs never share an index: the
-    // stored ID must stay truthful.
-    const long records_start = std::ftell(raw);
-    if (records_start < 0 || !hash_file(raw, content_hash, 4, 11) ||
-        std::fseek(raw, records_start, SEEK_SET) != 0) {
-      result.error = "STORAGE READ FAILED";
-      goto cleanup;
-    }
-    const bool compatible_id = result.playlist_id < 0 || current_header.playlist_id < 0 ||
-                               current_header.playlist_id == result.playlist_id;
-    if (valid_current && compatible_id && current_header.content_hash == content_hash &&
-        current_header.count == result.count &&
-        result.name == std::string_view(current_header.name,
-                                        strnlen(current_header.name,
-                                                sizeof(current_header.name)))) {
-      result.success = true;
-      result.reused = Reuse::content_hash;
       goto cleanup;
     }
   }
