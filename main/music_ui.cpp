@@ -25,8 +25,16 @@ constexpr uint32_t kAccentBlue = 0x35A7FF;
 // How long the previous cover stays up while the next track's cover loads.
 constexpr int64_t kArtworkLingerUs = 2'000'000;
 constexpr char kTag[] = "music_ui";
-// How long a selected FIND result waits for its playlist page to appear.
-constexpr int64_t kRevealQueueRowTimeoutUs = 120'000'000;
+// How long a played row stays pending to be scrolled into view, until the
+// QUEUE page is next opened.
+constexpr int64_t kRevealQueueRowTimeoutUs = 600'000'000;
+// A wait shorter than this never shows the busy modal.
+constexpr int64_t kBusyModalDelayUs = 300'000;
+// A playlist load that has not finished by then stops blocking the screen.
+constexpr int64_t kSwitchModalTimeoutUs = 30'000'000;
+// A GUI pass slower than this within a report window is logged.
+constexpr int64_t kGuiLoopReportUs = 5'000'000;
+constexpr int64_t kGuiLoopSlowUs = 100'000;
 
 // LVGL's default symbol page lacks ~ | ^ and `, which are valid in Wi-Fi and
 // AIMP passwords. This copy of its 1# page adds them to the bottom row, so
@@ -300,14 +308,24 @@ void MusicUi::task_entry(void *context) {
 }
 
 void MusicUi::run() {
+  int64_t worst_iteration_us = 0;
+  int64_t worst_lock_wait_us = 0;
+  int64_t worst_update_us = 0;
+  int64_t worst_render_us = 0;
+  int64_t window_start_us = esp_timer_get_time();
   while (true) {
+    const int64_t iteration_start_us = esp_timer_get_time();
     {
       std::lock_guard lock(mutex_);
+      worst_lock_wait_us =
+          std::max(worst_lock_wait_us, esp_timer_get_time() - iteration_start_us);
       Snapshot latest;
+      const int64_t update_started_us = esp_timer_get_time();
       if (model_.copy_if_changed(rendered_revision_, latest)) {
         update(latest);
         rendered_revision_ = latest.revision;
       }
+      worst_update_us = std::max(worst_update_us, esp_timer_get_time() - update_started_us);
       if (!advanced_demo_active_) {
         // Applies an equalizer rebuild deferred while a slider was dragged.
         sync_equalizer(snapshot_);
@@ -315,9 +333,32 @@ void MusicUi::run() {
       update_timeline(esp_timer_get_time());
       append_queue_rows(snapshot_);
       reveal_selected_queue_row(esp_timer_get_time());
+      update_busy_overlay(esp_timer_get_time());
+      const int64_t render_started_us = esp_timer_get_time();
       lv_timer_handler();
+      worst_render_us = std::max(worst_render_us, esp_timer_get_time() - render_started_us);
       poll_display_timeout(esp_timer_get_time());
       poll_artwork_linger(esp_timer_get_time());
+    }
+    const int64_t now_us = esp_timer_get_time();
+    worst_iteration_us = std::max(worst_iteration_us, now_us - iteration_start_us);
+    if (now_us - window_start_us >= kGuiLoopReportUs) {
+      // Responsiveness evidence: the slowest GUI pass (lock wait included).
+      if (worst_iteration_us >= kGuiLoopSlowUs) {
+        ESP_LOGW(kTag,
+                 "Slow GUI loop: worst %lld ms (lock wait %lld, model update %lld, "
+                 "LVGL %lld ms) in %lld s",
+                 static_cast<long long>(worst_iteration_us / 1000),
+                 static_cast<long long>(worst_lock_wait_us / 1000),
+                 static_cast<long long>(worst_update_us / 1000),
+                 static_cast<long long>(worst_render_us / 1000),
+                 static_cast<long long>(kGuiLoopReportUs / 1'000'000));
+      }
+      worst_iteration_us = 0;
+      worst_lock_wait_us = 0;
+      worst_update_us = 0;
+      worst_render_us = 0;
+      window_start_us = now_us;
     }
     vTaskDelay(pdMS_TO_TICKS(16));
   }
@@ -364,7 +405,118 @@ void MusicUi::create_ui() {
   create_filter_overlays();
   create_library_overlay();
   create_lyrics_overlay();
+  create_busy_overlay();
   show_page(Page::now);
+}
+
+void MusicUi::create_busy_overlay() {
+  // One modal for every wait with nothing else useful to do: the first index
+  // of a large playlist (no rows yet), a FIND search or A-Z scan, and loading
+  // a newly selected playlist. It absorbs taps, keeps rendering, and is shown
+  // only after a short delay so quick operations never flash it. Background
+  // re-validation of rows already on screen never uses it.
+  busy_overlay_ = lv_obj_create(root_);
+  lv_obj_remove_style_all(busy_overlay_);
+  lv_obj_set_size(busy_overlay_, 480, 320);
+  lv_obj_set_pos(busy_overlay_, 0, 0);
+  lv_obj_set_style_bg_color(busy_overlay_, color(kBackground), 0);
+  lv_obj_set_style_bg_opa(busy_overlay_, LV_OPA_80, 0);
+  lv_obj_add_flag(busy_overlay_, LV_OBJ_FLAG_CLICKABLE);  // Absorbs every tap.
+  lv_obj_clear_flag(busy_overlay_, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t *panel = lv_obj_create(busy_overlay_);
+  lv_obj_set_size(panel, 360, 132);
+  lv_obj_center(panel);
+  lv_obj_set_style_bg_color(panel, color(kPanel), 0);
+  lv_obj_set_style_border_width(panel, 0, 0);
+  lv_obj_set_style_radius(panel, 4, 0);
+  lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+  busy_title_ = make_label(panel, "", &lv_font_montserrat_22, color(kText));
+  lv_obj_align(busy_title_, LV_ALIGN_TOP_LEFT, 4, 4);
+  busy_detail_ = make_label(panel, "", &lv_font_montserrat_18, color(kAccent));
+  lv_obj_align(busy_detail_, LV_ALIGN_TOP_LEFT, 4, 42);
+  busy_bar_ = lv_bar_create(panel);
+  lv_obj_set_size(busy_bar_, 320, 12);
+  lv_obj_align(busy_bar_, LV_ALIGN_TOP_LEFT, 4, 80);
+  lv_obj_set_style_bg_color(busy_bar_, color(kAccent), LV_PART_INDICATOR);
+  lv_obj_add_flag(busy_overlay_, LV_OBJ_FLAG_HIDDEN);
+}
+
+void MusicUi::update_busy_overlay(int64_t now_us) {
+  const Snapshot &snapshot = snapshot_;
+  if (switch_target_ >= 0) {
+    const bool loaded = snapshot.active_playlist_id == switch_target_ &&
+                        snapshot.queue_revision != switch_revision_ &&
+                        !snapshot.queue_indexing;
+    if (loaded || snapshot.connection != ConnectionState::online ||
+        now_us - switch_started_us_ >= kSwitchModalTimeoutUs) {
+      switch_target_ = -1;
+    }
+  }
+  BusyKind kind = BusyKind::none;
+  uint32_t done = 0;
+  uint32_t total = 0;
+  if (snapshot.queue_indexing && snapshot.queue.empty() && snapshot.index_build_total > 0) {
+    kind = BusyKind::indexing;
+    done = snapshot.index_build_done;
+    total = snapshot.index_build_total;
+  } else if (snapshot.queue_searching) {
+    kind = BusyKind::searching;
+    done = snapshot.search_done;
+    total = snapshot.search_total;
+  } else if (switch_target_ >= 0 && snapshot.queue.empty()) {
+    kind = BusyKind::loading;
+  }
+  if (kind != busy_kind_) {
+    busy_kind_ = kind;
+    busy_since_us_ = now_us;
+  }
+  if (kind == BusyKind::none || now_us - busy_since_us_ < kBusyModalDelayUs) {
+    lv_obj_add_flag(busy_overlay_, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  if (lv_obj_has_flag(busy_overlay_, LV_OBJ_FLAG_HIDDEN)) {
+    lv_obj_remove_flag(busy_overlay_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(busy_overlay_);
+  }
+  const auto grouped = [](uint32_t value) {
+    std::string digits = std::to_string(value);
+    for (int position = static_cast<int>(digits.size()) - 3; position > 0; position -= 3) {
+      digits.insert(static_cast<size_t>(position), ",");
+    }
+    return digits;
+  };
+  const char *title = kind == BusyKind::indexing    ? "Indexing"
+                      : kind == BusyKind::searching ? "Searching"
+                                                    : "Loading playlist";
+  std::string detail;
+  if (total > 0 && kind == BusyKind::searching) {
+    detail = grouped(std::min(done, total)) + " / " + grouped(total);
+  } else if (total > 0) {
+    detail = std::to_string(std::min(done, total) * 100 / total) + "%";
+  }
+  if (busy_title_text_ != title) {
+    busy_title_text_ = title;
+    lv_label_set_text(busy_title_, title);
+  }
+  if (busy_detail_text_ != detail) {
+    busy_detail_text_ = detail;
+    lv_label_set_text(busy_detail_, detail.c_str());
+  }
+  if (total > 0) {
+    lv_bar_set_mode(busy_bar_, LV_BAR_MODE_NORMAL);
+    lv_bar_set_range(busy_bar_, 0, static_cast<int32_t>(total));
+    lv_bar_set_value(busy_bar_, static_cast<int32_t>(std::min(done, total)), LV_ANIM_OFF);
+  } else {
+    // Indeterminate: a segment sweeping across, driven by the frame clock.
+    constexpr int32_t kRange = 100;
+    constexpr int32_t kSegment = 25;
+    const int32_t phase =
+        static_cast<int32_t>((now_us / 15'000) % (kRange + kSegment)) - kSegment;
+    lv_bar_set_mode(busy_bar_, LV_BAR_MODE_RANGE);
+    lv_bar_set_range(busy_bar_, 0, kRange);
+    lv_bar_set_start_value(busy_bar_, std::clamp<int32_t>(phase, 0, kRange), LV_ANIM_OFF);
+    lv_bar_set_value(busy_bar_, std::clamp<int32_t>(phase + kSegment, 0, kRange), LV_ANIM_OFF);
+  }
 }
 
 void MusicUi::create_header() {
@@ -589,7 +741,7 @@ void MusicUi::create_filter_overlays() {
   lv_obj_set_size(search_textarea_, 332, 48);
   lv_textarea_set_one_line(search_textarea_, true);
   lv_textarea_set_max_length(search_textarea_, 64);
-  lv_textarea_set_placeholder_text(search_textarea_, "TITLE, ARTIST OR ALBUM");
+  lv_textarea_set_placeholder_text(search_textarea_, "Title, artist or album");
   lv_obj_set_style_text_font(search_textarea_, &lv_font_montserrat_18, 0);
   lv_obj_set_style_bg_color(search_textarea_, color(kPanel), 0);
   lv_obj_set_style_text_color(search_textarea_, color(kText), 0);
@@ -1825,11 +1977,18 @@ void MusicUi::update_timeline(int64_t now_us, bool force) {
 }
 
 void MusicUi::rebuild_queue(const Snapshot &snapshot) {
-  lv_obj_clean(queue_list_);
-  queue_build_index_ = snapshot.queue_index_ready ? 0 : queue_page_start_;
+  // Row widgets are pooled and refilled, never deleted: deleting and
+  // recreating 100 rows of five LVGL objects cost up to 100 ms per page and
+  // 4.5 ms per row, which stalled taps whenever the queue changed.
+  queue_build_base_ = snapshot.queue_index_ready ? 0 : queue_page_start_;
+  queue_build_index_ = queue_build_base_;
   queue_build_limit_ = snapshot.queue_index_ready
                            ? snapshot.queue.size()
                            : std::min<size_t>(snapshot.queue.size(), queue_page_start_ + 100);
+  for (lv_obj_t *row : queue_row_pool_) {
+    lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+  }
+  lv_obj_scroll_to_y(queue_list_, 0, LV_ANIM_OFF);
   const size_t total = snapshot.queue_index_ready ? snapshot.queue_total_count
                                                    : snapshot.queue.size();
   lv_obj_set_state(queue_previous_page_, LV_STATE_DISABLED, queue_page_start_ == 0);
@@ -1837,41 +1996,57 @@ void MusicUi::rebuild_queue(const Snapshot &snapshot) {
                    queue_page_start_ + 100 >= total);
 }
 
+lv_obj_t *MusicUi::create_queue_row() {
+  lv_obj_t *row = lv_button_create(queue_list_);
+  lv_obj_set_width(row, lv_pct(100));
+  lv_obj_set_height(row, 48);
+  lv_obj_set_style_radius(row, 2, 0);
+  lv_obj_set_style_shadow_width(row, 0, 0);
+  lv_obj_add_event_cb(row, queue_row_handler, LV_EVENT_CLICKED, this);
+  lv_obj_add_event_cb(row, queue_row_handler, LV_EVENT_LONG_PRESSED, this);
+  // Children, in order: row number, title, artist, duration.
+  lv_obj_t *index = make_label(row, "", &lv_font_montserrat_14, color(kMuted));
+  lv_obj_align(index, LV_ALIGN_LEFT_MID, 0, 0);
+  lv_obj_t *name = make_label(row, "", &lv_font_montserrat_18, color(kText));
+  lv_obj_set_size(name, 318, 21);
+  lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+  lv_obj_align(name, LV_ALIGN_LEFT_MID, 48, -8);
+  lv_obj_t *artist = make_label(row, "", &lv_font_montserrat_14, color(kMuted));
+  lv_obj_set_size(artist, 318, 17);
+  lv_label_set_long_mode(artist, LV_LABEL_LONG_DOT);
+  lv_obj_align(artist, LV_ALIGN_LEFT_MID, 48, 11);
+  lv_obj_t *time = make_label(row, "", &lv_font_montserrat_14, color(kMuted));
+  lv_obj_align(time, LV_ALIGN_RIGHT_MID, -2, 0);
+  queue_row_pool_.push_back(row);
+  return row;
+}
+
 void MusicUi::append_queue_rows(const Snapshot &snapshot) {
-  // Constructing hundreds of LVGL objects in one pass starves the idle task on
-  // the ESP32-S3. Eight rows per frame keeps input and the watchdog responsive.
-  const size_t end = std::min(queue_build_index_ + 8, queue_build_limit_);
-  for (size_t i = queue_build_index_; i < end; ++i) {
+  // Fill rows within a small time budget per frame, so a page change never
+  // delays input handling or rendering by more than a few milliseconds.
+  constexpr int64_t kRowBudgetUs = 6'000;
+  const int64_t started_us = esp_timer_get_time();
+  while (queue_build_index_ < queue_build_limit_) {
+    const size_t i = queue_build_index_;
+    const size_t slot = i - queue_build_base_;
     const Track &track = snapshot.queue[i];
     const size_t queue_row = track.queue_row >= 0 ? static_cast<size_t>(track.queue_row) : i;
-    lv_obj_t *row = lv_button_create(queue_list_);
-    lv_obj_set_width(row, lv_pct(100));
-    lv_obj_set_height(row, 48);
-    lv_obj_set_style_radius(row, 2, 0);
+    lv_obj_t *row = slot < queue_row_pool_.size() ? queue_row_pool_[slot] : create_queue_row();
     lv_obj_set_style_bg_color(row, queue_row == static_cast<size_t>(snapshot.active_queue_index)
                                       ? color(0x154344)
                                       : color(kPanel),
                               0);
-    lv_obj_set_style_shadow_width(row, 0, 0);
-    lv_obj_add_event_cb(row, queue_row_handler, LV_EVENT_CLICKED, this);
-    lv_obj_add_event_cb(row, queue_row_handler, LV_EVENT_LONG_PRESSED, this);
-    lv_obj_t *index = make_label(row, std::to_string(queue_row + 1).c_str(), &lv_font_montserrat_14,
-                                 color(kMuted));
-    lv_obj_align(index, LV_ALIGN_LEFT_MID, 0, 0);
-    const std::string title = track.title.empty() ? "Unknown track" : track.title;
-    lv_obj_t *name = make_label(row, title.c_str(), &lv_font_montserrat_18, color(kText));
-    lv_obj_set_size(name, 318, 21);
-    lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
-    lv_obj_align(name, LV_ALIGN_LEFT_MID, 48, -8);
-    lv_obj_t *artist = make_label(row, track.artist.c_str(), &lv_font_montserrat_14, color(kMuted));
-    lv_obj_set_size(artist, 318, 17);
-    lv_label_set_long_mode(artist, LV_LABEL_LONG_DOT);
-    lv_obj_align(artist, LV_ALIGN_LEFT_MID, 48, 11);
-    const std::string duration = format_time(track.duration_ms);
-    lv_obj_t *time = make_label(row, duration.c_str(), &lv_font_montserrat_14, color(kMuted));
-    lv_obj_align(time, LV_ALIGN_RIGHT_MID, -2, 0);
+    lv_label_set_text(lv_obj_get_child(row, 0), std::to_string(queue_row + 1).c_str());
+    lv_label_set_text(lv_obj_get_child(row, 1),
+                      track.title.empty() ? "Unknown track" : track.title.c_str());
+    lv_label_set_text(lv_obj_get_child(row, 2), track.artist.c_str());
+    lv_label_set_text(lv_obj_get_child(row, 3), format_time(track.duration_ms).c_str());
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_HIDDEN);
+    ++queue_build_index_;
+    if (esp_timer_get_time() - started_us >= kRowBudgetUs) {
+      break;
+    }
   }
-  queue_build_index_ = end;
 }
 
 void MusicUi::reveal_selected_queue_row(int64_t now_us) {
@@ -1889,8 +2064,8 @@ void MusicUi::reveal_selected_queue_row(int64_t now_us) {
   const uint32_t row = static_cast<uint32_t>(reveal_queue_row_);
   const uint32_t start = snapshot.queue_page_start;
   if (row < start || row >= start + snapshot.queue.size()) {
-    // A cached-play confirmation republishes the index; ask for the page
-    // holding the row once per published queue.
+    // A refresh may republish another page; ask for the page holding the
+    // row once per published queue (a local index read, never a transfer).
     if (reveal_requested_revision_ != snapshot.queue_revision) {
       reveal_requested_revision_ = snapshot.queue_revision;
       client_.enqueue({CommandType::request_queue_page, reveal_queue_row_ / 100 * 100});
@@ -1898,9 +2073,11 @@ void MusicUi::reveal_selected_queue_row(int64_t now_us) {
     return;
   }
   const uint32_t child = row - start;
-  if (queue_build_index_ <= child || rendered_queue_revision_ != snapshot.queue_revision) {
-    return;  // Its row has not been built yet.
+  if (page_ != Page::queue || queue_build_index_ <= child ||
+      rendered_queue_revision_ != snapshot.queue_revision) {
+    return;  // Scroll once its row is built and the page is laid out.
   }
+  lv_obj_update_layout(queue_list_);
   lv_obj_t *target = lv_obj_get_child(queue_list_, static_cast<int32_t>(child));
   if (target != nullptr) {
     lv_obj_scroll_to_view(target, LV_ANIM_OFF);
@@ -1995,16 +2172,16 @@ void MusicUi::queue_row_handler(lv_event_t *event) {
                                   ? ui->snapshot_.queue[index].queue_row
                                   : static_cast<int32_t>(index);
     ui->client_.enqueue({CommandType::play_index, queue_row});
+    // In the background, return the queue to playlist order at the page
+    // holding the track, scrolled to it; AIMP's current-row report
+    // highlights it. Opening QUEUE then shows its neighbours without any
+    // request to AIMP.
     if (ui->snapshot_.queue_filter_active) {
-      // A FIND result: clear the filter and stay on the queue at the page
-      // holding the track, in playlist order, so its neighbours (the rest of
-      // the album) can be browsed. AIMP's current-row report highlights it.
       ui->client_.enqueue({CommandType::clear_queue_filter, queue_row});
-      ui->reveal_queue_row_ = queue_row;
-      ui->reveal_queue_row_deadline_us_ = esp_timer_get_time() + kRevealQueueRowTimeoutUs;
-      ui->reveal_requested_revision_ = UINT64_MAX;
-      return;
     }
+    ui->reveal_queue_row_ = queue_row;
+    ui->reveal_queue_row_deadline_us_ = esp_timer_get_time() + kRevealQueueRowTimeoutUs;
+    ui->reveal_requested_revision_ = UINT64_MAX;
     ui->show_page(Page::now);
   }
 }
@@ -2044,6 +2221,9 @@ void MusicUi::playlist_row_handler(lv_event_t *event) {
     ui->client_.enqueue({CommandType::request_playlists, playlist.id});
   } else if (!playlist.folder) {
     ui->client_.enqueue({CommandType::activate_playlist, playlist.id});
+    ui->switch_target_ = playlist.id;
+    ui->switch_started_us_ = esp_timer_get_time();
+    ui->switch_revision_ = ui->snapshot_.queue_revision;
     ui->show_page(Page::queue);
   }
 }
@@ -2338,7 +2518,7 @@ void MusicUi::handle_event(lv_event_t *event) {
   }
   if (target == filter_search_button_) {
     search_context_ = SearchContext::queue;
-    lv_textarea_set_placeholder_text(search_textarea_, "TITLE, ARTIST OR ALBUM");
+    lv_textarea_set_placeholder_text(search_textarea_, "Title, artist or album");
     lv_obj_add_flag(filter_overlay_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_remove_flag(search_overlay_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(search_overlay_);
