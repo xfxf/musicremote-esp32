@@ -38,8 +38,10 @@ independent AIMP remote that interoperates with the MonkeyMote AIMP plugin.
 
 - Landscape UI is 480x320. Use large touch targets (minimum 44 px), high contrast,
   restrained motion, and the Zune-inspired typographic hierarchy in `docs/UI.md`.
-- Use LVGL's bundled Montserrat fonts (SIL OFL 1.1) unless a replacement is
-  explicitly reviewed with its license.
+- UI text uses the reviewed Selawik bitmap fonts in `main/fonts/` (SIL OFL 1.1;
+  provenance and regeneration in `main/fonts/README.md`). LVGL's bundled
+  Montserrat (SIL OFL 1.1) stays enabled as the fallback for `LV_SYMBOL_*`
+  glyphs. Any other typeface must be explicitly reviewed with its license.
 - Connection loss must never freeze the UI. Show stale/offline state and retry
   with bounded exponential backoff.
 - Protocol research notes and packet IDs live in `docs/PROTOCOL.md`; update that

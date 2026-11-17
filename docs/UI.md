@@ -5,8 +5,15 @@ accent colour, and information hierarchy—without copying branded assets.
 
 - Canvas: `#090B10`; panels: `#11151E`.
 - Primary accent: teal `#00D7C7`; progress accent: blue `#35A7FF`.
-- Montserrat is provided by LVGL under SIL OFL 1.1 and compiled in the 14, 18,
-  22, 28, 36, and 48 px sizes used by the interface.
+- Text uses Microsoft's Selawik (SIL OFL 1.1), a Segoe UI metric-compatible
+  face, pre-rendered to 4 bpp LVGL bitmap fonts covering ASCII and Latin-1:
+  Light for 28 px titles, Semilight for 22 px overlay and page titles, and
+  Regular for 14 and 18 px body text, buttons, and labels. See
+  `main/fonts/README.md` for provenance and regeneration.
+- LVGL's bundled Montserrat (SIL OFL 1.1) remains compiled in at 14, 18, 22,
+  28, 36, and 48 px. Each Selawik font falls back to the same-size Montserrat
+  for `LV_SYMBOL_*` glyphs, and the 48 px audio tile icon uses Montserrat
+  directly.
 - Pages share a 40 px status header and 46 px bottom navigation.
 - Each bottom destination owns a contiguous 120x46 quarter of the navigation
   bar, including the lower display edge; no visual gutter is a dead touch zone.
