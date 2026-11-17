@@ -93,6 +93,7 @@ idf_component_register(
         "app_main.cpp"
         "artwork_decoder.cpp"
         "device_settings.cpp"
+        "sd_loader.cpp"
         "monkeymote_client.cpp"
         "playlist_index.cpp"
         "music_ui.cpp"
@@ -103,6 +104,7 @@ idf_component_register(
         esp_wifi
         esp_http_server
         esp_rom
+        esp_driver_usb_serial_jtag
         fatfs
         spiffs
         nvs_flash

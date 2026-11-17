@@ -137,6 +137,8 @@ acts on the host computer:
 
 - the AIMP wire protocol, authentication, and parsers (`monkeymote_client`);
 - the on-disk playlist index and cache-trust policy;
+- the USB microSD loader, which writes host-supplied files to the card
+  (`sd_loader`, `sd_loader_policy.hpp`);
 - NVS settings, schema migration, and credential storage;
 - the untrusted cover-art decoder and its disk cache;
 - host power actions (`advanced_controls.hpp`);

@@ -3,6 +3,7 @@
 #include "musicremote_config.hpp"
 #include "music_model.hpp"
 #include "music_ui.hpp"
+#include "sd_loader.hpp"
 
 #include <cstring>
 #include <cstdio>
@@ -339,6 +340,9 @@ extern "C" void app_main() {
     ESP_LOGW(kTag, "microSD mounted at %s but its capacity query failed",
              espp::SmartPanleeSc01Plus::mount_point);
   }
+  // Accept data-file uploads (make load-data) on the USB console. The loader
+  // task is low priority and holds a card file open only during a transfer.
+  musicremote::start_sd_loader(sd_ready);
 
   bool flash_ready = false;
   if (!sd_ready && !sd_required) {
