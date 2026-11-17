@@ -24,6 +24,8 @@ check-visual:
 check: build check-visual
 	python3 -m py_compile tools/protocol_probe.py
 	PYTHONPATH=tools python3 -m unittest tools/test_protocol_probe.py
+	c++ -std=c++20 -Wall -Wextra -Werror -Imain tools/test_sd_loader_policy.cpp -o /tmp/musicremote-sd-loader-policy-test
+	/tmp/musicremote-sd-loader-policy-test
 	c++ -std=c++20 -Wall -Wextra -Werror -Imain tools/test_settings_policy.cpp -o /tmp/musicremote-settings-policy-test
 	/tmp/musicremote-settings-policy-test
 	c++ -std=c++20 -Wall -Wextra -Werror -Imain tools/test_advanced_controls.cpp -o /tmp/musicremote-advanced-controls-test
