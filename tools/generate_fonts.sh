@@ -17,27 +17,27 @@ if [ ! -f "${zip_path}" ]; then
     curl -fsSL -o "${zip_path}" "${release_url}"
 fi
 echo "${release_sha256}  ${zip_path}" | sha256sum -c -
-unzip -o -q -j "${zip_path}" selawk.ttf selawksl.ttf selawkl.ttf -d "${src_dir}"
+unzip -o -q -j "${zip_path}" selawk.ttf selawksb.ttf -d "${src_dir}"
 sha256sum -c - <<EOF
 e9d98518d8ac2817782a9a382430463a2e0793ea68350b695bb727d9a830ee1c  ${src_dir}/selawk.ttf
-8620960344f12093482cded984a1aafa5a57d24cbf7e9299da125ccf0e9d4102  ${src_dir}/selawksl.ttf
-8e19d073091a1e869b5b0d48b925e605c0a4c6ece7df7b22a364fb065314c4c5  ${src_dir}/selawkl.ttf
+0a9e9d0549a10f24bef9b3a29e06fe6e0b5c21e7a784c503b048a307841a7783  ${src_dir}/selawksb.ttf
 EOF
 
-# size  ttf            (weight)
+# size  ttf            name                  (weight: use)
 fonts=(
-    "14 selawk.ttf"    # Regular: body text, row details
-    "18 selawk.ttf"    # Regular: buttons, labels, list titles
-    "22 selawksl.ttf"  # Semilight: overlay and page titles
-    "28 selawkl.ttf"   # Light: now-playing title, SETTINGS header
+    "14 selawk.ttf   ui_font_14"           # Regular: body text, row details
+    "14 selawksb.ttf ui_font_14_semibold"  # Semibold: navigation, album line
+    "18 selawk.ttf   ui_font_18"           # Regular: buttons, labels, list titles
+    "22 selawksb.ttf ui_font_22"           # Semibold: overlay and page titles
+    "28 selawksb.ttf ui_font_28"           # Semibold: now-playing title, SETTINGS
 )
 
 for entry in "${fonts[@]}"; do
-    read -r size ttf <<<"${entry}"
+    read -r size ttf name <<<"${entry}"
     npx --yes "${lv_font_conv}" \
         --font "${src_dir}/${ttf}" -r 0x20-0x7E -r 0xA0-0xFF \
         --size "${size}" --format lvgl --bpp 4 --no-compress \
         --lv-fallback "lv_font_montserrat_${size}" \
-        --lv-font-name "ui_font_${size}" \
-        -o "main/fonts/ui_font_${size}.c"
+        --lv-font-name "${name}" \
+        -o "main/fonts/${name}.c"
 done

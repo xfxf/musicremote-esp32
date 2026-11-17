@@ -97,6 +97,7 @@ idf_component_register(
         "playlist_index.cpp"
         "music_ui.cpp"
         "fonts/ui_font_14.c"
+        "fonts/ui_font_14_semibold.c"
         "fonts/ui_font_18.c"
         "fonts/ui_font_22.c"
         "fonts/ui_font_28.c"

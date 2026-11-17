@@ -7,8 +7,9 @@
 // Each falls back to the Montserrat font of the same size for LV_SYMBOL_*
 // glyphs; see main/fonts/README.md.
 extern "C" {
-LV_FONT_DECLARE(ui_font_14)  // Regular
-LV_FONT_DECLARE(ui_font_18)  // Regular
-LV_FONT_DECLARE(ui_font_22)  // Semilight
-LV_FONT_DECLARE(ui_font_28)  // Light
+LV_FONT_DECLARE(ui_font_14)           // Regular
+LV_FONT_DECLARE(ui_font_14_semibold)  // Semibold: navigation, album line
+LV_FONT_DECLARE(ui_font_18)           // Regular
+LV_FONT_DECLARE(ui_font_22)           // Semibold: overlay and page titles
+LV_FONT_DECLARE(ui_font_28)           // Semibold: now-playing and SETTINGS titles
 }

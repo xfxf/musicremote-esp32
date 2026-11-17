@@ -7,8 +7,9 @@ accent colour, and information hierarchy—without copying branded assets.
 - Primary accent: teal `#00D7C7`; progress accent: blue `#35A7FF`.
 - Text uses bitmap fonts derived from Microsoft's Selawik (SIL OFL 1.1), a
   Segoe UI metric-compatible face, pre-rendered to 4 bpp LVGL bitmap fonts covering ASCII and Latin-1:
-  Light for 28 px titles, Semilight for 22 px overlay and page titles, and
-  Regular for 14 and 18 px body text, buttons, and labels. See
+  Semibold for 28 px and 22 px titles, the now-playing album line and the
+  bottom navigation labels, and Regular for other 14 and 18 px body text,
+  buttons, and labels. See
   `main/fonts/README.md` for provenance and regeneration.
 - LVGL's bundled Montserrat (SIL OFL 1.1) remains compiled in at 14, 18, 22,
   28, 36, and 48 px. Each UI font falls back to the same-size Montserrat

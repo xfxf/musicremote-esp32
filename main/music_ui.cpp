@@ -408,7 +408,7 @@ void MusicUi::create_navigation() {
     lv_obj_set_style_bg_opa(nav_buttons_[i], LV_OPA_TRANSP, 0);
     lv_obj_set_style_shadow_width(nav_buttons_[i], 0, 0);
     lv_obj_add_event_cb(nav_buttons_[i], event_handler, LV_EVENT_PRESSED, this);
-    lv_obj_t *label = make_label(nav_buttons_[i], labels[i], &ui_font_14,
+    lv_obj_t *label = make_label(nav_buttons_[i], labels[i], &ui_font_14_semibold,
                                  i == 0 ? color(kAccent) : color(kMuted));
     lv_obj_set_clickable(label, false);
     lv_obj_center(label);
@@ -447,7 +447,7 @@ void MusicUi::create_now_page() {
   lv_obj_set_pos(artist_label_, 176, 50);
   lv_obj_set_size(artist_label_, 286, 24);
   lv_label_set_long_mode(artist_label_, LV_LABEL_LONG_DOT);
-  album_label_ = make_label(page, "WAITING FOR A TRACK", &ui_font_14, color(kMuted));
+  album_label_ = make_label(page, "WAITING FOR A TRACK", &ui_font_14_semibold, color(kMuted));
   lv_obj_set_pos(album_label_, 176, 80);
   lv_obj_set_size(album_label_, 286, 18);
   lv_label_set_long_mode(album_label_, LV_LABEL_LONG_DOT);
