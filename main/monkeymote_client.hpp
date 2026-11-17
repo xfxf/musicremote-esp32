@@ -142,9 +142,9 @@ private:
   void consume_playlist_response(bool valid, int32_t resolved_playlist_id = -1,
                                  uint32_t count = 0);
   void expire_requests(int64_t now_us);
-  void expect_activation_echo();
+  void expect_activation_echo(int64_t now_us);
   void check_play_verification(int64_t now_us);
-  bool take_activation_echo();
+  bool take_activation_echo(int64_t now_us);
   std::string take_cover_request();
   void reject_cover_reply();
   std::string take_lyrics_request();
@@ -154,8 +154,11 @@ private:
   void finish_streamed_frame();
   bool build_streamed_index();
   void abort_streamed_frame(const char *status);
+  // `response_playlist_id` is the ID the producing request expected (-1 when
+  // it asked for the current playlist); used only when publishing a build.
   void load_index_page(uint32_t start, bool require_indexing = false,
-                       bool count_current = false);
+                       bool count_current = false,
+                       int32_t response_playlist_id = -1);
   void search_index_page(uint32_t start, bool require_indexing = false);
 
   Model &model_;
@@ -202,14 +205,10 @@ private:
   std::atomic<int64_t> pending_library_play_deadline_us_{0};
   uint64_t pending_library_play_token_{0};
   uint64_t next_playlist_request_token_{1};
-  uint64_t last_playlist_request_token_{0};
-  // The request sent right after our own playlist activation; AIMP's type 12
-  // echo of that activation is absorbed while it is outstanding.
-  uint64_t activation_echo_token_{0};
-  // A tap's activation sends no request; AIMP's echo precedes its replies to
-  // the play that follows, so it is absorbed until the first type 5 or 11.
-  bool activation_echo_window_open_{false};
-  int64_t activation_echo_deadline_us_{0};
+  // One deadline per playlist activation whose type 12 echo has not arrived.
+  // Activations can outrun their echoes (e.g. behind a large frame), so each
+  // is expected separately; deadlines pause while a large frame is received.
+  std::deque<int64_t> activation_echo_deadlines_;
   // The row a tap played, checked against AIMP's next now-playing report.
   struct PlayVerification {
     bool active{false};

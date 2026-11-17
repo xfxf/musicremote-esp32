@@ -1875,10 +1875,16 @@ void MusicUi::update(const Snapshot &snapshot) {
     rendered_queue_size_ = snapshot.queue.size();
     rendered_queue_revision_ = snapshot.queue_revision;
   }
-  if (snapshot.queue_indexing) {
-    // Rows re-validated in place stay tappable, but paging waits for the build.
-    lv_obj_add_state(queue_previous_page_, LV_STATE_DISABLED);
-    lv_obj_add_state(queue_next_page_, LV_STATE_DISABLED);
+  {
+    // Recomputed on every update, so a refresh that ends without republishing
+    // (e.g. a storage error) restores paging. Rows re-validated in place stay
+    // tappable, but paging waits for the build.
+    const size_t queue_total = snapshot.queue_index_ready ? snapshot.queue_total_count
+                                                         : snapshot.queue.size();
+    lv_obj_set_state(queue_previous_page_, LV_STATE_DISABLED,
+                     snapshot.queue_indexing || queue_page_start_ == 0);
+    lv_obj_set_state(queue_next_page_, LV_STATE_DISABLED,
+                     snapshot.queue_indexing || queue_page_start_ + 100 >= queue_total);
   }
   if (snapshot.active_queue_index != rendered_active_queue_index_) {
     update_queue_selection(snapshot);

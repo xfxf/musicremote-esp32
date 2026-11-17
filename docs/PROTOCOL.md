@@ -108,13 +108,15 @@ Live probing on 2026-11-17 (issue #48) showed that play-row, play, next,
 previous, pause, and stop produce only type 5, 6, and 11 frames, never a
 type 12/17/30/35 notification. Activating a playlist (subcommand 12), even
 the one already active, is answered with one empty type 12 before AIMP
-answers any request sent after the activation. The firmware sends the queue
-request in the same pass as the activation and absorbs one type 12 while that
-request is outstanding; treating the echo as a change had made the request's
-reply stale, so a tap on a cached row never played and the 1.2 MB playlist
-was transferred two more times. A tap's own activation sends no request, so
-its echo is absorbed if it arrives before the first type 5 or 11 that follows
-the activation, within 3 seconds. Any other type 12 is handled as a change.
+answers any request sent after the activation. Treating that echo as a change
+had made the reply to the following request stale, so a tap on a cached row
+never played and the 1.2 MB playlist was transferred two more times. The
+firmware now expects one echo per activation it sends, in order, each for
+5 seconds (AIMP once took 2.3 seconds), paused while a large frame is being
+received; several activations can be outstanding at once. A type 12 matching
+an expectation is absorbed; any other is handled as a change. The trade-off is
+that a genuine change notified inside that window is missed until the next
+notification, refresh, or tap verification.
 A playlist switch asks for the current playlist (`-1`) right after the
 activation instead of the explicit ID: that response is byte-identical to the
 one the index was last built or verified from, so an unchanged large playlist

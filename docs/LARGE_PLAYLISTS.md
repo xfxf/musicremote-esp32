@@ -139,8 +139,13 @@ reports it as current, so its album can be browsed in playlist order.
 
 AIMP may label a request for the current queue with playlist ID `-1`. On the
 first indexed page the firmware resolves that sentinel to a unique playlist
-with the same name and track count, then retains the resolved ID across later
-pages even while the user browses playlist folders.
+with the same name and track count, or else to the ID its request expected
+(a switch asks for `-1` right after activating a known ID), then retains the
+resolved ID across later pages even while the user browses playlist folders.
+A newly built index never inherits the ID of rows that stayed on screen while
+it was re-validated: AIMP may have switched playlists externally, and CLEAR,
+remove, and the cached-queue marker must target the playlist actually built.
+If neither rule resolves it, the ID stays unknown and no marker is written.
 
 An absent, full, interrupted or malformed card never causes the firmware to
 allocate the complete response. It drains the frame, preserves any previously
