@@ -245,17 +245,14 @@ class Loader:
 def open_port(name: str):
     import serial  # pyserial; imported here so tests run without it
 
-    port = serial.Serial()
-    port.port = name
-    port.baudrate = 115200  # ignored by USB-Serial-JTAG
-    port.timeout = 0.05
-    port.write_timeout = 10
-    # Keep DTR and RTS deasserted when the port opens; the USB-Serial-JTAG
-    # reset logic would otherwise restart the board, as `idf.py monitor
-    # --no-reset` also avoids.
-    port.dtr = False
+    # Open with pyserial's defaults (DTR and RTS asserted), then release RTS
+    # before DTR. Presetting both low makes pyserial drop DTR first on open,
+    # briefly leaving RTS high with DTR low: the ESP32-S3 USB-Serial-JTAG
+    # reset pattern. Measured on the board: preset-low resets it; this order
+    # does not.
+    port = serial.Serial(name, 115200, timeout=0.05, write_timeout=10)
     port.rts = False
-    port.open()
+    port.dtr = False
     port.reset_input_buffer()
     return port
 
