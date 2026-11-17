@@ -113,6 +113,35 @@ not the per-item ID in playlist metadata (which AIMP may report as `-1`). Type
 - Type 4 subcommand 10 requests a playlist and queue. Its payload is the
   subcommand byte, playlist ID (`int32_t`, with `-1` meaning current), and an
   observed constant `int32_t` value of 1.
+
+  The type 9/31/50 response starts with `uint32_t count`, `int32_t
+  playlist_id`, `uint16_t name_length`, one flags byte, and the name plus a
+  NUL. Requested as `-1`, `NAS:Music` came back with ID `-1` and flags `1`;
+  requested as ID 2, with ID 2 and flags `0`. Those five bytes were the only
+  differences in 3,933,117 decoded bytes, yet the compressed frames were
+  1,223,087 and 1,223,090 bytes. Each of the `count` rows is a 32-byte base followed by four strings,
+  each of its declared length plus a NUL:
+
+  | Offset | Field |
+  |---:|---|
+  | 0 | `int32_t` item ID (`-1` on every `NAS:Music` row) |
+  | 4 | `int32_t` duration in milliseconds |
+  | 8 | `uint16_t` bitrate in kbit/s |
+  | 10 | `uint8_t` sample rate in kHz (44, 22, ...), inferred |
+  | 11 | `uint8_t` rating, 0 through 5 |
+  | 12 | `uint16_t` year, 0 when unknown |
+  | 14 | `uint16_t`, non-zero on 62% of rows; probably track number (unverified) |
+  | 16 | eight bytes, unidentified, almost always zero |
+  | 24 | `uint16_t` title, artist, album, and genre byte lengths |
+
+  The string order is title, artist, album, genre. Earlier notes and the
+  in-memory model called the fourth string `codec`; the live 48,321-row
+  `NAS:Music` response (3,933,117 bytes decoded, no trailing bytes) shows
+  genre names such as `Electronic`, `Rock`, and `Drum & Bass`. Non-empty
+  counts there were 48,056 titles, 39,549 artists, 37,777 albums, and 29,622
+  genres; the longest were 150, 96, 127, and 90 bytes. There is no file path,
+  composer, or per-row revision. The large-playlist index stores title,
+  artist, and album, and searches all three (`docs/LARGE_PLAYLISTS.md`).
 - Type 4 subcommand 3 requests artwork. The first `int32_t` is a queue row in
   the current playlist, with `-1` meaning the current track. The second is
   the maximum edge in pixels: `0` gives a default size, and `-1` gives the
@@ -268,7 +297,7 @@ reduce the network or decoding cost: full-library search requires streaming the
 single response into external storage and building a local index. The issue #7
 implementation prefers the SC01 Plus microSD slot, supports a size-gated 4 MB
 internal fallback, uses atomic promotion, and reads 100-row pages. A normalized
-local secondary index provides A-Z title prefixes and title/artist substring
+local secondary index provides A-Z title prefixes and title/artist/album substring
 search because no corresponding server operation was observed. If storage is
 unavailable or indexing fails, the frame is drained and the UI reports the
 failure without allocating the complete response or dropping the AIMP

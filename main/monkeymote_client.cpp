@@ -1006,6 +1006,7 @@ bool MonkeyMoteClient::build_streamed_index() {
   }
   const bool refresh_confirmation_deadline =
       response_token && response_token->confirms_library_play;
+  const int64_t build_started_us = esp_timer_get_time();
   const auto result = playlist_index_.build_from_compressed(
       [this, refresh_confirmation_deadline](uint32_t completed, uint32_t total) {
         if (refresh_confirmation_deadline) {
@@ -1074,8 +1075,12 @@ bool MonkeyMoteClient::build_streamed_index() {
       state.status = message;
     });
   } else {
-    ESP_LOGI(kTag, "Indexed %" PRIu32 " tracks for playlist %" PRId32, result.count,
-             result.playlist_id);
+    ESP_LOGI(kTag, "Indexed %" PRIu32 " tracks for playlist %" PRId32 " in %" PRId64 " ms (%s)",
+             result.count, result.playlist_id, (esp_timer_get_time() - build_started_us) / 1000,
+             result.stale                                                 ? "stale, kept"
+             : result.reused == PlaylistIndex::Reuse::source_hash  ? "reused: source hash"
+             : result.reused == PlaylistIndex::Reuse::content_hash ? "reused: content hash"
+                                                                   : "rebuilt");
     if (!superseded && stale_generation) {
       ESP_LOGI(kTag, "Discarding playlist index that predates a newer request");
       playlist_index_.clear_active();

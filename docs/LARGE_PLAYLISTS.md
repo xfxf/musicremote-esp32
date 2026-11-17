@@ -16,25 +16,32 @@ Neither the compressed nor decoded response is held in memory.
 
 Decompression and index construction run on a dedicated FreeRTOS task so the
 network task continues answering AIMP keepalives and UI requests during the
-roughly 80-second full-library build. If another large response arrives while
-that task is active, the in-flight index is marked superseded and is not
-published; the current playlist is requested again after the worker exits.
+roughly 145-second full-library build (48,321 rows on microSD). If another
+large response arrives while that task is active, the in-flight index is
+marked superseded and is not published; the current playlist is requested
+again after the worker exits.
 Likewise, a late success or failure cannot replace a newer small-playlist queue.
 
-`INDEX.DAT` version 2 contains a versioned header, one fixed-size record per
-queue row, a variable string area, and a sequential secondary search area.
-Records retain the AIMP item ID, duration, and offsets and lengths for title,
-artist, and the normalized search key. Search entries map that key back to the
-original zero-based queue row. Normalization performs ASCII case-folding over
-`title<TAB>artist`; UTF-8 bytes outside ASCII are preserved. Only one page of
-100 display records is read into the model.
+`INDEX.DAT` version 3 contains a versioned header, one fixed-size 32-byte
+record per queue row, a variable string area, and a sequential secondary search
+area. Records retain the AIMP item ID, duration, and offsets and lengths for
+title, artist, album, and the normalized search key. Search entries map that
+key back to the original zero-based queue row. Normalization performs ASCII
+case-folding over `title<TAB>artist<TAB>album`, capped at 2,048 bytes; UTF-8
+bytes outside ASCII are preserved. Only one page of 100 display records is
+read into the model. AIMP also sends a genre string per row
+(`docs/PROTOCOL.md`); it is not indexed, because an unranked substring match
+on a genre word returns thousands of rows and buries title, artist, and album
+matches. Version 2 files (title and artist only, 28-byte records) fail the
+header version check: at boot they are not offered as a cached queue, and the
+next response rebuilds the index rather than reusing it by source hash.
 
 Index construction reserves the fixed-record table in `INDEX.TMP`, appends
 strings in wire order, fills records in 128-row batches, then appends the search
 area in a second bounded pass. This avoids duplicate record/string staging
 files and allows a fitting index to be built in the small internal partition.
 Before a build, free space is checked conservatively against six decoded sizes
-plus 1 MiB on microSD, or three decoded sizes plus 256 KiB on SPIFFS. The
+plus 1 MiB on microSD, or four decoded sizes plus 256 KiB on SPIFFS. The
 completed file is flushed and synced, the prior index is moved to `INDEX.BAK`,
 and `INDEX.TMP` is promoted. A failed promotion restores the backup; boot
 recovery also restores a structurally valid backup when the final file is
@@ -46,9 +53,17 @@ and `INDEX.DAT` remains on the selected storage across resets and power loss.
 The current format retains one promoted oversized-playlist index—the most
 recent one—not a separate cache for every AIMP playlist.
 After reboot, an identical response reuses the promoted file instead of
-rebuilding or rewriting it. MonkeyMote does not expose a playlist revision,
-delta, pagination, or changed-row notification, so AIMP must still send the
-complete compressed response before the device can verify that hash. A changed
+rebuilding or rewriting it. The header also records a 64-bit hash of the
+decoded playlist that leaves out its playlist-ID and flags fields. A response
+to a request for the current playlist (`-1`) and one to a request for its
+explicit ID describe the same rows but compress differently (1,223,087 and
+1,223,090 bytes for `NAS:Music`), so the compressed hash alone rebuilt the
+index after every switch away and back. When the compressed hash differs, the
+firmware decodes the response and compares the content hash, name, and count;
+a match reuses the index after the decode alone. Two different explicit
+playlist IDs never share an index, so the stored ID stays truthful. MonkeyMote
+does not expose a playlist revision, delta, pagination, or changed-row
+notification, so AIMP must still send the complete compressed response before the device can verify that hash. A changed
 hash invalidates the complete local index; safe partial invalidation is not
 possible without row identities or a server revision. On
 internal flash, changed content received less than 15 minutes after boot or the

@@ -16,9 +16,13 @@ class PlaylistIndex {
 public:
   enum class SearchMode { contains, prefix, non_alpha };
 
+  // How a successful result reused the promoted index instead of rebuilding.
+  enum class Reuse { none, source_hash, content_hash };
+
   struct BuildResult {
     bool success{false};
     bool stale{false};
+    Reuse reused{Reuse::none};
     int32_t playlist_id{-1};
     uint32_t count{0};
     std::string name;
