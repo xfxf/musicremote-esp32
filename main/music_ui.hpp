@@ -68,6 +68,7 @@ private:
   void rebuild_queue(const Snapshot &snapshot);
   void append_queue_rows(const Snapshot &snapshot);
   void update_queue_selection(const Snapshot &snapshot);
+  void reveal_selected_queue_row(int64_t now_us);
   void rebuild_playlists(const Snapshot &snapshot);
   void show_library_root();
   void rebuild_library(const Snapshot &snapshot);
@@ -127,6 +128,10 @@ private:
   bool timeline_extrapolating_{false};
   bool suppress_play_click_{false};
   bool suppress_queue_click_{false};
+  // A selected FIND result to scroll into view once its page is shown.
+  int32_t reveal_queue_row_{-1};
+  int64_t reveal_queue_row_deadline_us_{0};
+  uint64_t reveal_requested_revision_{UINT64_MAX};
   bool suppress_playlist_click_{false};
   bool suppress_library_click_{false};
   bool library_root_visible_{true};

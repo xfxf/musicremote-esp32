@@ -25,6 +25,8 @@ constexpr uint32_t kAccentBlue = 0x35A7FF;
 // How long the previous cover stays up while the next track's cover loads.
 constexpr int64_t kArtworkLingerUs = 2'000'000;
 constexpr char kTag[] = "music_ui";
+// How long a selected FIND result waits for its playlist page to appear.
+constexpr int64_t kRevealQueueRowTimeoutUs = 120'000'000;
 
 // LVGL's default symbol page lacks ~ | ^ and `, which are valid in Wi-Fi and
 // AIMP passwords. This copy of its 1# page adds them to the bottom row, so
@@ -312,6 +314,7 @@ void MusicUi::run() {
       }
       update_timeline(esp_timer_get_time());
       append_queue_rows(snapshot_);
+      reveal_selected_queue_row(esp_timer_get_time());
       lv_timer_handler();
       poll_display_timeout(esp_timer_get_time());
       poll_artwork_linger(esp_timer_get_time());
@@ -1720,6 +1723,11 @@ void MusicUi::update(const Snapshot &snapshot) {
     rendered_queue_size_ = snapshot.queue.size();
     rendered_queue_revision_ = snapshot.queue_revision;
   }
+  if (snapshot.queue_indexing) {
+    // Rows re-validated in place stay tappable, but paging waits for the build.
+    lv_obj_add_state(queue_previous_page_, LV_STATE_DISABLED);
+    lv_obj_add_state(queue_next_page_, LV_STATE_DISABLED);
+  }
   if (snapshot.active_queue_index != rendered_active_queue_index_) {
     update_queue_selection(snapshot);
     rendered_active_queue_index_ = snapshot.active_queue_index;
@@ -1866,6 +1874,40 @@ void MusicUi::append_queue_rows(const Snapshot &snapshot) {
   queue_build_index_ = end;
 }
 
+void MusicUi::reveal_selected_queue_row(int64_t now_us) {
+  if (reveal_queue_row_ < 0) {
+    return;
+  }
+  const Snapshot &snapshot = snapshot_;
+  if (now_us >= reveal_queue_row_deadline_us_) {
+    reveal_queue_row_ = -1;
+    return;
+  }
+  if (!snapshot.queue_index_ready || snapshot.queue_filter_active || snapshot.queue_indexing) {
+    return;
+  }
+  const uint32_t row = static_cast<uint32_t>(reveal_queue_row_);
+  const uint32_t start = snapshot.queue_page_start;
+  if (row < start || row >= start + snapshot.queue.size()) {
+    // A cached-play confirmation republishes the index; ask for the page
+    // holding the row once per published queue.
+    if (reveal_requested_revision_ != snapshot.queue_revision) {
+      reveal_requested_revision_ = snapshot.queue_revision;
+      client_.enqueue({CommandType::request_queue_page, reveal_queue_row_ / 100 * 100});
+    }
+    return;
+  }
+  const uint32_t child = row - start;
+  if (queue_build_index_ <= child || rendered_queue_revision_ != snapshot.queue_revision) {
+    return;  // Its row has not been built yet.
+  }
+  lv_obj_t *target = lv_obj_get_child(queue_list_, static_cast<int32_t>(child));
+  if (target != nullptr) {
+    lv_obj_scroll_to_view(target, LV_ANIM_OFF);
+  }
+  reveal_queue_row_ = -1;
+}
+
 void MusicUi::update_queue_selection(const Snapshot &snapshot) {
   const uint32_t count = lv_obj_get_child_count(queue_list_);
   for (uint32_t child = 0; child < count; ++child) {
@@ -1953,6 +1995,16 @@ void MusicUi::queue_row_handler(lv_event_t *event) {
                                   ? ui->snapshot_.queue[index].queue_row
                                   : static_cast<int32_t>(index);
     ui->client_.enqueue({CommandType::play_index, queue_row});
+    if (ui->snapshot_.queue_filter_active) {
+      // A FIND result: clear the filter and stay on the queue at the page
+      // holding the track, in playlist order, so its neighbours (the rest of
+      // the album) can be browsed. AIMP's current-row report highlights it.
+      ui->client_.enqueue({CommandType::clear_queue_filter, queue_row});
+      ui->reveal_queue_row_ = queue_row;
+      ui->reveal_queue_row_deadline_us_ = esp_timer_get_time() + kRevealQueueRowTimeoutUs;
+      ui->reveal_requested_revision_ = UINT64_MAX;
+      return;
+    }
     ui->show_page(Page::now);
   }
 }
@@ -2249,6 +2301,7 @@ void MusicUi::handle_event(lv_event_t *event) {
     return;
   }
   if (target == queue_previous_page_ || target == queue_next_page_) {
+    reveal_queue_row_ = -1;  // The user is browsing; stop chasing a result.
     if (target == queue_previous_page_ && queue_page_start_ >= 100) {
       queue_page_start_ -= 100;
     } else if (target == queue_next_page_ &&
@@ -2274,6 +2327,7 @@ void MusicUi::handle_event(lv_event_t *event) {
     return;
   }
   if (target == queue_filter_button_) {
+    reveal_queue_row_ = -1;
     lv_obj_remove_flag(filter_overlay_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(filter_overlay_);
     return;
