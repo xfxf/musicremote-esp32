@@ -112,7 +112,14 @@ answers any request sent after the activation. The firmware sends the queue
 request in the same pass as the activation and absorbs one type 12 while that
 request is outstanding; treating the echo as a change had made the request's
 reply stale, so a tap on a cached row never played and the 1.2 MB playlist
-was transferred two more times. Any later type 12 is handled as a change.
+was transferred two more times. A tap's own activation sends no request, so
+its echo is absorbed if it arrives before the first type 5 or 11 that follows
+the activation, within 3 seconds. Any other type 12 is handled as a change.
+A playlist switch asks for the current playlist (`-1`) right after the
+activation instead of the explicit ID: that response is byte-identical to the
+one the index was last built or verified from, so an unchanged large playlist
+is reused by source hash (5.2 s end to end for `NAS:Music`) instead of being
+decoded for a content check (11.2 s).
 
 ## Other implemented operations
 
@@ -338,11 +345,22 @@ The persisted-index policy therefore remains deliberately bounded:
   transferred and indexed and after a failed or throttled (stale) build, until
   an authoritative index or small playlist response replaces it. Paging, A-Z,
   and search of the local index are served while AIMP is offline. A throttled
-  build publishes no rows, playlist ID, or count from the kept index. Tapping a cached row first activates
-  the recorded playlist ID, requests the authoritative current playlist, and
-  sends the global queue row only after the response confirms that identity.
-  A throttled build never confirms it.
-  The manual refresh is the authoritative escape hatch.
+  build publishes no rows, playlist ID, or count from the kept index.
+  The manual refresh is the authoritative escape hatch;
+- tapping a row plays it optimistically (issue #48). On a cached queue the
+  firmware first activates the recorded playlist ID (its type 12 echo is
+  absorbed), then sends play-row (type 7 subcommand 10) with the global row
+  and play, and switches to Now Playing at once; no transfer or confirmation
+  request sits on the tap path. It then compares AIMP's next type 11 current
+  row and type 5 title and artist with the index row, within 6 seconds
+  (paused while a large frame is received). A match marks the cached queue
+  verified, clearing `CACHED` and enabling edits, without a transfer. A
+  mismatch or timeout marks it unverified again, shows "Playlist changed",
+  and starts the background refresh with the rows still on screen; playback
+  continues. The trade-off: a stale cache can briefly play the wrong row,
+  which then corrects itself through that refresh. On the board, play-row
+  left 20 to 95 ms after the tap, and the match arrived 0.2 to 2.3 seconds
+  after it.
 
 This avoids the large transfer on an unchanged second connection without
 inventing a server revision signal that AIMP does not provide.

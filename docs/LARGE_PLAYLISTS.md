@@ -16,7 +16,7 @@ Neither the compressed nor decoded response is held in memory.
 
 Decompression and index construction run on a dedicated FreeRTOS task so the
 network task continues answering AIMP keepalives and UI requests during the
-roughly 145-second full-library build (48,321 rows on microSD). If another
+roughly 100-second full-library build (48,321 rows on microSD). If another
 large response arrives while that task is active, the in-flight index is
 marked superseded and is not published; the current playlist is requested
 again after the worker exits.
@@ -86,42 +86,56 @@ Because AIMP offers no cheap change check, the queue header shows a refresh
 button (the LVGL refresh symbol, 44x42 px between the title and `FIND`)
 whenever the queue is served from the index or from the persisted cache. It
 sends the same authoritative request as Settings > Playback > `REFRESH FROM
-AIMP`: AIMP resends the complete response (about 4 seconds for `NAS:Music` on
-microSD), and an unchanged response is matched by source hash and reused in
-about 3 seconds instead of rebuilding. The button is hidden for small
-playlists, which AIMP's change notifications keep current, and while a
-transfer or build is reporting progress in the title.
+AIMP`: AIMP starts the complete response 0.9 seconds after the request and
+sends it in about 4 seconds; the source hash is computed while it streams, so
+an unchanged response is reused about 0.1 seconds later and the page is
+republished in under 0.1 seconds, about 5 seconds in all. The button is
+hidden for small playlists, which AIMP's change notifications keep current,
+and while a transfer or build is reporting progress in the title.
 
 Switching to another playlist keeps `INDEX.DAT` unless that playlist is also
 large: a small playlist uses the in-memory path and never touches the file.
 The switch clears the `ACTIVE.DAT` marker, so the next boot requests the
 active queue instead of offering the cached rows. Switching back transfers the
-large response again and reuses the kept index by content hash, decoding it
-into a digest in 8 seconds after a 3.7-second transfer for `NAS:Music`,
-instead of rebuilding it (about 145 seconds). AIMP answers every activation
-with a type 12 notification before it answers the request sent with it; the
-firmware recognizes that echo and does not transfer the playlist again. A
-second large playlist replaces the single index, and switching back to the
-first then rebuilds it.
+large response again and reuses the kept index by source hash, about 5 seconds
+for `NAS:Music`, instead of rebuilding it (about 100 seconds). AIMP answers
+every activation with a type 12 notification before it answers the request
+sent with it; the firmware recognizes that echo and does not transfer the
+playlist again. A second large playlist replaces the single index, and
+switching back to the first then rebuilds it.
 
 Re-validating the playlist already on screen (the refresh button, a genuine
-change notification, or a tap on a cached row) keeps the current page visible
-while the response is transferred and checked; the title reports progress.
-Those rows are treated as unverified until the build finishes: a tap goes
-through the cached-play confirmation, destructive edits stay disabled, and
-paging and `FIND` wait for the build, which then republishes the same page.
-Moving between the NOW and QUEUE tabs never requests anything from AIMP.
+change notification, or a tap whose row did not match) keeps the current page
+visible and tappable while the response is transferred and checked; the title
+shows "Refreshing". Destructive edits stay disabled until the build finishes,
+and paging and `FIND` wait for it; it then republishes the same page. Moving
+between the NOW and QUEUE tabs never requests anything from AIMP.
+
+Tapping a row plays it at once and verifies it afterwards against AIMP's
+now-playing report, without a transfer (`docs/PROTOCOL.md`).
+
+One shared modal ("Indexing", "Searching", or "Loading playlist", with a bar)
+covers waits that leave nothing useful to do: an index build with no rows to
+show, a FIND or A-Z scan, and loading a newly selected playlist. It appears
+only after 300 ms, absorbs taps, keeps rendering, and closes on completion or
+error. It is never shown over rows that are already usable. The index bar is
+weighted by the measured phases of a rebuild (decode 17%, rows 68%, search
+area 15%, finalize under 1%), so it does not sit full while work remains.
+The index worker runs below the GUI task on the same core, and queue rows are
+pooled widgets refilled within a 6 ms budget per frame, so neither a build nor
+a page change delays taps.
 
 `FIND` opens a full-screen A-Z surface. `#` matches titles whose first byte is
 not A-Z, letters perform a case-insensitive title-prefix scan, and `ALL` clears
 the filter. `SEARCH` opens the LVGL keyboard and performs a case-insensitive
 substring scan over title, artist, and album. The complete secondary area is
-scanned with a small buffer, but only the requested 100 matching rows are
-materialized. Result rows retain their global AIMP queue row. Selecting one
-plays that item (through the cached-play confirmation when the queue is
-cached), clears the filter, and stays on the queue at the playlist page that
-holds it, scrolled into view and highlighted once AIMP reports it as current,
-so the rest of its album can be browsed in playlist order.
+scanned sequentially through a 16 KiB internal stream buffer in about 2.5
+seconds for 48,321 rows, and only the requested 100 matching rows are
+materialized, reading records and strings in ascending order. Result rows
+retain their global AIMP queue row. Selecting one plays it and switches to Now
+Playing; in the background the filter is cleared and the queue returns to the
+playlist page that holds the track, scrolled to it and highlighted once AIMP
+reports it as current, so its album can be browsed in playlist order.
 
 AIMP may label a request for the current queue with playlist ID `-1`. On the
 first indexed page the firmware resolves that sentinel to a unique playlist

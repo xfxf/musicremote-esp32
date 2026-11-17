@@ -732,4 +732,80 @@ writes nothing to storage, which cut the switch-back reuse from 26 seconds to
 
 AIMP was left stopped on `NAS:Music` (ID 2), as found.
 
-**Owner touch results:** pending. To be recorded after the owner's re-check.
+**Owner touch results (2026-11-18).** The owner's re-check of `2a7b2b9` found
+that selecting a track still showed the indexing state for a long time and
+did not always play. The optimistic-play design below replaced it. On the
+optimistic-play build, the owner confirmed by touch that:
+
+- tapping a queue row, a FIND search result, or an A-Z result plays at once
+  and goes to Now Playing;
+- the queue then returns to playlist order with the track highlighted;
+- switching playlists on the Playlists page behaves as expected.
+
+### Optimistic play, timings, and responsiveness (issue #48)
+
+Tapping a row now sends play-row and play at once, switches to Now Playing,
+and verifies afterwards against AIMP's type 5 and 11 reports. A cached queue
+first activates its playlist, and that activation's echo is absorbed. The
+library append-and-play confirmation is kept, because an appended row must
+exist before it can be played.
+
+The measurements below come from serial timestamps on the board, using
+temporary diagnostics that are not committed. Those diagnostics sent a click
+to a queue row or playlist row, perturbed one expected title, and discarded
+the cached index.
+
+| Measurement | Before | After |
+|---|---|---|
+| Tap to play-row sent | 8 s or never (confirmation transfer) | 17 to 95 ms (11 taps) |
+| Tap to verified match | n/a | 0.2 s typical, 2.3 s worst |
+| Refresh: request to first byte | 0.86 to 0.89 s | 0.90 s |
+| Refresh: transfer | 3.7 s | 3.8 to 4.2 s |
+| Refresh: source hash | 2.9 to 3.0 s (re-read) | 0 ms (hashed while streaming) |
+| Refresh: hash-match reuse | in the 3.0 s above | 65 to 249 ms |
+| Refresh: page publish | 2.1 s | 37 to 95 ms |
+| Refresh: request to rows ready | 9.6 to 9.8 s | 4.9 to 5.4 s |
+| Switch back to `NAS:Music` | 11.2 s (content digest 6.1 s) | 5.2 s (source hash) |
+| First index build | 134.5 s (search pass about 58 s) | 97 to 98 s |
+| Build: decode / rows / search area / finalize | 29.8 / 75.6 / 21.3 / 0.2 s (first instrumented) | 15.6-16.8 / 66.6-69.7 / 11.4-14.5 / 0.2 s |
+| FIND `messages` (11 matches) | 5.3 s (first instrumented) | 2.7 to 2.8 s (scan 2.6 s) |
+| A-Z `M` (2,341 matches) | 5.5 s (first instrumented) | 3.1 s (scan 2.5 s) |
+
+The original refresh path decoded nothing but re-read WIRE.TMP for its hash,
+and it loaded each page with three seeks per row in a 10 MB FAT file. Now the
+hash is computed while the frame streams, and a page loads with two
+sequential reads.
+
+The first-build speedup has two causes. Search entries go to their own
+sequential file during the row pass, which replaced 48,321 seeks. The build's
+stdio streams use 16 KiB internal DMA-capable buffers, so SD transfers are
+multi-sector. The progress bar weights the measured phases. At 52 s of a 98 s
+build it showed 55%, and it closed when the build finished.
+
+The perturbed-title test logged `Played row 3 does not match the index;
+refreshing`. The refresh followed with the rows still on screen, and the
+queue was ready 5.4 s after the request, with no repeated transfer.
+
+**GUI responsiveness.** Each 5-second window logs the worst GUI pass.
+Excluding the diagnostic screenshot's own lock hold:
+
+- During refreshes and the 98 s build, the worst pass was 4 to 61 ms (usually
+  9 to 31 ms).
+- Refilling queue rows takes 6 ms per frame. Before pooling, 8 new rows took
+  36 ms, and deleting a page took up to 112 ms.
+- A full-screen render, such as a tap changing pages, takes 55 to 130 ms of
+  LVGL time. 240 MHz and internal-RAM LVGL objects were each tried and made
+  no material difference, so both were left out.
+- The index worker now runs at priority 2, below the GUI (4), on the same
+  core.
+- A tap is handled in the LVGL pass that renders its result, so the Now
+  Playing page appears about 70 to 100 ms after the touch.
+
+The search scan runs on the network task. It sends AIMP keepalives during the
+scan, because an earlier experiment that took 81 s was dropped by AIMP.
+
+![Searching modal](../artifacts/issue48-searching.png)
+![Indexing modal](../artifacts/issue48-indexing-modal.png)
+![Loading playlist modal](../artifacts/issue48-loading-playlist.png)
+![Tap result: Now Playing at once](../artifacts/issue48-tap-now.png)
+![Queue after an A-Z selection: playlist order, highlighted](../artifacts/issue48-queue-after-selection.png)
