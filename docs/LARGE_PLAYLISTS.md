@@ -76,10 +76,30 @@ frequency during reconnect or
 notification storms. SPIFFS still has finite endurance; microSD is recommended
 for frequently edited or large libraries.
 
+Because AIMP offers no cheap change check, the queue header shows a refresh
+button (the LVGL refresh symbol, 44x42 px between the title and `FIND`)
+whenever the queue is served from the index or from the persisted cache. It
+sends the same authoritative request as Settings > Playback > `REFRESH FROM
+AIMP`: AIMP resends the complete response (about 4 seconds for `NAS:Music` on
+microSD), and an unchanged response is matched by source hash and reused in
+about 3 seconds instead of rebuilding. The button is hidden for small
+playlists, which AIMP's change notifications keep current, and while a
+transfer or build is reporting progress in the title.
+
+Switching to another playlist keeps `INDEX.DAT` unless that playlist is also
+large: a small playlist uses the in-memory path and never touches the file.
+The switch clears the `ACTIVE.DAT` marker, so the next boot requests the
+active queue instead of offering the cached rows. Switching back transfers the
+large response again and reuses the kept index by content hash (26 seconds
+for `NAS:Music`, mostly decoding) instead of rebuilding it (about 145
+seconds). AIMP's follow-up current-queue response then matches by source hash.
+A second large playlist replaces the single index, and switching back to the
+first then rebuilds it.
+
 `FIND` opens a full-screen A-Z surface. `#` matches titles whose first byte is
 not A-Z, letters perform a case-insensitive title-prefix scan, and `ALL` clears
 the filter. `SEARCH` opens the LVGL keyboard and performs a case-insensitive
-substring scan over both title and artist. The complete secondary area is
+substring scan over title, artist, and album. The complete secondary area is
 scanned with a small buffer, but only the requested 100 matching rows are
 materialized. Result rows retain their global AIMP queue row, so selecting one
 plays the correct item and returns to Now Playing.

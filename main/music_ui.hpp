@@ -169,6 +169,7 @@ private:
   lv_obj_t *queue_previous_page_{nullptr};
   lv_obj_t *queue_next_page_{nullptr};
   lv_obj_t *queue_filter_button_{nullptr};
+  lv_obj_t *queue_refresh_button_{nullptr};
   lv_obj_t *playlist_list_{nullptr};
   lv_obj_t *playlist_title_{nullptr};
   lv_obj_t *playlist_back_button_{nullptr};

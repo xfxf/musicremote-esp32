@@ -509,16 +509,26 @@ void MusicUi::create_queue_page() {
   lv_obj_add_flag(queue_cache_label_, LV_OBJ_FLAG_HIDDEN);
   queue_title_ = make_label(page, "CURRENT PLAYLIST", &lv_font_montserrat_18, color(kText));
   lv_obj_set_pos(queue_title_, 14, 8);
-  lv_obj_set_width(queue_title_, 144);
+  // One line, truncated with dots, so a long name or filter never spills into
+  // the list below the header.
+  lv_obj_set_size(queue_title_, 134, lv_font_get_line_height(&lv_font_montserrat_18));
   lv_label_set_long_mode(queue_title_, LV_LABEL_LONG_DOT);
-  queue_filter_button_ = make_button(page, "FIND", 82, 42);
-  lv_obj_set_pos(queue_filter_button_, 168, 0);
+  // An indexed or cached playlist has no cheap change signal from AIMP, so
+  // its header carries a manual refresh. It is hidden for small playlists,
+  // which AIMP's change notifications keep current, and while the title
+  // reports transfer or index progress.
+  queue_refresh_button_ = make_button(page, LV_SYMBOL_REFRESH, 44, 42);
+  lv_obj_set_pos(queue_refresh_button_, 156, 0);
+  lv_obj_add_event_cb(queue_refresh_button_, event_handler, LV_EVENT_CLICKED, this);
+  lv_obj_add_flag(queue_refresh_button_, LV_OBJ_FLAG_HIDDEN);
+  queue_filter_button_ = make_button(page, "FIND", 66, 42);
+  lv_obj_set_pos(queue_filter_button_, 208, 0);
   lv_obj_add_event_cb(queue_filter_button_, event_handler, LV_EVENT_CLICKED, this);
-  queue_previous_page_ = make_button(page, LV_SYMBOL_LEFT, 48, 42);
-  lv_obj_set_pos(queue_previous_page_, 258, 0);
+  queue_previous_page_ = make_button(page, LV_SYMBOL_LEFT, 44, 42);
+  lv_obj_set_pos(queue_previous_page_, 282, 0);
   lv_obj_add_event_cb(queue_previous_page_, event_handler, LV_EVENT_CLICKED, this);
-  queue_next_page_ = make_button(page, LV_SYMBOL_RIGHT, 48, 42);
-  lv_obj_set_pos(queue_next_page_, 312, 0);
+  queue_next_page_ = make_button(page, LV_SYMBOL_RIGHT, 44, 42);
+  lv_obj_set_pos(queue_next_page_, 334, 0);
   lv_obj_add_event_cb(queue_next_page_, event_handler, LV_EVENT_CLICKED, this);
   lv_obj_t *clear = make_button(page, "CLEAR", 80, 42);
   lv_obj_align(clear, LV_ALIGN_TOP_RIGHT, -14, 0);
@@ -576,7 +586,7 @@ void MusicUi::create_filter_overlays() {
   lv_obj_set_size(search_textarea_, 332, 48);
   lv_textarea_set_one_line(search_textarea_, true);
   lv_textarea_set_max_length(search_textarea_, 64);
-  lv_textarea_set_placeholder_text(search_textarea_, "TITLE OR ARTIST");
+  lv_textarea_set_placeholder_text(search_textarea_, "TITLE, ARTIST OR ALBUM");
   lv_obj_set_style_text_font(search_textarea_, &lv_font_montserrat_18, 0);
   lv_obj_set_style_bg_color(search_textarea_, color(kPanel), 0);
   lv_obj_set_style_text_color(search_textarea_, color(kText), 0);
@@ -1684,6 +1694,16 @@ void MusicUi::update(const Snapshot &snapshot) {
     lv_obj_add_flag(queue_cache_label_, LV_OBJ_FLAG_HIDDEN);
   }
   lv_label_set_text(queue_title_, queue_title.c_str());
+  const bool show_refresh = (snapshot.queue_index_ready || cached) && !snapshot.queue_indexing;
+  if (show_refresh) {
+    lv_obj_remove_flag(queue_refresh_button_, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(queue_refresh_button_, LV_OBJ_FLAG_HIDDEN);
+  }
+  // Without the refresh button the title may extend to 8 px before FIND.
+  lv_obj_set_width(queue_title_, show_refresh ? 134 : 186);
+  lv_obj_set_state(queue_refresh_button_, LV_STATE_DISABLED,
+                   snapshot.connection != ConnectionState::online);
   lv_obj_set_state(queue_filter_button_, LV_STATE_DISABLED,
                    !snapshot.queue_index_ready || snapshot.queue_indexing);
   if (snapshot.queue_revision != rendered_queue_revision_ ||
@@ -2245,6 +2265,14 @@ void MusicUi::handle_event(lv_event_t *event) {
     }
     return;
   }
+  if (target == queue_refresh_button_) {
+    // Same authoritative request as Settings > Playback > REFRESH FROM AIMP.
+    // An unchanged playlist is re-verified by source hash and not re-indexed.
+    if (snapshot_.connection == ConnectionState::online) {
+      client_.enqueue({CommandType::request_playlist, -1});
+    }
+    return;
+  }
   if (target == queue_filter_button_) {
     lv_obj_remove_flag(filter_overlay_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(filter_overlay_);
@@ -2256,6 +2284,7 @@ void MusicUi::handle_event(lv_event_t *event) {
   }
   if (target == filter_search_button_) {
     search_context_ = SearchContext::queue;
+    lv_textarea_set_placeholder_text(search_textarea_, "TITLE, ARTIST OR ALBUM");
     lv_obj_add_flag(filter_overlay_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_remove_flag(search_overlay_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(search_overlay_);
@@ -2335,6 +2364,7 @@ void MusicUi::handle_event(lv_event_t *event) {
   }
   if (target == library_search_button_) {
     search_context_ = SearchContext::library;
+    lv_textarea_set_placeholder_text(search_textarea_, "TITLE OR ARTIST");
     lv_obj_add_flag(library_overlay_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_remove_flag(search_overlay_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(search_overlay_);

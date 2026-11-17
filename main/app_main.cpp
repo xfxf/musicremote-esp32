@@ -173,6 +173,13 @@ esp_err_t screenshot_handler(httpd_req_t *request) {
                filter});
         }
       }
+      char refresh[4]{};
+      // The queue header's refresh control: re-request the active playlist.
+      // Read-only on AIMP; an unchanged response is reused by source hash.
+      if (httpd_query_key_value(query, "refresh", refresh, sizeof(refresh)) == ESP_OK &&
+          std::strcmp(refresh, "1") == 0) {
+        context->client->enqueue({musicremote::CommandType::request_playlist, -1});
+      }
       if (httpd_query_key_value(query, "search", search, sizeof(search)) == ESP_OK &&
           search[0] != '\0') {
         context->client->enqueue(
