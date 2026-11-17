@@ -6,15 +6,25 @@ accent colour, and information hierarchy—without copying branded assets.
 - Canvas: `#090B10`; panels: `#11151E`.
 - Primary accent: teal `#00D7C7`; progress accent: blue `#35A7FF`.
 - Text uses bitmap fonts derived from Microsoft's Selawik (SIL OFL 1.1), a
-  Segoe UI metric-compatible face, pre-rendered to 4 bpp LVGL bitmap fonts covering ASCII and Latin-1:
-  Semibold for 28 px and 22 px titles, the now-playing album line and the
-  bottom navigation labels, and Regular for other 14 and 18 px body text,
-  buttons, and labels. See
-  `main/fonts/README.md` for provenance and regeneration.
+  Segoe UI metric-compatible face, pre-rendered to 4 bpp LVGL bitmap fonts
+  holding every Selawik glyph (ASCII, Latin-1, most of Latin Extended-A and
+  typographic punctuation such as ’ “ ” – …): Semibold for 28 px and 22 px
+  titles, the now-playing album line and the bottom navigation labels, and
+  Regular for other 14 and 18 px body text, buttons, and labels.
+- Characters Selawik lacks fall back, at the same size, to Noto Sans and Noto
+  Sans Math bitmap fonts (Latin Extended and Vietnamese, Greek, Cyrillic,
+  punctuation, currency, arrows, common maths and music symbols), then to an
+  optional CJK font that LVGL's tiny_ttf renders from
+  `/sdcard/fonts/cjk.ttf`, then to Montserrat. Without that file, CJK text
+  shows placeholder boxes. To install it, run
+  `tools/fetch_cjk_font.sh <card>/fonts/cjk.ttf` with the card on a computer.
+  Its glyphs are cached in PSRAM after first use, so the first draw of a CJK
+  screen reads the card and later redraws do not. See `main/fonts/README.md`
+  for provenance, regeneration, the memory budget, and the Hangul gap in the
+  recommended font.
 - LVGL's bundled Montserrat (SIL OFL 1.1) remains compiled in at 14, 18, 22,
-  28, 36, and 48 px. Each UI font falls back to the same-size Montserrat
-  for `LV_SYMBOL_*` glyphs, and the 48 px audio tile icon uses Montserrat
-  directly.
+  28, 36, and 48 px for `LV_SYMBOL_*` glyphs, and the 48 px audio tile icon
+  uses Montserrat directly.
 - Pages share a 40 px status header and 46 px bottom navigation.
 - Each bottom destination owns a contiguous 120x46 quarter of the navigation
   bar, including the lower display edge; no visual gutter is a dead touch zone.

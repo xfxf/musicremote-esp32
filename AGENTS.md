@@ -41,9 +41,12 @@ independent AIMP remote that interoperates with the MonkeyMote AIMP plugin.
 - UI text uses the reviewed bitmap fonts in `main/fonts/`, derived from
   Selawik (SIL OFL 1.1; provenance and regeneration in `main/fonts/README.md`).
   "Selawik" is a Reserved Font Name, so the converted fonts and their symbols
-  must never be named Selawik. LVGL's bundled
-  Montserrat (SIL OFL 1.1) stays enabled as the fallback for `LV_SYMBOL_*`
-  glyphs. Any other typeface must be explicitly reviewed with its license.
+  must never be named Selawik. They fall back to the reviewed Noto Sans and
+  Noto Sans Math bitmap fonts (`ui_font_ext_*`, SIL OFL 1.1), then to the
+  optional microSD CJK font (Droid Sans Fallback Full, Apache 2.0, never
+  committed), then to LVGL's bundled Montserrat (SIL OFL 1.1), which stays
+  enabled for `LV_SYMBOL_*` glyphs. Any other typeface must be explicitly
+  reviewed with its license.
 - Connection loss must never freeze the UI. Show stale/offline state and retry
   with bounded exponential backoff.
 - Protocol research notes and packet IDs live in `docs/PROTOCOL.md`; update that
@@ -143,6 +146,8 @@ acts on the host computer:
 - the on-disk playlist index and cache-trust policy;
 - NVS settings, schema migration, and credential storage;
 - the untrusted cover-art decoder and its disk cache;
+- the microSD CJK font loader and its bounds-checked block cache
+  (`cjk_font.*`, `cjk_font_policy.hpp`);
 - host power actions (`advanced_controls.hpp`);
 - the boot path, Wi-Fi credentials, and the network diagnostics endpoint
   (`app_main.cpp`);

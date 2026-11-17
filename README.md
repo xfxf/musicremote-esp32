@@ -58,8 +58,10 @@ independent interoperable client and is not affiliated with MonkeyMote or AIMP.
 - ESP-IDF 5.5.4
 - `espp/smartpanlee-sc01-plus` managed component
 - LVGL 9, with UI text in bitmap fonts derived from Microsoft's Selawik
-  (SIL Open Font License 1.1; see `main/fonts/README.md`). The bundled
-  Montserrat font (SIL Open Font License 1.1) is the symbol fallback.
+  (SIL Open Font License 1.1; see `main/fonts/README.md`). Noto Sans and Noto
+  Sans Math bitmap fonts (SIL Open Font License 1.1) cover European scripts
+  and symbols, an optional microSD font covers CJK, and the bundled Montserrat
+  font (SIL Open Font License 1.1) is the symbol fallback.
 
 ## Configure, build, and flash
 
@@ -79,6 +81,21 @@ Changes made under Settings are stored in NVS and take precedence on later
 boots; connection changes apply after restart. `.env`, generated configuration,
 dependencies, and `build/` are ignored; never publish a binary built with real
 credentials.
+
+### Optional CJK font
+
+Chinese and Japanese text (track, album, artist and playlist names) needs a
+font file on the microSD card; without it those characters show as boxes.
+With the card mounted on a computer, run:
+
+```sh
+tools/fetch_cjk_font.sh /media/$USER/SDCARD/fonts/cjk.ttf
+```
+
+This downloads Droid Sans Fallback Full (Apache 2.0) from a pinned AOSP
+commit, checks its SHA-256, and writes it to `fonts/cjk.ttf` on the card. The
+board loads it at boot and logs a `cjk-font:` line. The font has no Hangul
+syllables, so Korean still shows boxes. See `main/fonts/README.md`.
 
 ## Touch controls
 
