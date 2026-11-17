@@ -78,6 +78,34 @@ boots; connection changes apply after restart. `.env`, generated configuration,
 dependencies, and `build/` are ignored; never publish a binary built with real
 credentials.
 
+### Loading data onto the microSD card
+
+Data files such as the run-time CJK font can be written to the microSD card
+over the same USB connection, without opening the enclosure. Close
+`idf.py monitor` first, then run:
+
+```sh
+make load-data            # PORT=/dev/ttyACM0 by default
+```
+
+This fetches the pinned font with `tools/fetch_cjk_font.sh` into
+`build/data/fonts/cjk.ttf`, asks the device whether the card already holds an
+identical `fonts/cjk.ttf`, and uploads it if not. The board is not reset, and
+the firmware keeps running during the upload. Firmware that opens a file at
+boot, such as the CJK font, sees the new file after the next restart. To load
+another file or inspect the card:
+
+```sh
+/usr/bin/python3 tools/load_sd_data.py --port /dev/ttyACM0 <local-file> fonts/<name>
+/usr/bin/python3 tools/load_sd_data.py --port /dev/ttyACM0 --query fonts/cjk.ttf
+```
+
+The firmware accepts only 8.3 file names directly under an allow-listed
+directory (currently `fonts/`), up to 16 MiB each. It writes to a temporary
+file (`fonts/cjk.tmp`) and verifies the SHA-256 before it replaces the
+existing file. A failed, interrupted, or corrupt upload leaves the existing
+file in place. The protocol is documented in `main/sd_loader_policy.hpp`.
+
 ## Touch controls
 
 | Surface | Tap | Long press |

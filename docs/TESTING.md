@@ -557,3 +557,12 @@ On the SC01 Plus against the live AIMP host, the owner confirmed these cases:
   2 seconds.
 
 ![Now playing with cover after a track change](../artifacts/issue43-now.png)
+
+## USB microSD loader qualification (issue #49)
+
+Pending: hardware dogfooding on the SC01 Plus. To record: firmware build and
+flash, the boot line from `sd_loader`, `make load-data` uploading the
+4,033,576-byte CJK font with its transfer time and throughput, a repeat run
+skipping the identical file, an interrupted upload leaving the existing file
+intact, and a reboot loading the new font. Also confirm that `idf.py monitor`
+and AIMP control keep working with the loader installed.
