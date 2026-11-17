@@ -78,6 +78,7 @@ private:
   void refresh_setting_labels();
   void update_advanced_controls(const Snapshot &snapshot);
   void rebuild_equalizer(const Snapshot &snapshot);
+  void sync_equalizer(const Snapshot &snapshot);
   void end_advanced_demo();
   void poll_display_timeout(int64_t now_us);
   void set_display_blank(bool blank);

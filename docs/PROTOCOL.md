@@ -51,7 +51,11 @@ two reserved bytes, then a raw LZ4 block. Normal messages reject output beyond
 responses of at most 4 MiB on the wire and 64 MiB decoded take a separate
 persistent-storage path: the wire body is streamed to microSD or the fitting
 internal SPIFFS fallback, the raw block is decoded with a bounded 64 KiB
-history, and only a 100-row index page is loaded into the model. Larger and
+history, and only a 100-row index page is loaded into the model. The decoded
+row count is bounded by the bytes left after the playlist header (each row
+needs at least 36: a 32-byte base and four terminators) before the record table
+is reserved, and a stored title or artist longer than the 2048-byte field cap
+marks the index unreadable rather than sizing an allocation. Larger and
 other oversized frames are drained without allocation.
 
 ## Commands
@@ -103,7 +107,10 @@ not the per-item ID in playlist metadata (which AIMP may report as `-1`). Type
   The type 36 non-empty layout is inferred as a `uint32_t` UTF-8 byte length,
   a 16-byte track identity, and the text; live testing has so far observed only
   the empty form, so this layout remains explicitly unverified. The firmware
-  rejects inconsistent lengths and displays at most 24 KiB.
+  rejects inconsistent lengths and displays at most 24 KiB. Type 36 carries
+  no request identifier, so a lyrics request that is unanswered for 15 seconds
+  (not counting time spent receiving a large frame ahead of it) forces a
+  reconnect rather than letting a late reply match a newer request.
 - Type 4 subcommands 17, 18, and 19 plus an `int32_t` zero request equalizer
   state, equalizer preset names, and sleep-timer state respectively. They
   produce types 48, 49, and 51. The production client sends these requests
@@ -154,8 +161,17 @@ responses cannot become mis-correlated. The token FIFO is capped, duplicate
 refreshes are coalesced, and a missing head response or unclassifiable envelope
 forces a bounded reconnect rather than shifting correlation. Streamed index
 results also carry a monotonic generation, so a newer playlist response
-invalidates an older completion before it can authorize playback. The firmware
-never clears the user's current playlist as a side effect of tapping a library
+invalidates an older completion before it can authorize playback. A playlist
+count is authoritative only when it comes from a current response to a request
+sent after the latest queue mutation or type 12/17/30/35 notification. Pages
+read from the local index, throttled (stale) index builds, and responses to
+earlier requests never restore it, and duplicate refreshes are coalesced only
+with a request of the same mutation generation. A response to an earlier
+request, small or streamed, also publishes no rows, playlist ID, or active
+marker and keeps the mutation guard: after a switch its rows would play in the
+newly active playlist, and the mutation has already queued a newer request.
+Stop and pause cancel a
+deferred library play. The firmware never clears the user's current playlist as a side effect of tapping a library
 result.
 - Type 10 sets a one-byte rating from 0 through 5.
 - Type 20 clears a playlist.
@@ -182,7 +198,12 @@ validated type-48 body as the preamp/manual-band setter. Its AIMP 5 command
 handler does not apply byte 1, so enabled is display-only rather than a false
 toggle. The firmware never constructs a setter from partial state: it mutates
 only one gain in the last strictly validated response, then requests
-authoritative state again.
+authoritative state again. Because a type-48 reply to a readback sent before an
+edit still reports the old gains, each sent gain is kept for five seconds and
+applied over any reply received meanwhile, so a later setter cannot revert it.
+An already validated band layout stays editable while that readback is
+outstanding, so successive slider edits are sent without waiting for it; the
+sliders are withdrawn only when no layout is known or the readback times out.
 
 Type 49 starts with a little-endian `uint16_t` count and a reserved zero word,
 followed by that many NUL-terminated preset names. The firmware bounds this to
@@ -195,6 +216,8 @@ little-endian seconds value. Trigger 1 means the duration and trigger 2 means
 the end of the current track. Actions 1, 2, and 3 mean stop playback, exit the
 player, and shut down the computer. The device UI intentionally sends only
 action 1 and cycles through off, 15, 30, and 60 minutes and end-of-track.
+End-of-track is sent as enabled, trigger 2, and zero seconds; off is disabled,
+trigger 1, and zero seconds.
 
 Type 4 subcommand 14 followed by one action byte performs a computer action:
 0 sleeps, 1 restarts, and 2 shuts down the AIMP computer. These controls remain
@@ -240,13 +263,19 @@ The persisted-index policy therefore remains deliberately bounded:
 - type 12/17/30/35 notifications, explicit playlist activation, queue edits,
   library additions, or manual `REFRESH FROM AIMP` clear the marker and force
   the complete playlist request; cache-format or extent validation failures do
-  the same;
+  the same. A failed page or search read also marks the stored index unusable,
+  so the following response rebuilds it instead of reusing it by source hash;
 - because same-count edits and active-playlist changes made while the client is
   offline cannot be proven from this protocol, reused rows are visibly labelled
   `CACHED` rather than claimed fresh. Destructive queue, playlist, and library
-  mutations remain disabled in that state. Tapping a cached row first activates
+  mutations remain disabled in that state, including while a replacement is
+  transferred and indexed and after a failed or throttled (stale) build, until
+  an authoritative index or small playlist response replaces it. Paging, A-Z,
+  and search of the local index are served while AIMP is offline. A throttled
+  build publishes no rows, playlist ID, or count from the kept index. Tapping a cached row first activates
   the recorded playlist ID, requests the authoritative current playlist, and
   sends the global queue row only after the response confirms that identity.
+  A throttled build never confirms it.
   The manual refresh is the authoritative escape hatch.
 
 This avoids the large transfer on an unchanged second connection without

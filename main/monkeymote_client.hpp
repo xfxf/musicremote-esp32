@@ -105,6 +105,7 @@ private:
   void validate_persisted_playlist_cache(const std::vector<Playlist> &playlists,
                                          int32_t folder_id);
   void begin_playlist_refresh(const char *status);
+  void process_offline_commands();
 
   void parse_track_info(const std::vector<uint8_t> &payload);
   void parse_playback(const std::vector<uint8_t> &payload);
@@ -123,6 +124,7 @@ private:
     bool confirms_library_play{false};
     bool cacheable_active{false};
     int64_t deadline_us{0};
+    uint64_t mutation_generation{0};
   };
   std::optional<PlaylistRequestToken> take_playlist_response_token();
   void finish_playlist_response(const std::optional<PlaylistRequestToken> &token,
@@ -140,7 +142,8 @@ private:
   void finish_streamed_frame();
   bool build_streamed_index();
   void abort_streamed_frame(const char *status);
-  void load_index_page(uint32_t start, bool require_indexing = false);
+  void load_index_page(uint32_t start, bool require_indexing = false,
+                       bool count_current = false);
   void search_index_page(uint32_t start, bool require_indexing = false);
 
   Model &model_;
@@ -168,6 +171,7 @@ private:
   };
   std::deque<PendingLyricsRequest> lyrics_requests_;
   std::vector<uint8_t> equalizer_payload_;
+  advanced::EqualizerEditOverlay equalizer_edits_;
   advanced::RequestTracker advanced_requests_;
   uint32_t library_request_id_{0};
   int64_t library_request_deadline_us_{0};
@@ -184,6 +188,9 @@ private:
   std::optional<PlaylistRequestToken> streamed_playlist_request_;
   std::mutex playlist_requests_mutex_;
   std::atomic<uint64_t> playlist_stream_generation_{0};
+  // Incremented by every queue mutation and change notification. Only a
+  // response to a request sent after the latest one carries a current count.
+  std::atomic<uint64_t> playlist_mutation_generation_{0};
   uint64_t receiving_stream_generation_{0};
   uint64_t streamed_playlist_generation_{0};
   struct PersistedPlaylistCache {

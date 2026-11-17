@@ -24,6 +24,30 @@ constexpr uint32_t kAccent = 0x00D7C7;
 constexpr uint32_t kAccentBlue = 0x35A7FF;
 constexpr char kTag[] = "music_ui";
 
+// LVGL's default symbol page lacks ~ | ^ and `, which are valid in Wi-Fi and
+// AIMP passwords. This copy of its 1# page adds them to the bottom row, so
+// together with the letter pages every printable ASCII character is typeable.
+constexpr lv_buttonmatrix_ctrl_t key_control(uint32_t flags, uint32_t width) {
+  return static_cast<lv_buttonmatrix_ctrl_t>(flags | width);
+}
+constexpr lv_buttonmatrix_ctrl_t kKey = key_control(LV_BUTTONMATRIX_CTRL_POPOVER, 1);
+constexpr lv_buttonmatrix_ctrl_t kWideKey = key_control(LV_BUTTONMATRIX_CTRL_POPOVER, 2);
+constexpr lv_buttonmatrix_ctrl_t kSpaceKey = key_control(0, 4);
+constexpr lv_buttonmatrix_ctrl_t kModeKey = key_control(LV_KEYBOARD_CTRL_BUTTON_FLAGS, 2);
+constexpr lv_buttonmatrix_ctrl_t kCheckedKey = key_control(LV_BUTTONMATRIX_CTRL_CHECKED, 2);
+const char *const kSymbolKeyboardMap[] = {
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", LV_SYMBOL_BACKSPACE, "\n",
+    "abc", "+", "&", "/", "*", "=", "%", "!", "?", "#", "<", ">", "\n",
+    "\\", "@", "$", "(", ")", "{", "}", "[", "]", ";", "\"", "'", "\n",
+    LV_SYMBOL_KEYBOARD, "~", "|", "^", "`", LV_SYMBOL_LEFT, " ", LV_SYMBOL_RIGHT, LV_SYMBOL_OK, ""};
+const lv_buttonmatrix_ctrl_t kSymbolKeyboardControls[] = {
+    kKey, kKey, kKey, kKey, kKey, kKey, kKey, kKey, kKey, kKey, kCheckedKey,
+    kModeKey, kKey, kKey, kKey, kKey, kKey, kKey, kKey, kKey, kKey, kKey, kKey,
+    kKey, kKey, kKey, kKey, kKey, kKey, kKey, kKey, kKey, kKey, kKey, kKey,
+    kModeKey, kWideKey, kWideKey, kWideKey, kWideKey, kCheckedKey, kSpaceKey, kCheckedKey, kModeKey};
+static_assert(std::size(kSymbolKeyboardMap) == 48);
+static_assert(std::size(kSymbolKeyboardControls) == 44);
+
 const char *connection_text(ConnectionState state) {
   switch (state) {
   case ConnectionState::online:
@@ -48,6 +72,18 @@ std::string format_time(int32_t milliseconds) {
   std::snprintf(buffer, sizeof(buffer), "%ld:%02ld", static_cast<long>(seconds / 60),
                 static_cast<long>(seconds % 60));
   return buffer;
+}
+
+void format_gain(char (&text)[16], int32_t value) {
+  std::snprintf(text, sizeof(text), "%+.1f dB", (value - 150) / 10.0);
+}
+
+void format_band(char (&text)[16], uint16_t frequency_hz) {
+  if (frequency_hz >= 1000 && frequency_hz % 1000 == 0) {
+    std::snprintf(text, sizeof(text), "%uK", static_cast<unsigned>(frequency_hz / 1000));
+  } else {
+    std::snprintf(text, sizeof(text), "%u", static_cast<unsigned>(frequency_hz));
+  }
 }
 
 } // namespace
@@ -267,6 +303,10 @@ void MusicUi::run() {
       if (model_.copy_if_changed(rendered_revision_, latest)) {
         update(latest);
         rendered_revision_ = latest.revision;
+      }
+      if (!advanced_demo_active_) {
+        // Applies an equalizer rebuild deferred while a slider was dragged.
+        sync_equalizer(snapshot_);
       }
       update_timeline(esp_timer_get_time());
       append_queue_rows(snapshot_);
@@ -542,11 +582,15 @@ void MusicUi::create_filter_overlays() {
   lv_obj_set_pos(cancel, 352, 8);
 
   search_keyboard_ = lv_keyboard_create(search_overlay_);
-  lv_obj_set_pos(search_keyboard_, 8, 64);
+  // lv_keyboard_create() aligns to BOTTOM_MID and lv_obj_set_pos() keeps that
+  // alignment, so anchor explicitly to keep the keyboard inside the screen.
+  lv_obj_align(search_keyboard_, LV_ALIGN_TOP_LEFT, 8, 64);
   lv_obj_set_size(search_keyboard_, 464, 248);
   lv_keyboard_set_textarea(search_keyboard_, search_textarea_);
   lv_obj_set_style_text_font(search_keyboard_, &lv_font_montserrat_18, LV_PART_ITEMS);
-  lv_obj_add_event_cb(search_keyboard_, event_handler, LV_EVENT_READY, this);
+  // Enter on a one-line textarea sends READY only to the textarea, while the
+  // checkmark sends it to both; listening on the textarea submits exactly once.
+  lv_obj_add_event_cb(search_textarea_, event_handler, LV_EVENT_READY, this);
   lv_obj_add_event_cb(search_keyboard_, event_handler, LV_EVENT_CANCEL, this);
   lv_obj_add_event_cb(cancel, [](lv_event_t *event) {
     auto *ui = static_cast<MusicUi *>(lv_event_get_user_data(event));
@@ -957,7 +1001,9 @@ void MusicUi::create_settings_overlays() {
       "Equalizer, sleep timer and confirmed computer actions are available from their own settings page when "
       "the connected plug-in advertises support.",
       &lv_font_montserrat_14, color(kText));
-  lv_obj_set_pos(storage_text, 10, 44);
+  // The connected capability label wraps to two lines, so the NVS status and
+  // this text start below the second line instead of overlapping it.
+  lv_obj_set_pos(storage_text, 10, 64);
   lv_obj_set_width(storage_text, 420);
   lv_label_set_long_mode(storage_text, LV_LABEL_LONG_WRAP);
   capabilities_value_ = make_label(storage, "CAPABILITIES: WAITING FOR AIMP",
@@ -966,7 +1012,7 @@ void MusicUi::create_settings_overlays() {
   lv_obj_set_width(capabilities_value_, 420);
   settings_storage_value_ = make_label(storage, "SETTINGS STORAGE: NVS OK",
                                        &lv_font_montserrat_14, color(kAccent));
-  lv_obj_set_pos(settings_storage_value_, 10, 24);
+  lv_obj_set_pos(settings_storage_value_, 10, 44);
   lv_obj_set_width(settings_storage_value_, 420);
 
   lv_obj_t *advanced_panel =
@@ -1050,11 +1096,15 @@ void MusicUi::create_settings_overlays() {
                                        &lv_font_montserrat_14, color(kMuted));
   lv_obj_set_pos(setting_editor_message_, 14, 105);
   setting_editor_keyboard_ = lv_keyboard_create(setting_editor_);
-  lv_obj_set_pos(setting_editor_keyboard_, 8, 128);
+  lv_obj_align(setting_editor_keyboard_, LV_ALIGN_TOP_LEFT, 8, 128);
   lv_obj_set_size(setting_editor_keyboard_, 464, 184);
   lv_keyboard_set_textarea(setting_editor_keyboard_, setting_editor_textarea_);
+  // LVGL keeps one map table for all keyboards, so search also gains these keys.
+  lv_keyboard_set_map(setting_editor_keyboard_, LV_KEYBOARD_MODE_SPECIAL, kSymbolKeyboardMap,
+                      kSymbolKeyboardControls);
   lv_obj_set_style_text_font(setting_editor_keyboard_, &lv_font_montserrat_18, LV_PART_ITEMS);
-  lv_obj_add_event_cb(setting_editor_keyboard_, event_handler, LV_EVENT_READY, this);
+  // As for search: READY from both Enter and the checkmark reaches the textarea.
+  lv_obj_add_event_cb(setting_editor_textarea_, event_handler, LV_EVENT_READY, this);
   lv_obj_add_event_cb(setting_editor_keyboard_, event_handler, LV_EVENT_CANCEL, this);
 
   blank_overlay_ = lv_obj_create(root_);
@@ -1163,7 +1213,7 @@ void MusicUi::rebuild_equalizer(const Snapshot &snapshot) {
     lv_obj_add_event_cb(slider, event_handler, LV_EVENT_VALUE_CHANGED, this);
     lv_obj_add_event_cb(slider, event_handler, LV_EVENT_RELEASED, this);
     char db[16];
-    std::snprintf(db, sizeof(db), "%+.1f dB", (static_cast<int>(value) - 150) / 10.0);
+    format_gain(db, value);
     lv_obj_t *value_label = make_label(row, db, &lv_font_montserrat_14, color(kText));
     lv_obj_set_pos(value_label, 354, 17);
     lv_obj_set_width(value_label, 78);
@@ -1174,15 +1224,49 @@ void MusicUi::rebuild_equalizer(const Snapshot &snapshot) {
   add_gain("PREAMP", snapshot.equalizer.preamp_tenths_offset);
   for (const auto &band : snapshot.equalizer.bands) {
     char frequency[16];
-    if (band.frequency_hz >= 1000 && band.frequency_hz % 1000 == 0) {
-      std::snprintf(frequency, sizeof(frequency), "%uK",
-                    static_cast<unsigned>(band.frequency_hz / 1000));
-    } else {
-      std::snprintf(frequency, sizeof(frequency), "%u",
-                    static_cast<unsigned>(band.frequency_hz));
-    }
+    format_band(frequency, band.frequency_hz);
     add_gain(frequency, band.gain_tenths_offset);
   }
+}
+
+void MusicUi::sync_equalizer(const Snapshot &snapshot) {
+  if (snapshot.equalizer_revision == rendered_equalizer_revision_) {
+    return;
+  }
+  bool slider_pressed = false;
+  for (lv_obj_t *slider : equalizer_gain_sliders_) {
+    slider_pressed = slider_pressed || lv_obj_has_state(slider, LV_STATE_PRESSED);
+  }
+  const size_t sliders = advanced::equalizer_slider_count(
+      snapshot.advanced_availability.equalizer, snapshot.equalizer);
+  switch (advanced::equalizer_refresh_action(equalizer_gain_sliders_.size(), sliders,
+                                             slider_pressed)) {
+  case advanced::EqualizerRefresh::defer:
+    return;
+  case advanced::EqualizerRefresh::rebuild:
+    rebuild_equalizer(snapshot);
+    break;
+  case advanced::EqualizerRefresh::update_in_place:
+    for (size_t index = 0; index < sliders; ++index) {
+      lv_obj_t *slider = equalizer_gain_sliders_[index];
+      if (lv_obj_has_state(slider, LV_STATE_PRESSED)) {
+        continue; // Keep the drag; its release sends the user's value.
+      }
+      const uint16_t value = index == 0
+                                 ? snapshot.equalizer.preamp_tenths_offset
+                                 : snapshot.equalizer.bands[index - 1].gain_tenths_offset;
+      lv_slider_set_value(slider, value, LV_ANIM_OFF);
+      char text[16];
+      format_gain(text, value);
+      lv_label_set_text(equalizer_gain_values_[index], text);
+      if (index > 0) {
+        format_band(text, snapshot.equalizer.bands[index - 1].frequency_hz);
+        lv_label_set_text(lv_obj_get_child(lv_obj_get_parent(slider), 0), text);
+      }
+    }
+    break;
+  }
+  rendered_equalizer_revision_ = snapshot.equalizer_revision;
 }
 
 void MusicUi::show_settings_section(SettingsSection section) {
@@ -1310,10 +1394,7 @@ void MusicUi::update_advanced_controls(const Snapshot &snapshot) {
                          snapshot.sleep_timer));
   }
 
-  if (snapshot.equalizer_revision != rendered_equalizer_revision_) {
-    rebuild_equalizer(snapshot);
-    rendered_equalizer_revision_ = snapshot.equalizer_revision;
-  }
+  sync_equalizer(snapshot);
   rendered_sleep_timer_revision_ = snapshot.sleep_timer_revision;
 }
 
@@ -2042,7 +2123,7 @@ void MusicUi::handle_event(lv_event_t *event) {
     }
     const int32_t value = lv_slider_get_value(target);
     char db[16];
-    std::snprintf(db, sizeof(db), "%+.1f dB", (value - 150) / 10.0);
+    format_gain(db, value);
     lv_label_set_text(equalizer_gain_values_[index], db);
     if (code == LV_EVENT_RELEASED && !advanced_demo_active_ &&
         snapshot_.connection == ConnectionState::online) {
@@ -2071,7 +2152,7 @@ void MusicUi::handle_event(lv_event_t *event) {
     begin_setting_edit(SettingField::server_password, "AIMP PASSWORD", true);
     return;
   }
-  if (target == setting_editor_keyboard_) {
+  if (target == setting_editor_keyboard_ || target == setting_editor_textarea_) {
     finish_setting_edit(code == LV_EVENT_READY);
     return;
   }
@@ -2169,7 +2250,7 @@ void MusicUi::handle_event(lv_event_t *event) {
     }
     return;
   }
-  if (target == search_keyboard_) {
+  if (target == search_keyboard_ || target == search_textarea_) {
     if (code == LV_EVENT_CANCEL) {
       lv_obj_add_flag(search_overlay_, LV_OBJ_FLAG_HIDDEN);
       if (search_context_ == SearchContext::library) {
