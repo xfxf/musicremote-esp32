@@ -96,10 +96,10 @@ idf_component_register(
         "monkeymote_client.cpp"
         "playlist_index.cpp"
         "music_ui.cpp"
-        "fonts/ui_font_selawik_14.c"
-        "fonts/ui_font_selawik_18.c"
-        "fonts/ui_font_selawik_22.c"
-        "fonts/ui_font_selawik_28.c"
+        "fonts/ui_font_14.c"
+        "fonts/ui_font_18.c"
+        "fonts/ui_font_22.c"
+        "fonts/ui_font_28.c"
     INCLUDE_DIRS "." "${generated_include_dir}"
     REQUIRES
         esp_event

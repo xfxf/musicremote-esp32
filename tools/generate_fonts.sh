@@ -38,6 +38,6 @@ for entry in "${fonts[@]}"; do
         --font "${src_dir}/${ttf}" -r 0x20-0x7E -r 0xA0-0xFF \
         --size "${size}" --format lvgl --bpp 4 --no-compress \
         --lv-fallback "lv_font_montserrat_${size}" \
-        --lv-font-name "ui_font_selawik_${size}" \
-        -o "main/fonts/ui_font_selawik_${size}.c"
+        --lv-font-name "ui_font_${size}" \
+        -o "main/fonts/ui_font_${size}.c"
 done

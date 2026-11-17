@@ -50,8 +50,9 @@ independent interoperable client and is not affiliated with MonkeyMote or AIMP.
 - Smart Panlee / [Wireless-Tag WT32-SC01 Plus](https://www.aliexpress.com/w/wholesale-WT32-SC01-Plus.html) (ESP32-S3, ST7796 480x320 LCD, FT5x06 touch, 2 MB PSRAM)
 - ESP-IDF 5.5.4
 - `espp/smartpanlee-sc01-plus` managed component
-- LVGL 9 with the Selawik typeface (SIL Open Font License 1.1) for UI text and
-  the bundled Montserrat font (SIL Open Font License 1.1) as the symbol fallback
+- LVGL 9, with UI text in bitmap fonts derived from Microsoft's Selawik
+  (SIL Open Font License 1.1; see `main/fonts/README.md`). The bundled
+  Montserrat font (SIL Open Font License 1.1) is the symbol fallback.
 
 ## Configure, build, and flash
 

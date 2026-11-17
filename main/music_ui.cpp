@@ -296,7 +296,7 @@ lv_obj_t *MusicUi::make_button(lv_obj_t *parent, const char *text, int width, in
   lv_obj_set_style_bg_color(button, color(0x174148), LV_STATE_PRESSED);
   lv_obj_set_style_bg_color(button, color(0x174148), LV_STATE_CHECKED);
   lv_obj_set_style_shadow_width(button, 0, 0);
-  lv_obj_t *label = make_label(button, text, &ui_font_selawik_18, color(kText));
+  lv_obj_t *label = make_label(button, text, &ui_font_18, color(kText));
   lv_obj_set_clickable(label, false);
   lv_obj_center(label);
   return button;
@@ -330,7 +330,7 @@ void MusicUi::create_header() {
   lv_obj_set_style_bg_color(header, color(kBackground), 0);
   lv_obj_set_style_bg_opa(header, LV_OPA_COVER, 0);
 
-  lv_obj_t *brand = make_label(header, "MUSIC / REMOTE", &ui_font_selawik_18, color(kText));
+  lv_obj_t *brand = make_label(header, "MUSIC / REMOTE", &ui_font_18, color(kText));
   lv_obj_align(brand, LV_ALIGN_LEFT_MID, 14, 0);
   status_dot_ = lv_obj_create(header);
   lv_obj_remove_style_all(status_dot_);
@@ -339,7 +339,7 @@ void MusicUi::create_header() {
   lv_obj_set_style_bg_color(status_dot_, color(0xE04F5F), 0);
   lv_obj_set_style_bg_opa(status_dot_, LV_OPA_COVER, 0);
   lv_obj_align(status_dot_, LV_ALIGN_RIGHT_MID, -14, 0);
-  status_label_ = make_label(header, "OFFLINE", &ui_font_selawik_14, color(kMuted));
+  status_label_ = make_label(header, "OFFLINE", &ui_font_14, color(kMuted));
   lv_obj_set_width(status_label_, 190);
   lv_obj_set_style_text_align(status_label_, LV_TEXT_ALIGN_RIGHT, 0);
   lv_obj_align(status_label_, LV_ALIGN_RIGHT_MID, -34, 0);
@@ -365,7 +365,7 @@ void MusicUi::create_navigation() {
     lv_obj_set_style_bg_opa(nav_buttons_[i], LV_OPA_TRANSP, 0);
     lv_obj_set_style_shadow_width(nav_buttons_[i], 0, 0);
     lv_obj_add_event_cb(nav_buttons_[i], event_handler, LV_EVENT_PRESSED, this);
-    lv_obj_t *label = make_label(nav_buttons_[i], labels[i], &ui_font_selawik_14,
+    lv_obj_t *label = make_label(nav_buttons_[i], labels[i], &ui_font_14,
                                  i == 0 ? color(kAccent) : color(kMuted));
     lv_obj_set_clickable(label, false);
     lv_obj_center(label);
@@ -396,15 +396,15 @@ void MusicUi::create_now_page() {
   lv_obj_set_clickable(art_fallback_, false);
   lv_obj_center(art_fallback_);
 
-  title_label_ = make_label(page, "NOTHING PLAYING", &ui_font_selawik_28, color(kText));
+  title_label_ = make_label(page, "NOTHING PLAYING", &ui_font_28, color(kText));
   lv_obj_set_pos(title_label_, 176, 8);
   lv_obj_set_size(title_label_, 286, 36);
   lv_label_set_long_mode(title_label_, LV_LABEL_LONG_DOT);
-  artist_label_ = make_label(page, "AIMP", &ui_font_selawik_18, color(kAccent));
+  artist_label_ = make_label(page, "AIMP", &ui_font_18, color(kAccent));
   lv_obj_set_pos(artist_label_, 176, 50);
   lv_obj_set_size(artist_label_, 286, 24);
   lv_label_set_long_mode(artist_label_, LV_LABEL_LONG_DOT);
-  album_label_ = make_label(page, "WAITING FOR A TRACK", &ui_font_selawik_14, color(kMuted));
+  album_label_ = make_label(page, "WAITING FOR A TRACK", &ui_font_14, color(kMuted));
   lv_obj_set_pos(album_label_, 176, 80);
   lv_obj_set_size(album_label_, 286, 18);
   lv_label_set_long_mode(album_label_, LV_LABEL_LONG_DOT);
@@ -439,7 +439,7 @@ void MusicUi::create_now_page() {
   lv_obj_set_style_bg_color(progress_slider_, color(kAccentBlue), LV_PART_INDICATOR);
   lv_obj_set_style_bg_color(progress_slider_, color(kText), LV_PART_KNOB);
   lv_obj_add_event_cb(progress_slider_, event_handler, LV_EVENT_RELEASED, this);
-  time_label_ = make_label(page, "0:00  /  0:00", &ui_font_selawik_14, color(kMuted));
+  time_label_ = make_label(page, "0:00  /  0:00", &ui_font_14, color(kMuted));
   lv_obj_set_pos(time_label_, 14, 207);
 
   main_volume_slider_ = lv_slider_create(page);
@@ -451,7 +451,7 @@ void MusicUi::create_now_page() {
   lv_obj_set_style_bg_color(main_volume_slider_, color(kAccent), LV_PART_INDICATOR);
   lv_obj_set_style_bg_color(main_volume_slider_, color(kText), LV_PART_KNOB);
   lv_obj_add_event_cb(main_volume_slider_, event_handler, LV_EVENT_RELEASED, this);
-  main_volume_label_ = make_label(page, "VOL 0%", &ui_font_selawik_14, color(kMuted));
+  main_volume_label_ = make_label(page, "VOL 0%", &ui_font_14, color(kMuted));
   lv_obj_set_pos(main_volume_label_, 300, 207);
 }
 
@@ -462,10 +462,10 @@ void MusicUi::create_queue_page() {
   lv_obj_set_pos(page, 0, 40);
   lv_obj_set_size(page, 480, 234);
   queue_cache_label_ =
-      make_label(page, "CACHED", &ui_font_selawik_14, color(kAccent));
+      make_label(page, "CACHED", &ui_font_14, color(kAccent));
   lv_obj_set_pos(queue_cache_label_, 14, 0);
   lv_obj_add_flag(queue_cache_label_, LV_OBJ_FLAG_HIDDEN);
-  queue_title_ = make_label(page, "CURRENT PLAYLIST", &ui_font_selawik_18, color(kText));
+  queue_title_ = make_label(page, "CURRENT PLAYLIST", &ui_font_18, color(kText));
   lv_obj_set_pos(queue_title_, 14, 8);
   lv_obj_set_width(queue_title_, 144);
   lv_label_set_long_mode(queue_title_, LV_LABEL_LONG_DOT);
@@ -501,7 +501,7 @@ void MusicUi::create_filter_overlays() {
   lv_obj_set_style_bg_opa(filter_overlay_, LV_OPA_COVER, 0);
   lv_obj_add_flag(filter_overlay_, LV_OBJ_FLAG_HIDDEN);
 
-  lv_obj_t *title = make_label(filter_overlay_, "BROWSE A-Z", &ui_font_selawik_22,
+  lv_obj_t *title = make_label(filter_overlay_, "BROWSE A-Z", &ui_font_22,
                                color(kText));
   lv_obj_set_pos(title, 14, 14);
   filter_search_button_ = make_button(filter_overlay_, "SEARCH", 100, 48);
@@ -535,7 +535,7 @@ void MusicUi::create_filter_overlays() {
   lv_textarea_set_one_line(search_textarea_, true);
   lv_textarea_set_max_length(search_textarea_, 64);
   lv_textarea_set_placeholder_text(search_textarea_, "TITLE OR ARTIST");
-  lv_obj_set_style_text_font(search_textarea_, &ui_font_selawik_18, 0);
+  lv_obj_set_style_text_font(search_textarea_, &ui_font_18, 0);
   lv_obj_set_style_bg_color(search_textarea_, color(kPanel), 0);
   lv_obj_set_style_text_color(search_textarea_, color(kText), 0);
 
@@ -546,7 +546,7 @@ void MusicUi::create_filter_overlays() {
   lv_obj_set_pos(search_keyboard_, 8, 64);
   lv_obj_set_size(search_keyboard_, 464, 248);
   lv_keyboard_set_textarea(search_keyboard_, search_textarea_);
-  lv_obj_set_style_text_font(search_keyboard_, &ui_font_selawik_18, LV_PART_ITEMS);
+  lv_obj_set_style_text_font(search_keyboard_, &ui_font_18, LV_PART_ITEMS);
   lv_obj_add_event_cb(search_keyboard_, event_handler, LV_EVENT_READY, this);
   lv_obj_add_event_cb(search_keyboard_, event_handler, LV_EVENT_CANCEL, this);
   lv_obj_add_event_cb(cancel, [](lv_event_t *event) {
@@ -571,12 +571,12 @@ void MusicUi::create_library_overlay() {
   lv_obj_set_style_bg_opa(library_overlay_, LV_OPA_COVER, 0);
   lv_obj_add_flag(library_overlay_, LV_OBJ_FLAG_HIDDEN);
 
-  library_title_ = make_label(library_overlay_, "MEDIA LIBRARY", &ui_font_selawik_22,
+  library_title_ = make_label(library_overlay_, "MEDIA LIBRARY", &ui_font_22,
                               color(kText));
   lv_obj_set_pos(library_title_, 14, 8);
   lv_obj_set_size(library_title_, 210, 28);
   lv_label_set_long_mode(library_title_, LV_LABEL_LONG_DOT);
-  library_count_ = make_label(library_overlay_, "SELECT A VIEW", &ui_font_selawik_14,
+  library_count_ = make_label(library_overlay_, "SELECT A VIEW", &ui_font_14,
                               color(kMuted));
   lv_obj_set_pos(library_count_, 14, 37);
 
@@ -614,7 +614,7 @@ void MusicUi::create_lyrics_overlay() {
   lv_obj_set_style_bg_opa(lyrics_overlay_, LV_OPA_COVER, 0);
   lv_obj_add_flag(lyrics_overlay_, LV_OBJ_FLAG_HIDDEN);
 
-  lyrics_title_ = make_label(lyrics_overlay_, "LYRICS", &ui_font_selawik_22, color(kText));
+  lyrics_title_ = make_label(lyrics_overlay_, "LYRICS", &ui_font_22, color(kText));
   lv_obj_set_pos(lyrics_title_, 14, 12);
   lv_obj_set_size(lyrics_title_, 330, 28);
   lv_label_set_long_mode(lyrics_title_, LV_LABEL_LONG_DOT);
@@ -634,7 +634,7 @@ void MusicUi::create_lyrics_overlay() {
   lv_obj_set_style_border_width(scroll, 0, 0);
   lv_obj_set_style_radius(scroll, 3, 0);
   lv_obj_set_style_pad_all(scroll, 12, 0);
-  lyrics_text_ = make_label(scroll, "REQUESTING LYRICS...", &ui_font_selawik_18,
+  lyrics_text_ = make_label(scroll, "REQUESTING LYRICS...", &ui_font_18,
                             color(kText));
   lv_obj_set_width(lyrics_text_, 424);
   lv_label_set_long_mode(lyrics_text_, LV_LABEL_LONG_WRAP);
@@ -669,7 +669,7 @@ void MusicUi::rebuild_library(const Snapshot &snapshot) {
   if (snapshot.library_loading) {
     lv_label_set_text(library_count_, "LOADING...");
     lv_obj_t *loading = make_label(library_list_, "ASKING AIMP FOR LIBRARY DATA",
-                                   &ui_font_selawik_18, color(kMuted));
+                                   &ui_font_18, color(kMuted));
     lv_obj_set_style_pad_all(loading, 16, 0);
     return;
   }
@@ -704,12 +704,12 @@ void MusicUi::rebuild_library(const Snapshot &snapshot) {
     lv_obj_add_event_cb(row, library_row_handler, LV_EVENT_CLICKED, this);
     lv_obj_add_event_cb(row, library_row_handler, LV_EVENT_LONG_PRESSED, this);
     lv_obj_t *name = make_label(row, item.title.empty() ? "UNKNOWN" : item.title.c_str(),
-                                &ui_font_selawik_18, color(kText));
+                                &ui_font_18, color(kText));
     lv_obj_set_size(name, 360, 23);
     lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
     lv_obj_align(name, LV_ALIGN_LEFT_MID, 2, item.subtitle.empty() ? 0 : -10);
     if (!item.subtitle.empty()) {
-      lv_obj_t *details = make_label(row, item.subtitle.c_str(), &ui_font_selawik_14,
+      lv_obj_t *details = make_label(row, item.subtitle.c_str(), &ui_font_14,
                                      color(kMuted));
       lv_obj_set_size(details, 360, 18);
       lv_label_set_long_mode(details, LV_LABEL_LONG_DOT);
@@ -718,7 +718,7 @@ void MusicUi::rebuild_library(const Snapshot &snapshot) {
     lv_obj_t *action = make_label(row,
                                   item.kind == LibraryItemKind::track ? LV_SYMBOL_PLAY
                                                                       : LV_SYMBOL_RIGHT,
-                                  &ui_font_selawik_18, color(kAccent));
+                                  &ui_font_18, color(kAccent));
     lv_obj_align(action, LV_ALIGN_RIGHT_MID, -4, 0);
   }
   lv_obj_set_state(library_previous_page_, LV_STATE_DISABLED, library_page_start_ == 0);
@@ -762,7 +762,7 @@ void MusicUi::create_playlists_page() {
   lv_obj_remove_style_all(page);
   lv_obj_set_pos(page, 0, 40);
   lv_obj_set_size(page, 480, 234);
-  playlist_title_ = make_label(page, "PLAYLISTS", &ui_font_selawik_22, color(kText));
+  playlist_title_ = make_label(page, "PLAYLISTS", &ui_font_22, color(kText));
   lv_obj_set_pos(playlist_title_, 14, 4);
   lv_obj_set_size(playlist_title_, 270, 30);
   lv_label_set_long_mode(playlist_title_, LV_LABEL_LONG_DOT);
@@ -789,9 +789,9 @@ void MusicUi::create_more_page() {
   lv_obj_remove_style_all(page);
   lv_obj_set_pos(page, 0, 40);
   lv_obj_set_size(page, 480, 234);
-  lv_obj_t *title = make_label(page, "SETTINGS", &ui_font_selawik_28, color(kText));
+  lv_obj_t *title = make_label(page, "SETTINGS", &ui_font_28, color(kText));
   lv_obj_set_pos(title, 14, 4);
-  more_status_ = make_label(page, "OFFLINE", &ui_font_selawik_14, color(kMuted));
+  more_status_ = make_label(page, "OFFLINE", &ui_font_14, color(kMuted));
   lv_obj_set_pos(more_status_, 250, 13);
   lv_obj_set_size(more_status_, 214, 18);
   lv_obj_set_style_text_align(more_status_, LV_TEXT_ALIGN_RIGHT, 0);
@@ -811,7 +811,7 @@ void MusicUi::create_more_page() {
     lv_obj_set_width(label, 380);
     lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_align(label, LV_ALIGN_LEFT_MID, 4, 0);
-    lv_obj_t *arrow = make_label(row, LV_SYMBOL_RIGHT, &ui_font_selawik_18, color(kAccent));
+    lv_obj_t *arrow = make_label(row, LV_SYMBOL_RIGHT, &ui_font_18, color(kAccent));
     lv_obj_set_clickable(arrow, false);
     lv_obj_align(arrow, LV_ALIGN_RIGHT_MID, -4, 0);
     lv_obj_add_event_cb(row, event_handler, LV_EVENT_CLICKED, this);
@@ -834,10 +834,10 @@ void MusicUi::create_settings_overlays() {
   lv_obj_set_style_bg_opa(settings_overlay_, LV_OPA_COVER, 0);
   lv_obj_add_flag(settings_overlay_, LV_OBJ_FLAG_HIDDEN);
 
-  settings_title_ = make_label(settings_overlay_, "PLAYBACK", &ui_font_selawik_22,
+  settings_title_ = make_label(settings_overlay_, "PLAYBACK", &ui_font_22,
                                color(kText));
   lv_obj_set_pos(settings_title_, 14, 14);
-  settings_notice_ = make_label(settings_overlay_, "", &ui_font_selawik_14,
+  settings_notice_ = make_label(settings_overlay_, "", &ui_font_14,
                                 color(0xE04F5F));
   lv_obj_set_pos(settings_notice_, 214, 18);
   lv_obj_set_size(settings_notice_, 130, 18);
@@ -872,7 +872,7 @@ void MusicUi::create_settings_overlays() {
   }
   lv_obj_t *playback_help = make_label(
       playback, "Long-press the main play button to stop.\nVolume and seek stay on Now Playing.",
-      &ui_font_selawik_14, color(kMuted));
+      &ui_font_14, color(kMuted));
   lv_obj_set_pos(playback_help, 8, 154);
   lv_obj_set_width(playback_help, 420);
 
@@ -886,13 +886,13 @@ void MusicUi::create_settings_overlays() {
     lv_obj_set_style_bg_color(row, color(kPanel), 0);
     lv_obj_set_style_bg_color(row, color(0x174148), LV_STATE_PRESSED);
     lv_obj_set_style_shadow_width(row, 0, 0);
-    lv_obj_t *name = make_label(row, title, &ui_font_selawik_14, color(kMuted));
+    lv_obj_t *name = make_label(row, title, &ui_font_14, color(kMuted));
     lv_obj_align(name, LV_ALIGN_LEFT_MID, 2, -10);
-    *value_label = make_label(row, "", &ui_font_selawik_18, color(kText));
+    *value_label = make_label(row, "", &ui_font_18, color(kText));
     lv_obj_set_size(*value_label, 380, 23);
     lv_label_set_long_mode(*value_label, LV_LABEL_LONG_DOT);
     lv_obj_align(*value_label, LV_ALIGN_LEFT_MID, 2, 10);
-    lv_obj_t *arrow = make_label(row, LV_SYMBOL_RIGHT, &ui_font_selawik_18, color(kAccent));
+    lv_obj_t *arrow = make_label(row, LV_SYMBOL_RIGHT, &ui_font_18, color(kAccent));
     lv_obj_set_clickable(arrow, false);
     lv_obj_align(arrow, LV_ALIGN_RIGHT_MID, -2, 0);
     lv_obj_add_event_cb(row, event_handler, LV_EVENT_CLICKED, this);
@@ -904,14 +904,14 @@ void MusicUi::create_settings_overlays() {
   server_port_button_ = setting_row("AIMP PORT", &server_port_value_);
   server_password_button_ = setting_row("AIMP PASSWORD", &server_password_value_);
   lv_obj_t *restart_note = make_label(connection, "CONNECTION CHANGES APPLY AFTER RESTART",
-                                      &ui_font_selawik_14, color(kAccent));
+                                      &ui_font_14, color(kAccent));
   lv_obj_set_style_pad_all(restart_note, 8, 0);
 
   lv_obj_t *display = settings_panels_[static_cast<size_t>(SettingsSection::display)];
-  lv_obj_t *brightness_label = make_label(display, "BRIGHTNESS", &ui_font_selawik_18,
+  lv_obj_t *brightness_label = make_label(display, "BRIGHTNESS", &ui_font_18,
                                           color(kText));
   lv_obj_set_pos(brightness_label, 8, 12);
-  brightness_value_ = make_label(display, "82%", &ui_font_selawik_18, color(kAccent));
+  brightness_value_ = make_label(display, "82%", &ui_font_18, color(kAccent));
   lv_obj_set_pos(brightness_value_, 372, 12);
   lv_obj_set_width(brightness_value_, 62);
   lv_obj_set_style_text_align(brightness_value_, LV_TEXT_ALIGN_RIGHT, 0);
@@ -933,7 +933,7 @@ void MusicUi::create_settings_overlays() {
     lv_obj_set_width(name, 210);
     lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_align(name, LV_ALIGN_LEFT_MID, 4, 0);
-    *value_label = make_label(row, value, &ui_font_selawik_18, color(kAccent));
+    *value_label = make_label(row, value, &ui_font_18, color(kAccent));
     lv_obj_set_width(*value_label, 170);
     lv_obj_set_style_text_align(*value_label, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_align(*value_label, LV_ALIGN_RIGHT_MID, -4, 0);
@@ -944,7 +944,7 @@ void MusicUi::create_settings_overlays() {
   auto_blank_button_ = display_value_row("SCREEN OFF", "5 MIN", 92, &auto_blank_value_);
   flip_button_ = display_value_row("FLIP SCREEN", "OFF", 154, &flip_value_);
   lv_obj_t *wake_help = make_label(display, "TOUCH ANYWHERE ON THE DARK SCREEN TO WAKE",
-                                   &ui_font_selawik_14, color(kMuted));
+                                   &ui_font_14, color(kMuted));
   lv_obj_set_pos(wake_help, 8, 218);
 
   lv_obj_t *storage = settings_panels_[static_cast<size_t>(SettingsSection::storage)];
@@ -957,16 +957,16 @@ void MusicUi::create_settings_overlays() {
       "checked.\n\nAIMP CONTROLS\n"
       "Equalizer, sleep timer and confirmed computer actions are available from their own settings page when "
       "the connected plug-in advertises support.",
-      &ui_font_selawik_14, color(kText));
+      &ui_font_14, color(kText));
   lv_obj_set_pos(storage_text, 10, 44);
   lv_obj_set_width(storage_text, 420);
   lv_label_set_long_mode(storage_text, LV_LABEL_LONG_WRAP);
   capabilities_value_ = make_label(storage, "CAPABILITIES: WAITING FOR AIMP",
-                                   &ui_font_selawik_14, color(kAccent));
+                                   &ui_font_14, color(kAccent));
   lv_obj_set_pos(capabilities_value_, 10, 4);
   lv_obj_set_width(capabilities_value_, 420);
   settings_storage_value_ = make_label(storage, "SETTINGS STORAGE: NVS OK",
-                                       &ui_font_selawik_14, color(kAccent));
+                                       &ui_font_14, color(kAccent));
   lv_obj_set_pos(settings_storage_value_, 10, 24);
   lv_obj_set_width(settings_storage_value_, 420);
 
@@ -975,7 +975,7 @@ void MusicUi::create_settings_overlays() {
   lv_obj_set_style_pad_row(advanced_panel, 4, 0);
   lv_obj_set_flex_flow(advanced_panel, LV_FLEX_FLOW_COLUMN);
   advanced_status_ = make_label(advanced_panel, "WAITING FOR AIMP CAPABILITIES",
-                                &ui_font_selawik_14, color(kMuted));
+                                &ui_font_14, color(kMuted));
   lv_obj_set_width(advanced_status_, 430);
   lv_label_set_long_mode(advanced_status_, LV_LABEL_LONG_WRAP);
   equalizer_enable_button_ = lv_obj_create(advanced_panel);
@@ -987,12 +987,12 @@ void MusicUi::create_settings_overlays() {
   lv_obj_set_clickable(equalizer_enable_button_, false);
   lv_obj_set_scrollable(equalizer_enable_button_, false);
   lv_obj_t *eq_name = make_label(equalizer_enable_button_, "EQUALIZER STATUS",
-                                 &ui_font_selawik_18, color(kText));
+                                 &ui_font_18, color(kText));
   lv_obj_set_width(eq_name, 250);
   lv_obj_set_style_text_align(eq_name, LV_TEXT_ALIGN_LEFT, 0);
   lv_obj_align(eq_name, LV_ALIGN_LEFT_MID, 4, 0);
   equalizer_enable_value_ = make_label(equalizer_enable_button_, "WAITING",
-                                       &ui_font_selawik_18, color(kAccent));
+                                       &ui_font_18, color(kAccent));
   lv_obj_set_width(equalizer_enable_value_, 150);
   lv_obj_set_style_text_align(equalizer_enable_value_, LV_TEXT_ALIGN_RIGHT, 0);
   lv_obj_align(equalizer_enable_value_, LV_ALIGN_RIGHT_MID, -4, 0);
@@ -1005,7 +1005,7 @@ void MusicUi::create_settings_overlays() {
   lv_obj_set_width(sleep_name, 220);
   lv_obj_set_style_text_align(sleep_name, LV_TEXT_ALIGN_LEFT, 0);
   lv_obj_align(sleep_name, LV_ALIGN_LEFT_MID, 4, 0);
-  sleep_timer_value_ = make_label(sleep_timer_button_, "OFF", &ui_font_selawik_18,
+  sleep_timer_value_ = make_label(sleep_timer_button_, "OFF", &ui_font_18,
                                   color(kAccent));
   lv_obj_set_width(sleep_timer_value_, 190);
   lv_obj_set_style_text_align(sleep_timer_value_, LV_TEXT_ALIGN_RIGHT, 0);
@@ -1014,7 +1014,7 @@ void MusicUi::create_settings_overlays() {
   lv_obj_add_event_cb(sleep_timer_button_, event_handler, LV_EVENT_CLICKED, this);
 
   power_title_ = make_label(advanced_panel, "COMPUTER / CONFIRMATION REQUIRED",
-                            &ui_font_selawik_14, color(kMuted));
+                            &ui_font_14, color(kMuted));
   lv_obj_set_style_pad_top(power_title_, 8, 0);
   static constexpr std::array<const char *, 3> kPowerLabels{
       "SLEEP COMPUTER", "RESTART COMPUTER", "SHUT DOWN COMPUTER"};
@@ -1029,14 +1029,14 @@ void MusicUi::create_settings_overlays() {
   lv_obj_set_style_bg_color(setting_editor_, color(kBackground), 0);
   lv_obj_set_style_bg_opa(setting_editor_, LV_OPA_COVER, 0);
   lv_obj_add_flag(setting_editor_, LV_OBJ_FLAG_HIDDEN);
-  setting_editor_title_ = make_label(setting_editor_, "EDIT SETTING", &ui_font_selawik_22,
+  setting_editor_title_ = make_label(setting_editor_, "EDIT SETTING", &ui_font_22,
                                      color(kText));
   lv_obj_set_pos(setting_editor_title_, 12, 10);
   setting_editor_textarea_ = lv_textarea_create(setting_editor_);
   lv_obj_set_pos(setting_editor_textarea_, 12, 48);
   lv_obj_set_size(setting_editor_textarea_, 332, 48);
   lv_textarea_set_one_line(setting_editor_textarea_, true);
-  lv_obj_set_style_text_font(setting_editor_textarea_, &ui_font_selawik_18, 0);
+  lv_obj_set_style_text_font(setting_editor_textarea_, &ui_font_18, 0);
   lv_obj_set_style_bg_color(setting_editor_textarea_, color(kPanel), 0);
   lv_obj_set_style_text_color(setting_editor_textarea_, color(kText), 0);
   lv_obj_t *cancel = make_button(setting_editor_, "CANCEL", 116, 48);
@@ -1048,13 +1048,13 @@ void MusicUi::create_settings_overlays() {
     }
   }, LV_EVENT_CLICKED, this);
   setting_editor_message_ = make_label(setting_editor_, "PRESS ENTER TO SAVE",
-                                       &ui_font_selawik_14, color(kMuted));
+                                       &ui_font_14, color(kMuted));
   lv_obj_set_pos(setting_editor_message_, 14, 105);
   setting_editor_keyboard_ = lv_keyboard_create(setting_editor_);
   lv_obj_set_pos(setting_editor_keyboard_, 8, 128);
   lv_obj_set_size(setting_editor_keyboard_, 464, 184);
   lv_keyboard_set_textarea(setting_editor_keyboard_, setting_editor_textarea_);
-  lv_obj_set_style_text_font(setting_editor_keyboard_, &ui_font_selawik_18, LV_PART_ITEMS);
+  lv_obj_set_style_text_font(setting_editor_keyboard_, &ui_font_18, LV_PART_ITEMS);
   lv_obj_add_event_cb(setting_editor_keyboard_, event_handler, LV_EVENT_READY, this);
   lv_obj_add_event_cb(setting_editor_keyboard_, event_handler, LV_EVENT_CANCEL, this);
 
@@ -1076,11 +1076,11 @@ void MusicUi::create_equalizer_overlay() {
   lv_obj_set_style_bg_opa(equalizer_overlay_, LV_OPA_COVER, 0);
   lv_obj_add_flag(equalizer_overlay_, LV_OBJ_FLAG_HIDDEN);
 
-  lv_obj_t *title = make_label(equalizer_overlay_, "EQUALIZER", &ui_font_selawik_22,
+  lv_obj_t *title = make_label(equalizer_overlay_, "EQUALIZER", &ui_font_22,
                                color(kText));
   lv_obj_set_pos(title, 14, 14);
   equalizer_overlay_toggle_ = make_label(equalizer_overlay_, "OFF",
-                                         &ui_font_selawik_18, color(kAccent));
+                                         &ui_font_18, color(kAccent));
   lv_obj_set_pos(equalizer_overlay_toggle_, 260, 17);
   lv_obj_set_width(equalizer_overlay_toggle_, 80);
   lv_obj_set_style_text_align(equalizer_overlay_toggle_, LV_TEXT_ALIGN_RIGHT, 0);
@@ -1104,10 +1104,10 @@ void MusicUi::create_equalizer_overlay() {
   lv_obj_set_style_bg_opa(power_confirm_overlay_, LV_OPA_COVER, 0);
   lv_obj_add_flag(power_confirm_overlay_, LV_OBJ_FLAG_HIDDEN);
   lv_obj_t *warning = make_label(power_confirm_overlay_, "CONFIRM COMPUTER ACTION",
-                                 &ui_font_selawik_22, color(0xE04F5F));
+                                 &ui_font_22, color(0xE04F5F));
   lv_obj_set_pos(warning, 20, 30);
   power_confirm_message_ = make_label(
-      power_confirm_overlay_, "", &ui_font_selawik_18, color(kText));
+      power_confirm_overlay_, "", &ui_font_18, color(kText));
   lv_obj_set_pos(power_confirm_message_, 20, 92);
   lv_obj_set_width(power_confirm_message_, 440);
   lv_label_set_long_mode(power_confirm_message_, LV_LABEL_LONG_WRAP);
@@ -1136,7 +1136,7 @@ void MusicUi::rebuild_equalizer(const Snapshot &snapshot) {
             ? "AIMP DID NOT RETURN EQUALIZER STATE"
             : "WAITING FOR EQUALIZER STATE FROM AIMP";
     lv_obj_t *waiting =
-        make_label(equalizer_list_, message, &ui_font_selawik_18, color(kMuted));
+        make_label(equalizer_list_, message, &ui_font_18, color(kMuted));
     lv_obj_set_style_pad_all(waiting, 16, 0);
     return;
   }
@@ -1147,7 +1147,7 @@ void MusicUi::rebuild_equalizer(const Snapshot &snapshot) {
     lv_obj_set_style_border_width(row, 0, 0);
     lv_obj_set_style_radius(row, 3, 0);
     lv_obj_set_style_pad_all(row, 0, 0);
-    lv_obj_t *label = make_label(row, name, &ui_font_selawik_14, color(kMuted));
+    lv_obj_t *label = make_label(row, name, &ui_font_14, color(kMuted));
     lv_obj_set_pos(label, 8, 17);
     lv_obj_set_width(label, 66);
     lv_obj_t *slider = lv_slider_create(row);
@@ -1165,7 +1165,7 @@ void MusicUi::rebuild_equalizer(const Snapshot &snapshot) {
     lv_obj_add_event_cb(slider, event_handler, LV_EVENT_RELEASED, this);
     char db[16];
     std::snprintf(db, sizeof(db), "%+.1f dB", (static_cast<int>(value) - 150) / 10.0);
-    lv_obj_t *value_label = make_label(row, db, &ui_font_selawik_14, color(kText));
+    lv_obj_t *value_label = make_label(row, db, &ui_font_14, color(kText));
     lv_obj_set_pos(value_label, 354, 17);
     lv_obj_set_width(value_label, 78);
     lv_obj_set_style_text_align(value_label, LV_TEXT_ALIGN_RIGHT, 0);
@@ -1717,20 +1717,20 @@ void MusicUi::append_queue_rows(const Snapshot &snapshot) {
     lv_obj_set_style_shadow_width(row, 0, 0);
     lv_obj_add_event_cb(row, queue_row_handler, LV_EVENT_CLICKED, this);
     lv_obj_add_event_cb(row, queue_row_handler, LV_EVENT_LONG_PRESSED, this);
-    lv_obj_t *index = make_label(row, std::to_string(queue_row + 1).c_str(), &ui_font_selawik_14,
+    lv_obj_t *index = make_label(row, std::to_string(queue_row + 1).c_str(), &ui_font_14,
                                  color(kMuted));
     lv_obj_align(index, LV_ALIGN_LEFT_MID, 0, 0);
     const std::string title = track.title.empty() ? "Unknown track" : track.title;
-    lv_obj_t *name = make_label(row, title.c_str(), &ui_font_selawik_18, color(kText));
+    lv_obj_t *name = make_label(row, title.c_str(), &ui_font_18, color(kText));
     lv_obj_set_size(name, 318, 23);
     lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
     lv_obj_align(name, LV_ALIGN_LEFT_MID, 48, -9);
-    lv_obj_t *artist = make_label(row, track.artist.c_str(), &ui_font_selawik_14, color(kMuted));
+    lv_obj_t *artist = make_label(row, track.artist.c_str(), &ui_font_14, color(kMuted));
     lv_obj_set_size(artist, 318, 17);
     lv_label_set_long_mode(artist, LV_LABEL_LONG_DOT);
     lv_obj_align(artist, LV_ALIGN_LEFT_MID, 48, 11);
     const std::string duration = format_time(track.duration_ms);
-    lv_obj_t *time = make_label(row, duration.c_str(), &ui_font_selawik_14, color(kMuted));
+    lv_obj_t *time = make_label(row, duration.c_str(), &ui_font_14, color(kMuted));
     lv_obj_align(time, LV_ALIGN_RIGHT_MID, -2, 0);
   }
   queue_build_index_ = end;
@@ -1766,14 +1766,14 @@ void MusicUi::rebuild_playlists(const Snapshot &snapshot) {
     lv_obj_set_style_shadow_width(row, 0, 0);
     lv_obj_add_event_cb(row, playlist_row_handler, LV_EVENT_CLICKED, this);
     lv_obj_add_event_cb(row, playlist_row_handler, LV_EVENT_LONG_PRESSED, this);
-    lv_obj_t *name = make_label(row, playlist.name.c_str(), &ui_font_selawik_18,
+    lv_obj_t *name = make_label(row, playlist.name.c_str(), &ui_font_18,
                                 playlist.active ? color(kAccent) : color(kText));
     lv_obj_set_width(name, 350);
     lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
     lv_obj_align(name, LV_ALIGN_LEFT_MID, 2, 0);
     const std::string count = std::to_string(playlist.count) +
                               (playlist.folder ? " ITEMS  " LV_SYMBOL_RIGHT : " TRACKS");
-    lv_obj_t *details = make_label(row, count.c_str(), &ui_font_selawik_14, color(kMuted));
+    lv_obj_t *details = make_label(row, count.c_str(), &ui_font_14, color(kMuted));
     lv_obj_align(details, LV_ALIGN_RIGHT_MID, -2, 0);
   }
 }

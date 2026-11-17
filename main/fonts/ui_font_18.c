@@ -1,7 +1,7 @@
 /*******************************************************************************
  * Size: 18 px
  * Bpp: 4
- * Opts: --font build/selawik-src/selawk.ttf -r 0x20-0x7E -r 0xA0-0xFF --size 18 --format lvgl --bpp 4 --no-compress --lv-fallback lv_font_montserrat_18 --lv-font-name ui_font_selawik_18 -o main/fonts/ui_font_selawik_18.c
+ * Opts: --font build/selawik-src/selawk.ttf -r 0x20-0x7E -r 0xA0-0xFF --size 18 --format lvgl --bpp 4 --no-compress --lv-fallback lv_font_montserrat_18 --lv-font-name ui_font_18 -o main/fonts/ui_font_18.c
  ******************************************************************************/
 
 #ifdef LV_LVGL_H_INCLUDE_SIMPLE
@@ -10,11 +10,11 @@
 #include "lvgl/lvgl.h"
 #endif
 
-#ifndef UI_FONT_SELAWIK_18
-#define UI_FONT_SELAWIK_18 1
+#ifndef UI_FONT_18
+#define UI_FONT_18 1
 #endif
 
-#if UI_FONT_SELAWIK_18
+#if UI_FONT_18
 
 /*-----------------
  *    BITMAPS
@@ -2082,9 +2082,9 @@ extern const lv_font_t lv_font_montserrat_18;
 
 /*Initialize a public general font descriptor*/
 #if LVGL_VERSION_MAJOR >= 8
-const lv_font_t ui_font_selawik_18 = {
+const lv_font_t ui_font_18 = {
 #else
-lv_font_t ui_font_selawik_18 = {
+lv_font_t ui_font_18 = {
 #endif
     .get_glyph_dsc = lv_font_get_glyph_dsc_fmt_txt,    /*Function pointer to get glyph's data*/
     .get_glyph_bitmap = lv_font_get_bitmap_fmt_txt,    /*Function pointer to get glyph's bitmap*/
@@ -2106,5 +2106,5 @@ lv_font_t ui_font_selawik_18 = {
 
 
 
-#endif /*#if UI_FONT_SELAWIK_18*/
+#endif /*#if UI_FONT_18*/
 
