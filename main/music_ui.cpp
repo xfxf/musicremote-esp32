@@ -1555,9 +1555,8 @@ void MusicUi::update(const Snapshot &snapshot) {
                displayed_artwork_ != nullptr) {
       // Keep the previous cover while the next one loads; consecutive tracks
       // on one album would otherwise flash the blank tile.
-      if (artwork_linger_deadline_us_ == 0) {
-        artwork_linger_deadline_us_ = esp_timer_get_time() + kArtworkLingerUs;
-      }
+      // Each newly selected track (each revision) gets its own grace period.
+      artwork_linger_deadline_us_ = esp_timer_get_time() + kArtworkLingerUs;
     } else {
       show_artwork_fallback();
     }
