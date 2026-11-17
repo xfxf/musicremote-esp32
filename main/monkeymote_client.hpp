@@ -62,6 +62,7 @@ struct Command {
   LibraryPath library_path;
   uint64_t request_token{0};
   uint64_t stream_generation{0};
+  int64_t enqueued_us{0};
 };
 
 class MonkeyMoteClient {
@@ -100,8 +101,12 @@ private:
   bool process_socket(int timeout_ms, const char *&failure);
   bool process_frame(uint32_t type, std::vector<uint8_t> &payload);
   bool send_packet(uint32_t type, const void *data = nullptr, size_t size = 0);
+  // `request_current` asks AIMP for the current playlist (-1) on the wire
+  // while the token still expects `playlist_id`, e.g. right after activating
+  // it: AIMP's -1 response is byte-identical to the one the index was built or
+  // last verified from, so it is reused by source hash instead of decoded.
   bool send_playlist_request(int32_t playlist_id, bool confirms_library_play = false,
-                             bool cacheable_active = false);
+                             bool cacheable_active = false, bool request_current = false);
   void send_command(const Command &command);
   void request_initial_state();
   bool prepare_persisted_playlist_cache();
@@ -128,6 +133,7 @@ private:
     bool cacheable_active{false};
     int64_t deadline_us{0};
     uint64_t mutation_generation{0};
+    int64_t sent_us{0};
   };
   std::optional<PlaylistRequestToken> take_playlist_response_token();
   void finish_playlist_response(const std::optional<PlaylistRequestToken> &token,
@@ -137,6 +143,7 @@ private:
                                  uint32_t count = 0);
   void expire_requests(int64_t now_us);
   void expect_activation_echo();
+  void check_play_verification(int64_t now_us);
   bool take_activation_echo();
   std::string take_cover_request();
   void reject_cover_reply();
@@ -163,6 +170,9 @@ private:
   FILE *streamed_frame_{nullptr};
   size_t streamed_remaining_{0};
   int64_t streamed_started_us_{0};
+  // Hash of the frame streamed so far, handed to the index worker with it.
+  uint64_t streamed_source_hash_{PlaylistIndex::kSourceHashSeed};
+  uint64_t completed_source_hash_{0};
   // The page shown while a large frame re-validates it; the build republishes
   // that page rather than jumping to the first.
   std::atomic<uint32_t> revalidation_page_start_{0};
@@ -191,12 +201,27 @@ private:
   int32_t pending_library_play_destination_{-1};
   std::atomic<int64_t> pending_library_play_deadline_us_{0};
   uint64_t pending_library_play_token_{0};
-  bool pending_cached_queue_play_{false};
   uint64_t next_playlist_request_token_{1};
   uint64_t last_playlist_request_token_{0};
   // The request sent right after our own playlist activation; AIMP's type 12
   // echo of that activation is absorbed while it is outstanding.
   uint64_t activation_echo_token_{0};
+  // A tap's activation sends no request; AIMP's echo precedes its replies to
+  // the play that follows, so it is absorbed until the first type 5 or 11.
+  bool activation_echo_window_open_{false};
+  int64_t activation_echo_deadline_us_{0};
+  // The row a tap played, checked against AIMP's next now-playing report.
+  struct PlayVerification {
+    bool active{false};
+    int32_t row{-1};
+    std::string title;
+    std::string artist;
+    int64_t deadline_us{0};
+    bool row_reported{false};
+    bool row_matched{false};
+    bool track_reported{false};
+    bool track_matched{false};
+  } play_verification_;
   std::deque<PlaylistRequestToken> playlist_requests_;
   std::optional<PlaylistRequestToken> streamed_playlist_request_;
   std::mutex playlist_requests_mutex_;
