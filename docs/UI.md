@@ -45,6 +45,11 @@ accent colour, and information hierarchy—without copying branded assets.
   timer turns off the backlight; the first touch restores it and is consumed so
   the hidden control beneath is not triggered.
 
+On a track change the previous cover stays on screen while the next one
+loads, and it is replaced as soon as the new cover is decoded. The generic
+tile appears only when AIMP reports no artwork or no cover arrives within
+2 seconds, so tracks on the same album never flash a blank tile.
+
 Cover JPEGs are decoded on a dedicated lower-priority task, never from the
 LVGL or socket loop. The 144 px decoded RGB888 surface uses PSRAM. Successful
 JPEGs are cached under the existing microSD-preferred storage directory; the

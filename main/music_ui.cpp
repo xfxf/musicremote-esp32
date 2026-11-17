@@ -22,6 +22,8 @@ constexpr uint32_t kMuted = 0x8C96A8;
 constexpr uint32_t kText = 0xF5F7FA;
 constexpr uint32_t kAccent = 0x00D7C7;
 constexpr uint32_t kAccentBlue = 0x35A7FF;
+// How long the previous cover stays up while the next track's cover loads.
+constexpr int64_t kArtworkLingerUs = 2'000'000;
 constexpr char kTag[] = "music_ui";
 
 // LVGL's default symbol page lacks ~ | ^ and `, which are valid in Wi-Fi and
@@ -312,6 +314,7 @@ void MusicUi::run() {
       append_queue_rows(snapshot_);
       lv_timer_handler();
       poll_display_timeout(esp_timer_get_time());
+      poll_artwork_linger(esp_timer_get_time());
     }
     vTaskDelay(pdMS_TO_TICKS(16));
   }
@@ -1514,6 +1517,44 @@ void MusicUi::set_display_blank(bool blank) {
   }
 }
 
+void MusicUi::show_artwork(std::shared_ptr<const ArtworkBitmap> artwork) {
+  artwork_linger_deadline_us_ = 0;
+  if (artwork == nullptr || artwork->pixels.empty() || artwork->width > 144 ||
+      artwork->height > 144 || artwork->stride < artwork->width * 3u) {
+    show_artwork_fallback();
+    return;
+  }
+  // Point LVGL at the new pixels before releasing the previous bitmap.
+  displayed_artwork_ = std::move(artwork);
+  artwork_descriptor_ = {};
+  artwork_descriptor_.header.magic = LV_IMAGE_HEADER_MAGIC;
+  artwork_descriptor_.header.cf = LV_COLOR_FORMAT_RGB888;
+  artwork_descriptor_.header.w = displayed_artwork_->width;
+  artwork_descriptor_.header.h = displayed_artwork_->height;
+  artwork_descriptor_.header.stride = displayed_artwork_->stride;
+  artwork_descriptor_.data_size = displayed_artwork_->pixels.size();
+  artwork_descriptor_.data = displayed_artwork_->pixels.data();
+  lv_image_set_src(art_image_, nullptr);
+  lv_image_set_src(art_image_, &artwork_descriptor_);
+  lv_obj_center(art_image_);
+  lv_obj_clear_flag(art_image_, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(art_fallback_, LV_OBJ_FLAG_HIDDEN);
+}
+
+void MusicUi::show_artwork_fallback() {
+  artwork_linger_deadline_us_ = 0;
+  lv_image_set_src(art_image_, nullptr);
+  lv_obj_add_flag(art_image_, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clear_flag(art_fallback_, LV_OBJ_FLAG_HIDDEN);
+  displayed_artwork_.reset();
+}
+
+void MusicUi::poll_artwork_linger(int64_t now_us) {
+  if (artwork_linger_deadline_us_ != 0 && now_us >= artwork_linger_deadline_us_) {
+    show_artwork_fallback();
+  }
+}
+
 void MusicUi::poll_display_timeout(int64_t now_us) {
   lv_indev_t *input = nullptr;
   bool pressed = false;
@@ -1589,27 +1630,16 @@ void MusicUi::update(const Snapshot &snapshot) {
   lv_label_set_text(artist_label_, artist.c_str());
   lv_label_set_text(album_label_, album.c_str());
   if (snapshot.artwork_revision != rendered_artwork_revision_) {
-    displayed_artwork_ = snapshot.artwork;
-    if (displayed_artwork_ != nullptr && !displayed_artwork_->pixels.empty() &&
-        displayed_artwork_->width <= 144 && displayed_artwork_->height <= 144 &&
-        displayed_artwork_->stride >= displayed_artwork_->width * 3) {
-      artwork_descriptor_ = {};
-      artwork_descriptor_.header.magic = LV_IMAGE_HEADER_MAGIC;
-      artwork_descriptor_.header.cf = LV_COLOR_FORMAT_RGB888;
-      artwork_descriptor_.header.w = displayed_artwork_->width;
-      artwork_descriptor_.header.h = displayed_artwork_->height;
-      artwork_descriptor_.header.stride = displayed_artwork_->stride;
-      artwork_descriptor_.data_size = displayed_artwork_->pixels.size();
-      artwork_descriptor_.data = displayed_artwork_->pixels.data();
-      lv_image_set_src(art_image_, nullptr);
-      lv_image_set_src(art_image_, &artwork_descriptor_);
-      lv_obj_center(art_image_);
-      lv_obj_clear_flag(art_image_, LV_OBJ_FLAG_HIDDEN);
-      lv_obj_add_flag(art_fallback_, LV_OBJ_FLAG_HIDDEN);
+    if (snapshot.artwork != nullptr) {
+      show_artwork(snapshot.artwork);
+    } else if (snapshot.artwork_state == ArtworkState::loading &&
+               displayed_artwork_ != nullptr) {
+      // Keep the previous cover while the next one loads; consecutive tracks
+      // on one album would otherwise flash the blank tile.
+      // Each newly selected track (each revision) gets its own grace period.
+      artwork_linger_deadline_us_ = esp_timer_get_time() + kArtworkLingerUs;
     } else {
-      lv_image_set_src(art_image_, nullptr);
-      lv_obj_add_flag(art_image_, LV_OBJ_FLAG_HIDDEN);
-      lv_obj_clear_flag(art_fallback_, LV_OBJ_FLAG_HIDDEN);
+      show_artwork_fallback();
     }
     rendered_artwork_revision_ = snapshot.artwork_revision;
   }
