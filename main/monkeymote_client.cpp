@@ -1658,6 +1658,9 @@ void MonkeyMoteClient::send_command(const Command &command) {
         pending_library_play_row_ = command.first;
         pending_library_play_destination_ = playlist_id;
         pending_library_play_deadline_us_ = esp_timer_get_time() + 15'000'000;
+        // Activating the cached playlist is a switch: responses requested
+        // before it (e.g. a refresh of another host playlist) must be rejected.
+        invalidate_streamed_playlist();
         const bool activated = simple(12, playlist_id);
         const bool confirming =
             activated && send_playlist_request(-1, true, true);
@@ -2169,14 +2172,15 @@ void MonkeyMoteClient::finish_playlist_response(
       valid && resolved_playlist_id == pending_library_play_destination_ &&
       count > static_cast<uint32_t>(pending_library_play_row_);
   if (!appended_row_confirmed) {
-    const int32_t destination = pending_library_play_destination_;
     fail_pending_library_play(pending_cached_queue_play_
                                   ? "CACHED PLAYLIST NOT CONFIRMED"
                                   : "LIBRARY APPEND NOT CONFIRMED");
     // The failed response token has already been consumed, so a fresh
-    // authoritative request cannot be mis-correlated with it.
-    if (destination >= 0 && socket_ >= 0) {
-      enqueue({CommandType::request_playlist, destination});
+    // authoritative request cannot be mis-correlated with it. Request the
+    // current queue (-1), never the old destination: AIMP may have switched
+    // playlists, and an explicit request would publish an inactive playlist.
+    if (socket_ >= 0) {
+      enqueue({CommandType::request_playlist, -1});
     }
     return;
   }
