@@ -58,13 +58,19 @@ decoded playlist that leaves out its playlist-ID and flags fields. A response
 to a request for the current playlist (`-1`) and one to a request for its
 explicit ID describe the same rows but compress differently (1,223,087 and
 1,223,090 bytes for `NAS:Music`), so the compressed hash alone rebuilt the
-index after every switch away and back. When the compressed hash differs, the
-firmware decodes the response and compares the content hash, name, and count;
-a match reuses the index after the decode alone. Two different explicit
-playlist IDs never share an index, so the stored ID stays truthful. MonkeyMote
-does not expose a playlist revision, delta, pagination, or changed-row
-notification, so AIMP must still send the complete compressed response before the device can verify that hash. A changed
-hash invalidates the complete local index; safe partial invalidation is not
+index after every switch away and back. When the compressed hash differs and
+a valid index exists, the firmware first decodes the response into a digest
+only, with no storage write, and compares the content hash, name, and count.
+A match reuses the index after that decode alone. Only a confirmed rebuild
+then faces the internal-flash wear throttle and the free-space reserve, so an
+unchanged playlist is never reported stale or `SD CARD FULL`. The stored
+playlist ID is published as the active playlist, so reuse also requires that
+ID to be `-1` or the response's own ID: a current-playlist (`-1`) response
+does not prove that an explicitly stored playlist is still the active one,
+and it rebuilds instead. MonkeyMote does not expose a playlist revision, delta,
+pagination, or changed-row notification, so AIMP must still send the complete
+compressed response before the device can verify that hash. A changed hash
+invalidates the complete local index; safe partial invalidation is not
 possible without row identities or a server revision. On
 internal flash, changed content received less than 15 minutes after boot or the
 last promotion keeps the previous index file and visibly reports
@@ -90,19 +96,32 @@ Switching to another playlist keeps `INDEX.DAT` unless that playlist is also
 large: a small playlist uses the in-memory path and never touches the file.
 The switch clears the `ACTIVE.DAT` marker, so the next boot requests the
 active queue instead of offering the cached rows. Switching back transfers the
-large response again and reuses the kept index by content hash (26 seconds
-for `NAS:Music`, mostly decoding) instead of rebuilding it (about 145
-seconds). AIMP's follow-up current-queue response then matches by source hash.
-A second large playlist replaces the single index, and switching back to the
+large response again and reuses the kept index by content hash, decoding it
+into a digest in 8 seconds after a 3.7-second transfer for `NAS:Music`,
+instead of rebuilding it (about 145 seconds). AIMP answers every activation
+with a type 12 notification before it answers the request sent with it; the
+firmware recognizes that echo and does not transfer the playlist again. A
+second large playlist replaces the single index, and switching back to the
 first then rebuilds it.
+
+Re-validating the playlist already on screen (the refresh button, a genuine
+change notification, or a tap on a cached row) keeps the current page visible
+while the response is transferred and checked; the title reports progress.
+Those rows are treated as unverified until the build finishes: a tap goes
+through the cached-play confirmation, destructive edits stay disabled, and
+paging and `FIND` wait for the build, which then republishes the same page.
+Moving between the NOW and QUEUE tabs never requests anything from AIMP.
 
 `FIND` opens a full-screen A-Z surface. `#` matches titles whose first byte is
 not A-Z, letters perform a case-insensitive title-prefix scan, and `ALL` clears
 the filter. `SEARCH` opens the LVGL keyboard and performs a case-insensitive
 substring scan over title, artist, and album. The complete secondary area is
 scanned with a small buffer, but only the requested 100 matching rows are
-materialized. Result rows retain their global AIMP queue row, so selecting one
-plays the correct item and returns to Now Playing.
+materialized. Result rows retain their global AIMP queue row. Selecting one
+plays that item (through the cached-play confirmation when the queue is
+cached), clears the filter, and stays on the queue at the playlist page that
+holds it, scrolled into view and highlighted once AIMP reports it as current,
+so the rest of its album can be browsed in playlist order.
 
 AIMP may label a request for the current queue with playlist ID `-1`. On the
 first indexed page the firmware resolves that sentinel to a unique playlist

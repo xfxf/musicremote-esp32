@@ -669,3 +669,67 @@ These were not exercised by touch:
 - In FIND > SEARCH, type an album name and confirm that its tracks are listed.
 - Confirm that the refresh, FIND, and arrow buttons respond reliably at their
   new 44 px widths.
+
+### Owner touch re-check fixes and review round 1
+
+The owner's touch testing of PR #50 found three problems. Each was then
+reproduced on the board. A temporary diagnostic that sent a click to a queue
+row, and one that activated a playlist, stood in for touch; neither is
+committed.
+
+1. **The playlist reloaded when switching from NOW to QUEUE.** Page
+   navigation sends nothing to AIMP: six NOW/QUEUE switches logged no
+   request. Host probing showed that play, next, previous, pause, and stop
+   produce no change notification. The reload came from tapping a cached
+   row. The cached-play path activates the recorded playlist, and AIMP
+   answers every activation with a type 12 notification. The firmware treated
+   that echo as a change, which made the confirmation reply stale. The tap
+   therefore never played, and the 1.2 MB playlist was transferred three
+   times while the queue was blank:
+
+   ```
+   I (34700) monkeymote: AIMP playlist notification type 12
+   I (35561) monkeymote: Streaming 1223087-byte playlist frame to index storage
+   I (39479) monkeymote: Deferring large playlist received while index build is active
+   I (43871) monkeymote: Streaming 1223087-byte playlist frame to index storage
+   ```
+
+   After the fix, the echo is absorbed, one transfer runs, and the rows stay on
+   screen during it:
+
+   ```
+   I (34714) monkeymote: AIMP echoed our playlist activation; request already outstanding
+   I (34719) monkeymote: Streaming 1223087-byte playlist frame to index storage
+   I (42167) monkeymote: Indexed 48321 tracks for playlist -1 in 3187 ms (reused: source hash)
+   ```
+
+   A refresh likewise kept the visible page during `RECEIVING LIBRARY` and
+   `INDEXING LIBRARY`. A switch to `Music` and back now absorbs both echoes,
+   transfers once, reuses the index by content digest in 8.0 seconds, and
+   persists the cached-queue marker.
+2. **Tapping a FIND result did nothing.** This had the same cause, because the
+   index was cached after boot. With the fix, tapping `scared of flying` in
+   the cached `messages` results played it after one confirmation transfer,
+   about 8 seconds. In the authoritative state, tapping an `autechre` result
+   played it at once.
+3. **After a result is selected**, the filter is cleared and the queue stays
+   on the playlist page that holds the track: page 39,901 to 40,000 for
+   `scared of flying`, and page 1 to 100 for the Autechre row 8. The row is
+   scrolled into view and highlighted when AIMP reports it as current, and
+   the neighbouring tracks of the album are listed around it.
+
+Review round 1 also changed content-hash reuse in `playlist_index.cpp`. A
+current-playlist (`-1`) response no longer reuses an index stored under an
+explicit playlist ID. The response is decoded into a digest before the
+internal-flash wear throttle or the free-space reserve applies, so an
+unchanged playlist is never reported stale or `SD CARD FULL`. The digest
+writes nothing to storage, which cut the switch-back reuse from 26 seconds to
+8 seconds.
+
+![Cached FIND result selected: its playlist page, scrolled and highlighted](../artifacts/issue48-result-selected.png)
+![Authoritative FIND result selected on page 1](../artifacts/issue48-result-selected-direct.png)
+![Refresh re-validating with the page still visible](../artifacts/issue48-revalidating.png)
+
+AIMP was left stopped on `NAS:Music` (ID 2), as found.
+
+**Owner touch results:** pending. To be recorded after the owner's re-check.

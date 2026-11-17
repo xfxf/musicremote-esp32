@@ -45,7 +45,7 @@ deliberate disconnect logs `Closing AIMP connection: <reason>`.
 | 6 | Position, playback, shuffle, repeat, and volume state |
 | 8 | Current-track cover-art response |
 | 11 | Current queue index |
-| 12 / 17 / 30 / 35 | Queue/playlist changed notification; request the current queue again |
+| 12 / 17 / 30 / 35 | Queue/playlist changed notification; request the current queue again (see below for the activation echo) |
 | 19 | Media-library node, album, or track result |
 | 23 | Keepalive (echoed) |
 | 28 | Eight-byte capability mask |
@@ -103,6 +103,16 @@ values are a following `int32_t`:
 The play value for subcommand 10 is the zero-based row in the current queue,
 not the per-item ID in playlist metadata (which AIMP may report as `-1`). Type
 11 publishes the current zero-based queue row.
+
+Live probing on 2026-11-17 (issue #48) showed that play-row, play, next,
+previous, pause, and stop produce only type 5, 6, and 11 frames, never a
+type 12/17/30/35 notification. Activating a playlist (subcommand 12), even
+the one already active, is answered with one empty type 12 before AIMP
+answers any request sent after the activation. The firmware sends the queue
+request in the same pass as the activation and absorbs one type 12 while that
+request is outstanding; treating the echo as a change had made the request's
+reply stale, so a tap on a cached row never played and the 1.2 MB playlist
+was transferred two more times. Any later type 12 is handled as a change.
 
 ## Other implemented operations
 
