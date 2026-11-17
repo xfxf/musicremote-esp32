@@ -25,3 +25,6 @@ __pycache__/
 artifacts/*.ppm
 artifacts/device-online.png
 
+
+# Agent tooling worktrees and local state
+.claude/

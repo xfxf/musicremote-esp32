@@ -52,8 +52,12 @@ complete compressed response before the device can verify that hash. A changed
 hash invalidates the complete local index; safe partial invalidation is not
 possible without row identities or a server revision. On
 internal flash, changed content received less than 15 minutes after boot or the
-last promotion keeps the previous index and visibly reports
-`INDEX STALE - RETRY LATER`. This bounds erase frequency during reconnect or
+last promotion keeps the previous index file and visibly reports
+`INDEX STALE - RETRY LATER`. The kept file is reused only if a later response
+hashes identically; its rows no longer match AIMP's queue, so the queue shows
+no rows, and nothing can be played, edited, or paged, until a matching index
+is built or a manual refresh after the interval rebuilds it. This bounds erase
+frequency during reconnect or
 notification storms. SPIFFS still has finite endurance; microSD is recommended
 for frequently edited or large libraries.
 

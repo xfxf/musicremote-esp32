@@ -78,8 +78,12 @@ private:
   void refresh_setting_labels();
   void update_advanced_controls(const Snapshot &snapshot);
   void rebuild_equalizer(const Snapshot &snapshot);
+  void sync_equalizer(const Snapshot &snapshot);
   void end_advanced_demo();
   void poll_display_timeout(int64_t now_us);
+  void poll_artwork_linger(int64_t now_us);
+  void show_artwork(std::shared_ptr<const ArtworkBitmap> artwork);
+  void show_artwork_fallback();
   void set_display_blank(bool blank);
   void handle_event(lv_event_t *event);
 
@@ -248,6 +252,9 @@ private:
   lv_obj_t *lyrics_text_{nullptr};
   lv_image_dsc_t artwork_descriptor_{};
   std::shared_ptr<const ArtworkBitmap> displayed_artwork_;
+  // While the next track's cover loads, the previous cover stays on screen
+  // until this deadline (0 = not lingering) to avoid a blank flash.
+  int64_t artwork_linger_deadline_us_{0};
 };
 
 } // namespace musicremote

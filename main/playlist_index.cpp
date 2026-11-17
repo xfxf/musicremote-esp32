@@ -344,7 +344,10 @@ bool load_track(FILE *file, const IndexHeader &header, uint32_t row, Track &trac
   }
   auto load_string = [&](uint32_t offset, uint16_t length, std::string &value) {
     const uint64_t position = static_cast<uint64_t>(header.strings_offset) + offset;
-    if (static_cast<uint64_t>(offset) + length > header.strings_size || position > LONG_MAX ||
+    // The builder never stores a field longer than kMaxStoredField. Reject a
+    // corrupt record before it can size a 64 KiB allocation per field.
+    if (length > kMaxStoredField ||
+        static_cast<uint64_t>(offset) + length > header.strings_size || position > LONG_MAX ||
         std::fseek(file, static_cast<long>(position), SEEK_SET) != 0) {
       return false;
     }
@@ -484,6 +487,8 @@ void PlaylistIndex::clear_active() const {
   unlink(path("ACTIVE.DAT").c_str());
 }
 
+void PlaylistIndex::mark_current_unusable() const { current_unusable_ = true; }
+
 PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &progress) {
   BuildResult result;
   if (!available()) {
@@ -525,7 +530,8 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
     IndexHeader header{};
     struct stat current_stat {};
     const bool valid_current =
-        current != nullptr && read_exact(current, &header, sizeof(header)) &&
+        !current_unusable_.load() && current != nullptr &&
+        read_exact(current, &header, sizeof(header)) &&
         valid_header(header) && fstat(fileno(current), &current_stat) == 0 &&
         static_cast<uint64_t>(header.search_offset) + header.search_size ==
             static_cast<uint64_t>(current_stat.st_size);
@@ -625,9 +631,15 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
     }
   }
   {
+    // Every wire row needs a 32-byte base and four field terminators. Bound the
+    // untrusted count by the decoded bytes left before reserving its table.
+    constexpr uint64_t kMinWireRowBytes = 32 + 4;
+    const long records_start = std::ftell(raw);
     const uint64_t strings_offset =
         sizeof(IndexHeader) + static_cast<uint64_t>(result.count) * sizeof(IndexRecord);
-    if (strings_offset > UINT32_MAX || strings_offset > LONG_MAX) {
+    if (records_start < 0 || static_cast<uint64_t>(records_start) > decoded_size ||
+        result.count > (decoded_size - static_cast<uint64_t>(records_start)) / kMinWireRowBytes ||
+        strings_offset > UINT32_MAX || strings_offset > LONG_MAX) {
       result.error = "INDEX SIZE FAILED";
       goto cleanup;
     }
@@ -805,14 +817,17 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
       goto cleanup;
     }
     header.search_size = static_cast<uint32_t>(search_size);
-    if (std::fseek(index, 0, SEEK_SET) != 0 ||
-        !write_exact(index, &header, sizeof(header)) || std::fflush(index) != 0 ||
-        fsync(fileno(index)) != 0 || std::fclose(index) != 0) {
-      index = nullptr;
+    // Close the index even when finalization fails, so repeated storage
+    // errors cannot exhaust the mount's open-file slots.
+    const bool finalized = std::fseek(index, 0, SEEK_SET) == 0 &&
+                           write_exact(index, &header, sizeof(header)) &&
+                           std::fflush(index) == 0 && fsync(fileno(index)) == 0;
+    const bool closed = std::fclose(index) == 0;
+    index = nullptr;
+    if (!finalized || !closed) {
       result.error = "STORAGE WRITE FAILED";
       goto cleanup;
     }
-    index = nullptr;
   }
   {
     const std::string final = path("INDEX.DAT");
@@ -830,6 +845,7 @@ PlaylistIndex::BuildResult PlaylistIndex::build_from_compressed(const Progress &
     unlink(backup.c_str());
   }
   result.success = true;
+  current_unusable_ = false;
   if (internal_flash_) {
     last_internal_promotion_us_ = esp_timer_get_time();
   }
