@@ -557,3 +557,115 @@ On the SC01 Plus against the live AIMP host, the owner confirmed these cases:
   2 seconds.
 
 ![Now playing with cover after a track change](../artifacts/issue43-now.png)
+
+## Large-playlist reconnect loop qualification (issue #48)
+
+Date: 2026-11-17. SC01 Plus on `/dev/ttyACM0` with a 64 GB microSD card,
+live AIMP host `aerocore.local:19371`, and the 48,321-row `NAS:Music`
+playlist (ID 2) active. Firmware image `0x1eb9a0` bytes.
+
+### Root cause
+
+With the reason logging added in this change, the original loop logged:
+
+```
+I (20482) monkeymote: Authenticated to aerocore.local:19371
+I (22223) monkeymote: Streaming 1223087-byte playlist frame to index storage
+W (35271) monkeymote: Closing AIMP connection: AIMP closed the connection (during large playlist transfer)
+I (43520) monkeymote: mDNS resolved aerocore.local to 192.168.227.178
+```
+
+It repeated every 23 seconds. No client deadline fired: AIMP closed the
+socket. Two faults combined.
+
+1. **AIMP liveness.** AIMP drops a client that has sent nothing for about
+   10 seconds (`docs/PROTOCOL.md`). The firmware sent a keepalive only after
+   10 seconds without receiving, which never happens mid-transfer. A host
+   probe reading the frame at 20 KB/s was cut off after 13.4 seconds; with a
+   client keepalive every 3 seconds the same read stayed connected for 90
+   seconds.
+2. **Slow storage after an SD panic.** On boot with a persisted index, the
+   100 cached queue rows' LVGL objects were allocated from internal RAM,
+   because `malloc()` places blocks under 4 KiB there. Internal free memory
+   fell from about 36 KiB to 867 bytes within one 200 ms sample. The microSD
+   SPI driver then could not allocate a 512-byte DMA bounce buffer, and
+   ESP-IDF panicked (`setup_dma_priv_buffer: Failed to allocate priv RX
+   buffer`, `LoadProhibited`) in the artwork cache's directory scan. The reset
+   left the card mid-read, so later boots failed to mount it
+   (`sdmmc_io_reset: unexpected return`) and fell back to the internal SPIFFS
+   partition. SPIFFS writes at about 19 KB/s (135 KB in 7 seconds), so
+   the 1.2 MB frame needed about 60 seconds, far beyond AIMP's 10-second
+   limit.
+
+### Fixes verified on hardware
+
+- A keepalive is sent whenever the client has sent nothing for 4 seconds, and
+  every request deadline (playlist, lyrics, library, library-play, cache
+  check, advanced controls, and the equalizer overlay) pauses while a partial
+  frame is in flight. Host tests: `tools/test_connection_policy.cpp` and
+  `tools/test_advanced_controls.cpp`.
+- LVGL uses a PSRAM-first allocator. On the same boot sequence, internal free
+  memory stayed at 100 to 118 KiB. Five later runs with an allocation-failure
+  hook reported no failure, and no run panicked.
+- Each mount attempt first clocks out an SPI-mode CMD12 and idle clocks. After
+  a USB chip reset this recovered the card that the panic had left
+  unmountable. After the panic's own software reset it did not; the PSRAM
+  allocator removes that panic.
+- On microSD, the frame streamed in 3.8 to 4.8 seconds in every run, with no
+  disconnect.
+
+### Index, cache, and refresh timings
+
+| Case | Serial evidence | Time |
+|---|---|---|
+| First build, version 3 index | `Indexed 48321 tracks ... (rebuilt)` | 143 to 147 s after a 4.2 s transfer |
+| Reset with the persisted marker | `Reused persisted playlist index without queue transfer: id=2 count=48321` | 0.9 s after authentication; no transfer |
+| Queue refresh (`refresh=1`) | `Indexed 48321 tracks for playlist -1 in 3035 ms (reused: source hash)` | 4.1 s transfer plus 3.0 s |
+| Switch to `Music` (195 rows) and back | `Indexed 48321 tracks for playlist 2 in 25953 ms (reused: content hash)`, then `... in 3079 ms (reused: source hash)` | 26 s, then 3 s for AIMP's follow-up current-queue response |
+
+Before the content hash was added, the same switch back rebuilt the index for
+the explicit-ID response (135 seconds), then started a second full rebuild for
+AIMP's follow-up current-queue response. The explicit-ID and current-queue responses
+differ only in the playlist ID and flags bytes, but they compress to different
+frames. Switching to the small playlist left `INDEX.DAT` in place; the switch
+back reused it. The playlist switch used a temporary diagnostic build, because
+a tap cannot be automated. The switch path itself is the production
+`activate_playlist` command, and that diagnostic hook is not committed.
+
+Serial logs from every run above contained no `Closing AIMP connection` line.
+After the final flash, the board was left online and idle. AIMP's active
+playlist was restored to `NAS:Music` (ID 2), as recorded at the start of the
+session.
+
+### Search
+
+AIMP's per-row strings are title, artist, album, and genre
+(`docs/PROTOCOL.md`). The version 3 index stores and searches title, artist,
+and album. Version 2 files were rejected at boot and rebuilt, not reused.
+Searching `messages` returned a title match (row 7873) and the Strawpeople
+tracks on the album `No new messages` (rows 39999 to 40001), whose titles and
+artist do not contain the word. `autechre` returned artist matches, and A-Z
+`M` returned title-prefix matches. Paging to row 48,300 read the final page.
+
+![Persisted queue after reset, marked cached, with the refresh button](../artifacts/issue48-cached-queue.png)
+![Refresh in progress](../artifacts/issue48-refreshing.png)
+![After refresh, authoritative](../artifacts/issue48-refreshed.png)
+![A-Z overlay](../artifacts/issue48-az.png)
+![A-Z M results](../artifacts/issue48-az-results.png)
+![Album match for "messages"](../artifacts/issue48-album-search.png)
+![Artist match for "autechre"](../artifacts/issue48-artist-search.png)
+![Search keyboard with the new placeholder](../artifacts/issue48-search-overlay.png)
+![Final page at row 48,300](../artifacts/issue48-deep-page.png)
+
+### Owner touch checks
+
+These were not exercised by touch:
+
+- Tap the refresh button on the cached `NAS:Music` queue. The title should
+  show the transfer, then the rows should return without `CACHED` in about
+  8 seconds.
+- Switch to a small playlist and back from the Playlists page. The rows should
+  return in about 30 seconds with no full rebuild.
+- In FIND > SEARCH, type an album name and confirm that its tracks are listed.
+- Confirm that the refresh, FIND, and arrow buttons respond reliably at their
+  new 44 px widths.
