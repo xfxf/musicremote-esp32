@@ -136,6 +136,8 @@ private:
   void consume_playlist_response(bool valid, int32_t resolved_playlist_id = -1,
                                  uint32_t count = 0);
   void expire_requests(int64_t now_us);
+  void expect_activation_echo();
+  bool take_activation_echo();
   std::string take_cover_request();
   void reject_cover_reply();
   std::string take_lyrics_request();
@@ -161,6 +163,9 @@ private:
   FILE *streamed_frame_{nullptr};
   size_t streamed_remaining_{0};
   int64_t streamed_started_us_{0};
+  // The page shown while a large frame re-validates it; the build republishes
+  // that page rather than jumping to the first.
+  std::atomic<uint32_t> revalidation_page_start_{0};
   std::atomic<bool> index_building_{false};
   std::atomic<bool> index_superseded_{false};
   TaskHandle_t index_task_{nullptr};
@@ -188,6 +193,10 @@ private:
   uint64_t pending_library_play_token_{0};
   bool pending_cached_queue_play_{false};
   uint64_t next_playlist_request_token_{1};
+  uint64_t last_playlist_request_token_{0};
+  // The request sent right after our own playlist activation; AIMP's type 12
+  // echo of that activation is absorbed while it is outstanding.
+  uint64_t activation_echo_token_{0};
   std::deque<PlaylistRequestToken> playlist_requests_;
   std::optional<PlaylistRequestToken> streamed_playlist_request_;
   std::mutex playlist_requests_mutex_;
