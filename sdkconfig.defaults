@@ -33,7 +33,9 @@ CONFIG_LV_COLOR_DEPTH_16=y
 CONFIG_LV_DEF_REFR_PERIOD=16
 CONFIG_LV_USE_THEME_DEFAULT=y
 CONFIG_LV_THEME_DEFAULT_DARK=y
-CONFIG_LV_USE_CLIB_MALLOC=y
+# LVGL allocates through main/lv_mem_core_psram.c: plain malloc, except that
+# the microSD CJK font's tiny_ttf caches go to PSRAM.
+CONFIG_LV_USE_CUSTOM_MALLOC=y
 CONFIG_LV_USE_SNAPSHOT=y
 CONFIG_LV_THEME_DEFAULT_GROW=y
 CONFIG_LV_THEME_DEFAULT_TRANSITION_TIME=80
@@ -43,5 +45,12 @@ CONFIG_LV_FONT_MONTSERRAT_22=y
 CONFIG_LV_FONT_MONTSERRAT_28=y
 CONFIG_LV_FONT_MONTSERRAT_36=y
 CONFIG_LV_FONT_MONTSERRAT_48=y
+# Optional CJK glyphs rendered from /sdcard/fonts/cjk.ttf (main/cjk_font.cpp,
+# which supplies its own lv_fs driver). Glyph cache sizes are per font size in
+# main/cjk_font_policy.hpp. The fonts are created without kerning, so the
+# kerning cache would only duplicate each glyph's advance width.
+CONFIG_LV_USE_TINY_TTF=y
+CONFIG_LV_TINY_TTF_FILE_SUPPORT=y
+CONFIG_LV_TINY_TTF_CACHE_KERNING_CNT=0
 
 CONFIG_LWIP_DNS_SUPPORT_MDNS_QUERIES=y

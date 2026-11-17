@@ -32,4 +32,6 @@ check: build check-visual
 	/tmp/musicremote-index-worker-policy-test
 	c++ -std=c++20 -Wall -Wextra -Werror -Imain tools/test_playlist_cache_policy.cpp -o /tmp/musicremote-playlist-cache-policy-test
 	/tmp/musicremote-playlist-cache-policy-test
+	c++ -std=c++20 -Wall -Wextra -Werror -Imain tools/test_cjk_font_policy.cpp -o /tmp/musicremote-cjk-font-policy-test
+	/tmp/musicremote-cjk-font-policy-test
 	git check-ignore .env

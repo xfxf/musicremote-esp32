@@ -96,6 +96,8 @@ idf_component_register(
         "monkeymote_client.cpp"
         "playlist_index.cpp"
         "music_ui.cpp"
+        "cjk_font.cpp"
+        "lv_mem_core_psram.c"
         "fonts/ui_font_14.c"
         "fonts/ui_font_14_semibold.c"
         "fonts/ui_font_18.c"

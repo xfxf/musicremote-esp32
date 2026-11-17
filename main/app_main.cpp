@@ -1,3 +1,4 @@
+#include "cjk_font.hpp"
 #include "device_settings.hpp"
 #include "monkeymote_client.hpp"
 #include "musicremote_config.hpp"
@@ -359,6 +360,10 @@ extern "C" void app_main() {
       ESP_LOGW(kTag, "Internal playlist storage unavailable");
     }
   }
+
+  // Before the UI exists and before the GUI task starts, so no other task is
+  // using LVGL yet.
+  musicremote::load_cjk_font(sd_ready);
 
   const char *storage_directory = sd_ready ? "/sdcard/mremote"
                                   : flash_ready ? "/flash/mremote"
