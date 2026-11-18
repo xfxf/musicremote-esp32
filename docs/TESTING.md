@@ -565,15 +565,10 @@ this branch merged with #48 and #49, live AIMP at `aerocore.local:19371`.
 `fonts/cjk.ttf` (Droid Sans Fallback Full, SHA-256 `2392015530…8240`) was
 placed on the card with `make load-data`.
 
-- The font is parsed only after its size and SHA-256 match the reviewed pin
-  (`kReviewedFonts`): a low-priority task hashes it after boot, and the GUI
-  task then activates it and re-measures labels. Boot logs `cjk-font: Loaded
-  /sdcard/fonts/cjk.ttf (Droid Sans Fallback Full (AOSP), 3940 KB, SHA-256
-  verified in 5020 ms) at 14/18/22/28 px; PSRAM cache up to 315 KB; internal
-  RAM free 129 KB, PSRAM free 1792 KB` about 7.5 s after reset, before AIMP
-  connects. The free-RAM figure is now taken after Wi-Fi starts. Hashing in
-  4 KB reads at priority 1 took 9.6 s; 16 KB reads at priority 2 take 5.0 s.
-  Activation is one pass of about 260 ms. Until then CJK text shows boxes.
+- Boot logs `cjk-font: Loaded /sdcard/fonts/cjk.ttf (3940 KB) at
+  14/18/22/28 px; PSRAM cache up to 315 KB; internal RAM free 211 KB, PSRAM
+  free 1915 KB`, after `sd_loader` recovery, so the font is opened only once
+  the card's interrupted uploads have been resolved.
 - LVGL allocates through #48's PSRAM-first allocator; the branch's earlier
   scoped PSRAM preference for tiny_ttf was dropped as redundant.
 - After boot, 35 s idle logged no slow-GUI-loop warnings. The only warnings
@@ -582,9 +577,8 @@ placed on the card with `make load-data`.
   CJK composer names in the media library, and scrolling and clipping in QUEUE
   and search: all render, nothing clipped. Device screenshots:
   `artifacts/issue45-now-playing.png` (Semibold title and album line),
-  `artifacts/issue45-now-playing-cjk.png` (activated after verification, no
-  reboot), `artifacts/issue45-queue.png`, `artifacts/issue45-playlists.png`
-  and `artifacts/issue45-library.png`.
+  `artifacts/issue45-now-playing-cjk.png`, `artifacts/issue45-queue.png`,
+  `artifacts/issue45-playlists.png` and `artifacts/issue45-library.png`.
 - Labels that show metadata take their font's full line height, so
   descenders and lower diacritics are not clipped. Unicode default-ignorable
   characters (U+034F, zero-width and directional marks, variation selectors,

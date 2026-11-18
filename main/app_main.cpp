@@ -432,9 +432,9 @@ extern "C" void app_main() {
     }
   }
 
-  // After the SD loader's boot recovery, so the font file is settled. The
-  // GUI task activates it once its SHA-256 is verified (poll_cjk_font()).
-  musicremote::start_cjk_font(sd_ready);
+  // Before the UI exists and before the GUI task starts, so no other task is
+  // using LVGL yet.
+  musicremote::load_cjk_font(sd_ready);
 
   const char *storage_directory = sd_ready ? "/sdcard/mremote"
                                   : flash_ready ? "/flash/mremote"

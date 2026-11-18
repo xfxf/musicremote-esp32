@@ -2,7 +2,6 @@
 
 #undef NDEBUG
 #include <cassert>
-#include <cstdio>
 #include <cstdint>
 #include <vector>
 
@@ -183,25 +182,7 @@ void test_policy() {
 
 } // namespace
 
-void test_reviewed_fonts() {
-  // The pin shared with tools/fetch_cjk_font.sh.
-  const char *hex = "2392015530438bafc48edfc4aee6d9de2387f627a6134d8ab3dfcc99d21c8240";
-  std::array<uint8_t, 32> digest{};
-  for (std::size_t i = 0; i < digest.size(); ++i) {
-    unsigned value = 0;
-    std::sscanf(hex + 2 * i, "%2x", &value);
-    digest[i] = static_cast<uint8_t>(value);
-  }
-  assert(cjk::reviewed_size(4033576));
-  assert(!cjk::reviewed_size(4033575));
-  assert(cjk::reviewed_font(4033576, digest) != nullptr);
-  assert(cjk::reviewed_font(4033575, digest) == nullptr);
-  digest[31] ^= 1;
-  assert(cjk::reviewed_font(4033576, digest) == nullptr);
-}
-
 int main() {
-  test_reviewed_fonts();
   test_reads_within_and_across_blocks();
   test_end_of_file_reads_zero();
   test_least_recently_used_eviction();

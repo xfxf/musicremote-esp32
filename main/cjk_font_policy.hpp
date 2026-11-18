@@ -12,34 +12,10 @@ namespace musicremote::cjk_font {
 
 inline constexpr const char *kFontPath = "/sdcard/fonts/cjk.ttf";
 
-// Fonts reviewed for use. stb_truetype trusts font structure (compound
-// glyphs recurse without a depth limit), so tiny_ttf only ever sees a file
-// whose size and SHA-256 match an entry here. Add an entry only after
-// reviewing the font; tools/fetch_cjk_font.sh pins the same file.
-struct ReviewedFont {
-  const char *name;
-  uint32_t size;
-  std::array<uint8_t, 32> sha256;
-};
-
-inline constexpr std::array<ReviewedFont, 1> kReviewedFonts{{
-    {"Droid Sans Fallback Full (AOSP)", 4033576,
-     {0x23, 0x92, 0x01, 0x55, 0x30, 0x43, 0x8b, 0xaf, 0xc4, 0x8e, 0xdf, 0xc4, 0xae, 0xe6, 0xd9, 0xde, 0x23, 0x87, 0xf6, 0x27, 0xa6, 0x13, 0x4d, 0x8a, 0xb3, 0xdf, 0xcc, 0x99, 0xd2, 0x1c, 0x82, 0x40}},
-}};
-
-constexpr bool reviewed_size(uint32_t size) {
-  for (const ReviewedFont &font : kReviewedFonts) {
-    if (font.size == size) return true;
-  }
-  return false;
-}
-
-inline const ReviewedFont *reviewed_font(uint32_t size, const std::array<uint8_t, 32> &sha256) {
-  for (const ReviewedFont &font : kReviewedFonts) {
-    if (font.size == size && font.sha256 == sha256) return &font;
-  }
-  return nullptr;
-}
+// A TrueType offset table is 12 bytes. The recommended font is about 4 MB;
+// the upper bound only rejects files that cannot be a sensible UI font.
+inline constexpr uint32_t kMinFileBytes = 12;
+inline constexpr uint32_t kMaxFileBytes = 32u * 1024u * 1024u;
 
 struct SizeSpec {
   int32_t pixel_size;

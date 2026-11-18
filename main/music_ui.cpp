@@ -1,6 +1,5 @@
 #include "music_ui.hpp"
 #include "settings_policy.hpp"
-#include "cjk_font.hpp"
 #include "ui_fonts.hpp"
 
 #include <algorithm>
@@ -344,7 +343,6 @@ void MusicUi::run() {
       worst_render_us = std::max(worst_render_us, esp_timer_get_time() - render_started_us);
       poll_display_timeout(esp_timer_get_time());
       poll_artwork_linger(esp_timer_get_time());
-      poll_cjk_font();
     }
     const int64_t now_us = esp_timer_get_time();
     worst_iteration_us = std::max(worst_iteration_us, now_us - iteration_start_us);
