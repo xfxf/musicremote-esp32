@@ -262,7 +262,7 @@ class Progress:
         self.stream = stream if stream is not None else sys.stderr
         self.started = time.monotonic()
         self.last = 0.0
-        self.tty = hasattr(stream, "isatty") and stream.isatty()
+        self.tty = hasattr(self.stream, "isatty") and self.stream.isatty()
         self.last_decile = -1
 
     def __call__(self, sent: int, total: int) -> None:

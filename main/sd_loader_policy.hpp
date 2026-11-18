@@ -31,6 +31,7 @@
 // RX ring buffer therefore holds at most two frames. A write failure is
 // reported as a fatal NAK on the next frame or on END.
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -38,6 +39,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace musicremote::sd_loader {
@@ -171,6 +173,9 @@ struct Relpath {
   // replace the extension instead of appending to it: fonts/cjk.tmp.
   std::string staging() const { return directory + "/" + stem + ".tmp"; }
   std::string backup() const { return directory + "/" + stem + ".bak"; }
+  // Records name() while the target is moved aside, because <stem>.bak alone
+  // cannot say which extension it came from (see recovery_plan()).
+  std::string journal() const { return directory + "/" + stem + ".jnl"; }
 };
 
 inline bool ascii_iequals(std::string_view left, std::string_view right) {
@@ -196,7 +201,7 @@ inline bool name_character(char character) {
 
 // Accepts only "<allow-listed directory>/<stem>[.<ext>]" with an 8.3 name of
 // [A-Za-z0-9_-] characters. Absolute paths, "..", ".", backslashes, nested
-// directories, and the reserved .tmp/.bak extensions are refused.
+// directories, and the reserved .tmp/.bak/.jnl extensions are refused.
 inline std::optional<Relpath> validate_relpath(std::string_view text) {
   if (text.empty() || text.size() > kMaxRelpathBytes) {
     return std::nullopt;
@@ -231,46 +236,80 @@ inline std::optional<Relpath> validate_relpath(std::string_view text) {
   for (const char character : extension) {
     if (!name_character(character)) return std::nullopt;
   }
-  if (ascii_iequals(extension, "tmp") || ascii_iequals(extension, "bak")) {
+  if (ascii_iequals(extension, "tmp") || ascii_iequals(extension, "bak") ||
+      ascii_iequals(extension, "jnl")) {
     return std::nullopt;
   }
   return Relpath{std::string(directory), std::string(stem), std::string(extension)};
 }
 
-// Boot-time cleanup for one allow-listed directory. Given its entry names (as
-// readdir returns them, typically upper case without LFN support), returns
-// those to delete: every *.TMP (an interrupted upload), and every *.BAK whose
-// stem still has a promoted file beside it. A *.BAK without one is the only
-// copy left by a reset between the two promotion renames, so it is kept.
-inline std::vector<std::string> stale_entries(const std::vector<std::string> &names) {
+// One boot-time recovery step for an allow-listed directory.
+struct RecoveryStep {
+  enum class Kind {
+    remove,          // delete name
+    restore,         // rename name (a backup) to target
+    remove_journal,  // delete name, unless restoring its stem's backup failed
+  };
+  Kind kind;
+  std::string name;
+  std::string target;  // restore only
+};
+
+// Boot-time recovery for one allow-listed directory, run before any upload or
+// reader opens its files. names are the entries as readdir returns them
+// (upper case without LFN support); journals pairs each <stem>.JNL entry with
+// the target name it recorded. Promotion writes the journal, renames the
+// target to <stem>.bak, then renames <stem>.tmp to the target, so:
+//   - every *.TMP is an interrupted upload: removed;
+//   - a *.BAK whose journal names a target that exists was superseded:
+//     removed;
+//   - a *.BAK whose journal names a missing target is the only copy left by
+//     a reset between the renames: restored to that exact name;
+//   - a *.BAK without a usable journal is kept, since it may be the only copy;
+//   - every *.JNL is removed once its backup has been dealt with.
+inline std::vector<RecoveryStep> recovery_plan(
+    std::string_view directory, const std::vector<std::string> &names,
+    const std::vector<std::pair<std::string, std::string>> &journals) {
   const auto split = [](std::string_view name) {
     const size_t dot = name.rfind('.');
     return dot == std::string_view::npos
                ? std::pair{name, std::string_view{}}
                : std::pair{name.substr(0, dot), name.substr(dot + 1)};
   };
-  std::vector<std::string> stale;
+  const auto present = [&](std::string_view wanted) {
+    return std::any_of(names.begin(), names.end(),
+                       [&](const std::string &name) { return ascii_iequals(name, wanted); });
+  };
+  std::vector<RecoveryStep> steps;
   for (const auto &name : names) {
     const auto [stem, extension] = split(name);
     if (ascii_iequals(extension, "tmp")) {
-      stale.push_back(name);
+      steps.push_back({RecoveryStep::Kind::remove, name, {}});
       continue;
     }
     if (!ascii_iequals(extension, "bak")) {
       continue;
     }
-    bool promoted = false;
-    for (const auto &other : names) {
-      const auto [other_stem, other_extension] = split(other);
-      promoted = promoted || (ascii_iequals(other_stem, stem) &&
-                              !ascii_iequals(other_extension, "tmp") &&
-                              !ascii_iequals(other_extension, "bak"));
-    }
-    if (promoted) {
-      stale.push_back(name);
+    for (const auto &[journal, recorded] : journals) {
+      if (!ascii_iequals(split(journal).first, stem)) {
+        continue;
+      }
+      const auto target = validate_relpath(std::string(directory) + "/" + recorded);
+      if (!target || !ascii_iequals(target->stem, stem)) {
+        break;
+      }
+      if (present(recorded)) {
+        steps.push_back({RecoveryStep::Kind::remove, name, {}});
+      } else {
+        steps.push_back({RecoveryStep::Kind::restore, name, recorded});
+      }
+      break;
     }
   }
-  return stale;
+  for (const auto &[journal, recorded] : journals) {
+    steps.push_back({RecoveryStep::Kind::remove_journal, journal, {}});
+  }
+  return steps;
 }
 
 // ---------------------------------------------------------------- lines

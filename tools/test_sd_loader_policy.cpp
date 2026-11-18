@@ -73,6 +73,7 @@ void test_paths() {
   assert(font->target() == "fonts/cjk.ttf");
   assert(font->staging() == "fonts/cjk.tmp");
   assert(font->backup() == "fonts/cjk.bak");
+  assert(font->journal() == "fonts/cjk.jnl");
 
   const auto bare = loader::validate_relpath("fonts/README");
   assert(bare && bare->target() == "fonts/README" && bare->staging() == "fonts/README.tmp");
@@ -104,6 +105,7 @@ void test_paths() {
            "fonts/cjk.tmp",             // reserved staging name
            "fonts/cjk.TMP",             // reserved staging name
            "fonts/cjk.bak",             // reserved backup name
+           "fonts/cjk.jnl",             // reserved journal name
            "fonts/cj k.ttf",            // space
            "fonts/cjk*.ttf",            // wildcard
            "fonts/cjk.ttf\n",           // control character
@@ -114,16 +116,46 @@ void test_paths() {
   assert(!loader::validate_relpath(std::string_view("fonts/cjk\0.ttf", 14)));
 }
 
-void test_stale_entries() {
-  const auto stale = loader::stale_entries({"CJK.TTF", "CJK.BAK", "CJK.TMP", "LATIN.BAK",
-                                            "OTHER.TTF", "NOTES.TXT"});
-  // CJK.TMP: interrupted upload. CJK.BAK: superseded by CJK.TTF. LATIN.BAK is
-  // the only copy left by a reset between the promotion renames, so it stays.
-  assert(stale.size() == 2);
-  assert(std::find(stale.begin(), stale.end(), "CJK.BAK") != stale.end());
-  assert(std::find(stale.begin(), stale.end(), "CJK.TMP") != stale.end());
-  assert(loader::stale_entries({"cjk.bak", "cjk.tmp"}) == std::vector<std::string>{"cjk.tmp"});
-  assert(loader::stale_entries({}).empty());
+bool has_step(const std::vector<loader::RecoveryStep> &steps, loader::RecoveryStep::Kind kind,
+              const std::string &name, const std::string &target = {}) {
+  return std::any_of(steps.begin(), steps.end(), [&](const loader::RecoveryStep &step) {
+    return step.kind == kind && step.name == name && step.target == target;
+  });
+}
+
+void test_recovery_plan() {
+  using Kind = loader::RecoveryStep::Kind;
+  // Promotion completed: the journalled target exists, so the backup is stale.
+  auto steps = loader::recovery_plan("fonts", {"CJK.TTF", "CJK.BAK", "CJK.JNL", "CJK.TMP"},
+                                     {{"CJK.JNL", "cjk.ttf"}});
+  assert(steps.size() == 3);
+  assert(has_step(steps, Kind::remove, "CJK.TMP"));
+  assert(has_step(steps, Kind::remove, "CJK.BAK"));
+  assert(has_step(steps, Kind::remove_journal, "CJK.JNL"));
+
+  // Reset between the renames: the backup is restored to the exact name,
+  // even though another file shares its stem.
+  steps = loader::recovery_plan("fonts", {"CJK.OTF", "CJK.BAK", "CJK.JNL", "CJK.TMP"},
+                                {{"CJK.JNL", "cjk.ttf"}});
+  assert(steps.size() == 3);
+  assert(has_step(steps, Kind::remove, "CJK.TMP"));
+  assert(has_step(steps, Kind::restore, "CJK.BAK", "cjk.ttf"));
+  assert(has_step(steps, Kind::remove_journal, "CJK.JNL"));
+  // Restore precedes removing the journal.
+  assert(steps.back().kind == Kind::remove_journal);
+
+  // No usable journal: the backup may be the only copy, so it is kept.
+  steps = loader::recovery_plan("fonts", {"CJK.OTF", "CJK.BAK"}, {});
+  assert(steps.empty());
+  for (const std::string recorded : {"", "other.ttf", "../x.ttf", "cjk.bak", "cjk.jnl"}) {
+    steps = loader::recovery_plan("fonts", {"CJK.BAK", "CJK.JNL"}, {{"CJK.JNL", recorded}});
+    assert(steps.size() == 1 && has_step(steps, Kind::remove_journal, "CJK.JNL"));
+  }
+
+  // Journal written but the target never moved aside: only the journal goes.
+  steps = loader::recovery_plan("fonts", {"CJK.TTF", "CJK.JNL"}, {{"CJK.JNL", "cjk.ttf"}});
+  assert(steps.size() == 1 && has_step(steps, Kind::remove_journal, "CJK.JNL"));
+  assert(loader::recovery_plan("fonts", {}, {}).empty());
 }
 
 void test_line_assembler() {
@@ -268,7 +300,7 @@ int main() {
   test_crc32();
   test_numbers();
   test_paths();
-  test_stale_entries();
+  test_recovery_plan();
   test_line_assembler();
   test_commands();
   test_progress();

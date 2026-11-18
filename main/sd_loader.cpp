@@ -64,9 +64,6 @@ class Loader {
   explicit Loader(bool sd_mounted) : sd_mounted_(sd_mounted) {}
 
   [[noreturn]] void run() {
-    if (sd_mounted_) {
-      remove_stale_files();
-    }
     uint8_t slice[kReadSliceBytes];
     for (;;) {
       const int received = usb_serial_jtag_read_bytes(slice, sizeof(slice), kReadWait);
@@ -380,7 +377,9 @@ class Loader {
   // Replaces the target with the verified staging file. The previous target
   // becomes <stem>.bak rather than being deleted: a reader that opened it
   // before the upload (the run-time CJK font holds its file open) keeps
-  // valid clusters until reboot, when remove_stale_files() deletes it.
+  // valid clusters until reboot, when recover_directory() deletes it. The
+  // journal written first names the target, so a reset between the renames
+  // is undone at boot by restoring the backup to that exact name.
   bool promote() {
     const std::string target = absolute(path_->target());
     const std::string staging = absolute(path_->staging());
@@ -388,6 +387,9 @@ class Loader {
     struct stat status {};
     const bool had_target = stat(target.c_str(), &status) == 0;
     if (had_target) {
+      if (!write_journal(absolute(path_->journal()), path_->name())) {
+        return false;
+      }
       unlink(backup.c_str());
       if (rename(target.c_str(), backup.c_str()) != 0) {
         return false;
@@ -430,33 +432,16 @@ class Loader {
     active_ = false;
   }
 
-  // Deletes leftovers from an interrupted upload (*.tmp) and backups whose
-  // replacement was promoted (*.bak). Runs once at boot, before any upload.
-  void remove_stale_files() {
-    for (const auto directory_name : sd_loader::kAllowedDirectories) {
-      const std::string directory = absolute(std::string(directory_name));
-      DIR *listing = opendir(directory.c_str());
-      if (listing == nullptr) {
-        continue;
-      }
-      std::vector<std::string> names;
-      while (names.size() < kMaxScannedEntries) {
-        const dirent *entry = readdir(listing);
-        if (entry == nullptr) {
-          break;
-        }
-        if (entry->d_type == DT_REG) {
-          names.emplace_back(entry->d_name);
-        }
-      }
-      closedir(listing);
-      for (const auto &name : sd_loader::stale_entries(names)) {
-        const std::string path = directory + "/" + name;
-        if (unlink(path.c_str()) == 0) {
-          ESP_LOGI(kTag, "Removed stale %s", path.c_str());
-        }
-      }
+  static bool write_journal(const std::string &path, const std::string &name) {
+    const int journal = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (journal < 0) {
+      return false;
     }
+    const bool written = write(journal, name.data(), name.size()) ==
+                             static_cast<ssize_t>(name.size()) &&
+                         fsync(journal) == 0;
+    close(journal);
+    return written;
   }
 
   // ------------------------------------------------------------ replies
@@ -506,9 +491,85 @@ class Loader {
 
 void task_entry(void *argument) { static_cast<Loader *>(argument)->run(); }
 
+// Finishes or undoes interrupted uploads and promotions (see
+// sd_loader::recovery_plan) before any upload or file reader starts.
+void recover_directory(std::string_view directory_name) {
+  const std::string directory = absolute(std::string(directory_name));
+  DIR *listing = opendir(directory.c_str());
+  if (listing == nullptr) {
+    return;
+  }
+  std::vector<std::string> names;
+  while (names.size() < kMaxScannedEntries) {
+    const dirent *entry = readdir(listing);
+    if (entry == nullptr) {
+      break;
+    }
+    if (entry->d_type == DT_REG) {
+      names.emplace_back(entry->d_name);
+    }
+  }
+  closedir(listing);
+
+  std::vector<std::pair<std::string, std::string>> journals;
+  for (const auto &name : names) {
+    const size_t dot = name.rfind('.');
+    if (dot == std::string::npos || !sd_loader::ascii_iequals(name.substr(dot + 1), "jnl")) {
+      continue;
+    }
+    char recorded[16] = {};
+    const int journal = open((directory + "/" + name).c_str(), O_RDONLY);
+    ssize_t length = journal < 0 ? -1 : read(journal, recorded, sizeof(recorded) - 1);
+    if (journal >= 0) {
+      close(journal);
+    }
+    journals.emplace_back(name, length > 0 ? std::string(recorded, static_cast<size_t>(length))
+                                           : std::string());
+  }
+
+  std::vector<std::string> failed_stems;
+  const auto stem_of = [](const std::string &name) { return name.substr(0, name.rfind('.')); };
+  for (const auto &step : sd_loader::recovery_plan(directory_name, names, journals)) {
+    const std::string path = directory + "/" + step.name;
+    switch (step.kind) {
+      case sd_loader::RecoveryStep::Kind::remove:
+        if (unlink(path.c_str()) == 0) {
+          ESP_LOGI(kTag, "Removed stale %s", path.c_str());
+        }
+        break;
+      case sd_loader::RecoveryStep::Kind::restore: {
+        const std::string target = directory + "/" + step.target;
+        if (rename(path.c_str(), target.c_str()) == 0) {
+          ESP_LOGW(kTag, "Restored %s from an interrupted replacement", target.c_str());
+        } else {
+          ESP_LOGE(kTag, "Could not restore %s from %s", target.c_str(), path.c_str());
+          failed_stems.push_back(stem_of(step.name));
+        }
+        break;
+      }
+      case sd_loader::RecoveryStep::Kind::remove_journal: {
+        const std::string stem = stem_of(step.name);
+        const bool keep = std::any_of(failed_stems.begin(), failed_stems.end(),
+                                      [&](const std::string &failed) {
+                                        return sd_loader::ascii_iequals(failed, stem);
+                                      });
+        if (!keep) {
+          unlink(path.c_str());
+        }
+        break;
+      }
+    }
+  }
+}
+
 }  // namespace
 
 bool start_sd_loader(bool sd_mounted) {
+  if (sd_mounted) {
+    for (const auto directory : sd_loader::kAllowedDirectories) {
+      recover_directory(directory);
+    }
+  }
   usb_serial_jtag_driver_config_t config{.tx_buffer_size = kTxRingBytes,
                                          .rx_buffer_size = sd_loader::kRxRingBytes};
   const esp_err_t installed = usb_serial_jtag_driver_install(&config);

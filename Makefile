@@ -24,7 +24,7 @@ probe:
 load-data:
 	@test -x tools/fetch_cjk_font.sh || { echo "tools/fetch_cjk_font.sh is missing; it ships with the CJK font change (#45)." >&2; exit 1; }
 	@test -f $(CJK_FONT) || tools/fetch_cjk_font.sh $(CJK_FONT)
-	/usr/bin/python3 tools/load_sd_data.py --port $(PORT) --skip-identical $(CJK_FONT) fonts/cjk.ttf
+	python3 tools/load_sd_data.py --port $(PORT) --skip-identical $(CJK_FONT) fonts/cjk.ttf
 
 check-visual:
 	python3 tools/check_visual_evidence.py

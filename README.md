@@ -97,8 +97,8 @@ boot, such as the CJK font, sees the new file after the next restart. To load
 another file or inspect the card:
 
 ```sh
-/usr/bin/python3 tools/load_sd_data.py --port /dev/ttyACM0 <local-file> fonts/<name>
-/usr/bin/python3 tools/load_sd_data.py --port /dev/ttyACM0 --query fonts/cjk.ttf
+python3 tools/load_sd_data.py --port /dev/ttyACM0 <local-file> fonts/<name>
+python3 tools/load_sd_data.py --port /dev/ttyACM0 --query fonts/cjk.ttf
 ```
 
 The firmware accepts only 8.3 file names directly under an allow-listed
