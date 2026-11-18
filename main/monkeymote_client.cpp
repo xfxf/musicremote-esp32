@@ -1,5 +1,6 @@
 #include "monkeymote_client.hpp"
 
+#include "connection_policy.hpp"
 #include "index_worker_policy.hpp"
 #include "playlist_cache_policy.hpp"
 
@@ -29,6 +30,16 @@ namespace {
 constexpr char kTag[] = "monkeymote";
 constexpr int64_t kAdvancedRequestTimeoutUs = 5'000'000;
 constexpr uint32_t kIndexTaskStackBytes = 8 * 1024;
+// Below the GUI task (4) and the cover decoder (3) on core 1: an index build
+// only runs while the GUI task sleeps between frames, so it never delays a
+// frame or a tap.
+constexpr UBaseType_t kIndexTaskPriority = 2;
+// How long a tapped row waits for AIMP to report it as now playing.
+// AIMP answered within 0.2 s in most taps but took 2.3 s once on the 48k
+// playlist; the window also pauses while a large frame is received.
+constexpr int64_t kPlayVerificationUs = 6'000'000;
+// How long an activation's type 12 echo is expected (AIMP has taken 2.3 s).
+constexpr int64_t kActivationEchoUs = 5'000'000;
 
 uint16_t read_u16(const uint8_t *p) {
   return static_cast<uint16_t>(p[0]) | static_cast<uint16_t>(p[1] << 8);
@@ -262,10 +273,11 @@ bool MonkeyMoteClient::prepare_index_worker() {
   const BaseType_t created =
       use_psram_stack
           ? xTaskCreatePinnedToCoreWithCaps(index_task_entry, "playlist_index",
-                                            kIndexTaskStackBytes, this, 4, &handle, 1,
+                                            kIndexTaskStackBytes, this, kIndexTaskPriority,
+                                            &handle, 1,
                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
           : xTaskCreatePinnedToCore(index_task_entry, "playlist_index", kIndexTaskStackBytes,
-                                    this, 4, &handle, 1);
+                                    this, kIndexTaskPriority, &handle, 1);
   if (created != pdPASS) {
     ESP_LOGE(kTag, "Index worker reservation failed: internal free=%u largest=%u",
              static_cast<unsigned>(
@@ -324,10 +336,11 @@ void MonkeyMoteClient::start() {
 void MonkeyMoteClient::stop() {
   running_ = false;
   artwork_decoder_.stop();
-  close_socket();
+  close_socket("client stopped");
 }
 
 void MonkeyMoteClient::enqueue(Command command) {
+  command.enqueued_us = esp_timer_get_time();
   std::lock_guard lock(commands_mutex_);
   if (commands_.size() >= 32) {
     commands_.pop_front();
@@ -370,7 +383,7 @@ void MonkeyMoteClient::run() {
   int retry_seconds = 1;
   while (running_) {
     if (!connect_and_authenticate()) {
-      close_socket();
+      close_socket("AIMP handshake failed");
       model_.update([](Snapshot &state) {
         if (state.connection != ConnectionState::auth_failed) {
           state.connection = ConnectionState::offline;
@@ -386,6 +399,7 @@ void MonkeyMoteClient::run() {
     }
     retry_seconds = 1;
     request_initial_state();
+    const char *disconnect_reason = "client stopped";
     while (running_ && socket_ >= 0) {
       std::deque<Command> pending;
       {
@@ -395,12 +409,22 @@ void MonkeyMoteClient::run() {
       for (const auto &command : pending) {
         send_command(command);
       }
-      if (!process_socket(100)) {
+      if (socket_ < 0) {
+        // send_command() closed the socket and has already logged why.
+        disconnect_reason = nullptr;
+        break;
+      }
+      if (!process_socket(100, disconnect_reason)) {
+        break;
+      }
+      if (socket_ < 0) {
+        disconnect_reason = nullptr;
         break;
       }
       const int64_t now = esp_timer_get_time();
       expire_requests(now);
       if (socket_ < 0) {
+        disconnect_reason = nullptr;
         break;
       }
       if (pending_library_play_row_ >= 0 &&
@@ -408,17 +432,17 @@ void MonkeyMoteClient::run() {
         fail_pending_library_play("LIBRARY PLAY TIMED OUT");
       }
       if (now - last_receive_us_ > 30'000'000) {
-        ESP_LOGW(kTag, "AIMP connection timed out");
+        disconnect_reason = "no data from AIMP for 30 s";
         break;
       }
-      if (now - last_receive_us_ > 10'000'000 && now - last_ping_us_ > 10'000'000) {
-        if (!send_packet(23)) {
-          break;
-        }
-        last_ping_us_ = now;
+      // AIMP drops a client that has sent nothing for ~10 s, even while the
+      // client is busy receiving a large frame that hides AIMP's keepalives.
+      if (connection_policy::keepalive_due(now, last_send_us_) && !send_packet(23)) {
+        disconnect_reason = "keepalive send failed";
+        break;
       }
     }
-    close_socket();
+    close_socket(disconnect_reason);
     {
       std::lock_guard lock(commands_mutex_);
       commands_.clear();
@@ -479,7 +503,7 @@ bool MonkeyMoteClient::connect_and_authenticate() {
     if (connect(socket_, address, address_length) == 0) {
       return true;
     }
-    close_socket();
+    close_socket(nullptr);
     return false;
   };
 
@@ -578,8 +602,9 @@ bool MonkeyMoteClient::connect_and_authenticate() {
   pending_library_play_destination_ = -1;
   pending_library_play_deadline_us_ = 0;
   pending_library_play_token_ = 0;
-  pending_cached_queue_play_ = false;
   persisted_cache_validation_deadline_us_ = 0;
+  activation_echo_deadlines_.clear();
+  play_verification_ = {};
   {
     std::lock_guard lock(playlist_requests_mutex_);
     playlist_requests_.clear();
@@ -588,7 +613,8 @@ bool MonkeyMoteClient::connect_and_authenticate() {
   }
   artwork_decoder_.select_track({});
   last_receive_us_ = esp_timer_get_time();
-  last_ping_us_ = last_receive_us_;
+  last_send_us_ = last_receive_us_;
+  stream_pause_clock_.reset();
   model_.update([](Snapshot &state) {
     state.connection = ConnectionState::online;
     ++state.connection_generation;
@@ -610,9 +636,13 @@ bool MonkeyMoteClient::connect_and_authenticate() {
   return true;
 }
 
-void MonkeyMoteClient::close_socket() {
-  abort_streamed_frame("LIBRARY TRANSFER INTERRUPTED");
+void MonkeyMoteClient::close_socket(const char *reason) {
   const int old_socket = socket_;
+  if (old_socket >= 0 && reason != nullptr) {
+    ESP_LOGW(kTag, "Closing AIMP connection: %s%s", reason,
+             streamed_frame_ != nullptr ? " (during large playlist transfer)" : "");
+  }
+  abort_streamed_frame("LIBRARY TRANSFER INTERRUPTED");
   socket_ = -1;
   if (old_socket >= 0) {
     shutdown(old_socket, SHUT_RDWR);
@@ -627,8 +657,9 @@ void MonkeyMoteClient::close_socket() {
   pending_library_play_destination_ = -1;
   pending_library_play_deadline_us_ = 0;
   pending_library_play_token_ = 0;
-  pending_cached_queue_play_ = false;
   persisted_cache_validation_deadline_us_ = 0;
+  activation_echo_deadlines_.clear();
+  play_verification_ = {};
   {
     std::lock_guard lock(playlist_requests_mutex_);
     playlist_requests_.clear();
@@ -669,8 +700,9 @@ void MonkeyMoteClient::close_socket() {
   });
 }
 
-bool MonkeyMoteClient::process_socket(int timeout_ms) {
+bool MonkeyMoteClient::process_socket(int timeout_ms, const char *&failure) {
   if (socket_ < 0) {
+    failure = nullptr;
     return false;
   }
   fd_set read_set;
@@ -679,12 +711,19 @@ bool MonkeyMoteClient::process_socket(int timeout_ms) {
   timeval timeout{.tv_sec = timeout_ms / 1000, .tv_usec = (timeout_ms % 1000) * 1000};
   const int selected = select(socket_ + 1, &read_set, nullptr, nullptr, &timeout);
   if (selected < 0) {
+    failure = "socket select failed";
     return errno == EINTR;
   }
   if (selected > 0) {
     std::array<uint8_t, 4096> chunk{};
     const ssize_t count = recv(socket_, chunk.data(), chunk.size(), 0);
-    if (count <= 0) {
+    if (count == 0) {
+      failure = "AIMP closed the connection";
+      return false;
+    }
+    if (count < 0) {
+      ESP_LOGW(kTag, "AIMP receive failed: errno=%d", errno);
+      failure = "socket receive failed";
       return false;
     }
     last_receive_us_ = esp_timer_get_time();
@@ -702,6 +741,7 @@ bool MonkeyMoteClient::process_socket(int timeout_ms) {
     }
     if (streamed_frame_ != nullptr) {
       if (!consume_streamed_frame()) {
+        failure = "playlist stream write failed";
         return false;
       }
       if (streamed_frame_ != nullptr || receive_buffer_.empty()) {
@@ -713,7 +753,7 @@ bool MonkeyMoteClient::process_socket(int timeout_ms) {
       break;
     }
     if (read_u32(receive_buffer_.data()) != kMagic) {
-      ESP_LOGW(kTag, "Protocol desynchronised");
+      failure = "protocol desynchronised (bad frame magic)";
       return false;
     }
     const uint32_t type = read_u32(receive_buffer_.data() + 4);
@@ -854,37 +894,50 @@ bool MonkeyMoteClient::start_streamed_frame(uint32_t type, uint32_t length,
   }
   streamed_remaining_ = length;
   receiving_stream_generation_ = generation;
-  {
-    std::lock_guard lock(playlist_requests_mutex_);
-    if (!playlist_requests_.empty()) {
-      // Large frames must be written to storage before their token is popped;
-      // allow that bounded transfer for every playlist request.
-      const int64_t stream_deadline_us = esp_timer_get_time() + 120'000'000;
-      playlist_requests_.front().deadline_us = stream_deadline_us;
-      if (playlist_requests_.front().confirms_library_play &&
-          pending_library_play_token_ == playlist_requests_.front().id) {
-        pending_library_play_deadline_us_ = stream_deadline_us;
-      }
-    }
-  }
+  streamed_started_us_ = esp_timer_get_time();
+  streamed_source_hash_ = PlaylistIndex::kSourceHashSeed;
+  // Request deadlines pause while this frame is received (expire_requests);
+  // a stalled transfer ends at the session's 30 s no-data timeout.
   queue_filter_active_ = false;
   queue_filter_.clear();
-  model_.update([](Snapshot &state) {
+  revalidation_page_start_ = 0;
+  model_.update([this](Snapshot &state) {
+    state.active_playlist_count_known = false;
+    state.queue_indexing = true;
+    state.status = "RECEIVING LIBRARY";
+    if (state.queue_index_ready && !state.queue.empty() && !state.queue_filter_active) {
+      // Re-validating the indexed playlist already on screen (a refresh, a
+      // change notification, or a mismatched tap): keep its page visible and
+      // tappable instead of blanking it. The rows become unverified, so a tap
+      // plays optimistically and is verified afterwards, and destructive edits stay
+      // disabled until the build publishes an authoritative index. Paging
+      // and FIND wait for the build (see request_queue_page).
+      revalidation_page_start_ = state.queue_page_start;
+      state.status = "Refreshing";
+      state.queue_from_persisted_cache = true;
+      return;
+    }
     state.queue.clear();
     state.queue_total_count = 0;
-    state.active_playlist_count_known = false;
     state.queue_page_start = 0;
     state.queue_index_ready = false;
-    state.queue_indexing = true;
     // Keep any cached-playlist mutation guard until an authoritative index
     // replaces the cached identity.
     state.queue_filter_active = false;
     state.queue_filter_label.clear();
     ++state.queue_revision;
     state.active_playlist_name = "LOADING LIBRARY";
-    state.status = "RECEIVING LIBRARY";
   });
-  ESP_LOGI(kTag, "Streaming %" PRIu32 "-byte playlist frame to index storage", length);
+  int64_t requested_us = 0;
+  {
+    std::lock_guard lock(playlist_requests_mutex_);
+    if (!playlist_requests_.empty()) {
+      requested_us = playlist_requests_.front().sent_us;
+    }
+  }
+  ESP_LOGI(kTag, "Streaming %" PRIu32 "-byte playlist frame to index storage (%" PRId64
+           " ms after the request)",
+           length, requested_us != 0 ? (streamed_started_us_ - requested_us) / 1000 : -1);
   return true;
 }
 
@@ -906,6 +959,8 @@ bool MonkeyMoteClient::consume_streamed_frame() {
     });
     return true;
   }
+  streamed_source_hash_ =
+      PlaylistIndex::extend_source_hash(streamed_source_hash_, receive_buffer_.data(), count);
   receive_buffer_.erase(receive_buffer_.begin(), receive_buffer_.begin() + count);
   streamed_remaining_ -= count;
   if (streamed_remaining_ == 0) {
@@ -923,6 +978,10 @@ bool MonkeyMoteClient::consume_streamed_frame() {
       });
       return true;
     }
+    ESP_LOGI(kTag, "Received large playlist frame in %" PRId64 " ms",
+             (esp_timer_get_time() - streamed_started_us_) / 1000);
+    // Read by the index worker after finish_streamed_frame() notifies it.
+    completed_source_hash_ = streamed_source_hash_;
     finish_streamed_frame();
   }
   return true;
@@ -954,7 +1013,8 @@ void MonkeyMoteClient::finish_streamed_frame() {
       streamed_playlist_generation_ = 0;
     }
   }
-  model_.update([](Snapshot &state) { state.status = "INDEXING LIBRARY"; });
+  // Usually only a hash or digest check; INDEXING appears once rows are built.
+  model_.update([](Snapshot &state) { state.status = "Checking"; });
   if (index_task_ == nullptr && !prepare_index_worker()) {
     index_building_ = false;
     unlink(playlist_index_.incoming_path().c_str());
@@ -979,8 +1039,12 @@ void MonkeyMoteClient::finish_streamed_frame() {
 bool MonkeyMoteClient::build_streamed_index() {
   std::optional<PlaylistRequestToken> response_token;
   uint64_t response_generation = 0;
+  uint64_t source_hash = 0;
   {
     std::lock_guard lock(playlist_requests_mutex_);
+    // Written before the network task notified this worker; no newer frame
+    // completes while a build is active.
+    source_hash = completed_source_hash_;
     response_token = streamed_playlist_request_;
     response_generation = streamed_playlist_generation_;
     streamed_playlist_request_.reset();
@@ -988,6 +1052,7 @@ bool MonkeyMoteClient::build_streamed_index() {
   }
   const bool refresh_confirmation_deadline =
       response_token && response_token->confirms_library_play;
+  const int64_t build_started_us = esp_timer_get_time();
   const auto result = playlist_index_.build_from_compressed(
       [this, refresh_confirmation_deadline](uint32_t completed, uint32_t total) {
         if (refresh_confirmation_deadline) {
@@ -997,18 +1062,22 @@ bool MonkeyMoteClient::build_streamed_index() {
         if (index_superseded_) {
           return;
         }
-        if (completed == total || completed % 4096 == 1) {
-          model_.update([completed, total](Snapshot &state) {
-            if (!state.queue_indexing) {
-              return;
-            }
-            state.status = "INDEXING " +
-                           std::to_string(completed * 100 /
-                                          std::max<uint32_t>(1, total)) +
-                           "%";
-          });
-        }
-      });
+        // Called every 512 rows: about 100 updates for the 48k playlist.
+        model_.update([completed, total](Snapshot &state) {
+          if (!state.queue_indexing) {
+            return;
+          }
+          state.index_build_done = completed;
+          state.index_build_total = total;
+          state.status = "INDEXING " +
+                         std::to_string(completed * 100 / std::max<uint32_t>(1, total)) + "%";
+        });
+      },
+      source_hash);
+  model_.update([](Snapshot &state) {
+    state.index_build_done = 0;
+    state.index_build_total = 0;
+  });
   unlink(playlist_index_.incoming_path().c_str());
   bool superseded = index_superseded_.exchange(false);
   // A playlist switch or queue mutation sent while this frame was still being
@@ -1056,8 +1125,18 @@ bool MonkeyMoteClient::build_streamed_index() {
       state.status = message;
     });
   } else {
-    ESP_LOGI(kTag, "Indexed %" PRIu32 " tracks for playlist %" PRId32, result.count,
-             result.playlist_id);
+    ESP_LOGI(kTag,
+             "Indexed %" PRIu32 " tracks for playlist %" PRId32 " in %" PRId64
+             " ms (source hash %" PRIu32 " ms, content check %" PRIu32 " ms, rebuild %" PRIu32
+             " ms: decode %" PRIu32 ", rows %" PRIu32 ", search %" PRIu32 ", finalize %" PRIu32
+             "; %s)",
+             result.count, result.playlist_id, (esp_timer_get_time() - build_started_us) / 1000,
+             result.source_hash_ms, result.content_check_ms, result.rebuild_ms, result.decode_ms,
+             result.rows_ms, result.search_ms, result.finalize_ms,
+             result.stale                                                 ? "stale, kept"
+             : result.reused == PlaylistIndex::Reuse::source_hash  ? "reused: source hash"
+             : result.reused == PlaylistIndex::Reuse::content_hash ? "reused: content hash"
+                                                                   : "rebuilt");
     if (!superseded && stale_generation) {
       ESP_LOGI(kTag, "Discarding playlist index that predates a newer request");
       playlist_index_.clear_active();
@@ -1104,8 +1183,18 @@ bool MonkeyMoteClient::build_streamed_index() {
       const bool count_current =
           response_token &&
           response_token->mutation_generation == playlist_mutation_generation_.load();
-      load_index_page(0, true, count_current);
+      // Republish the page that stayed on screen during re-validation.
+      const uint32_t page_start = revalidation_page_start_.exchange(0);
+      const int64_t publish_started_us = esp_timer_get_time();
+      load_index_page(page_start < result.count ? page_start : 0, true, count_current,
+                      response_token ? response_token->playlist_id : -1);
       const Snapshot indexed = model_.copy();
+      ESP_LOGI(kTag, "Published index page in %" PRId64 " ms; queue ready %" PRId64
+               " ms after the request",
+               (esp_timer_get_time() - publish_started_us) / 1000,
+               response_token && response_token->sent_us != 0
+                   ? (esp_timer_get_time() - response_token->sent_us) / 1000
+                   : -1);
       const bool cacheable_active = response_token && response_token->cacheable_active;
       if (cacheable_active && indexed.queue_index_ready &&
           indexed.active_playlist_id >= 0 &&
@@ -1145,7 +1234,7 @@ void MonkeyMoteClient::abort_streamed_frame(const char *status) {
 }
 
 void MonkeyMoteClient::load_index_page(uint32_t start, bool require_indexing,
-                                       bool count_current) {
+                                       bool count_current, int32_t response_playlist_id) {
   std::vector<Track> tracks;
   uint32_t total = 0;
   int32_t playlist_id = -1;
@@ -1179,7 +1268,8 @@ void MonkeyMoteClient::load_index_page(uint32_t start, bool require_indexing,
     return;
   }
   model_.update([this, start, total, playlist_id, require_indexing, count_current,
-                 name = std::move(name), tracks = std::move(tracks)](Snapshot &state) mutable {
+                 response_playlist_id, name = std::move(name),
+                 tracks = std::move(tracks)](Snapshot &state) mutable {
     // The network task sets index_superseded_ before its deferral update. Check
     // it while publishing under the model lock so an older page cannot replace
     // the refresh state with tappable rows.
@@ -1187,12 +1277,20 @@ void MonkeyMoteClient::load_index_page(uint32_t start, bool require_indexing,
       return;
     }
     int32_t resolved_playlist_id = playlist_id;
-    if (resolved_playlist_id < 0 &&
+    // Paging an index already on screen keeps its identity. A newly built
+    // index never inherits it: rows kept visible while re-validating may
+    // belong to the playlist AIMP has since switched away from, so the build
+    // is identified only by its own response (unique name and count, or the
+    // ID its request expected).
+    if (resolved_playlist_id < 0 && !require_indexing &&
         (state.queue_index_ready || using_persisted_playlist_cache_.load())) {
       resolved_playlist_id = state.active_playlist_id;
     }
     if (resolved_playlist_id < 0) {
       resolved_playlist_id = resolve_playlist_id(state, playlist_id, name, total);
+    }
+    if (resolved_playlist_id < 0 && require_indexing) {
+      resolved_playlist_id = response_playlist_id;
     }
     if (!state.queue_indexing && state.active_playlist_id >= 0 && resolved_playlist_id >= 0 &&
         state.active_playlist_id != resolved_playlist_id) {
@@ -1245,8 +1343,34 @@ void MonkeyMoteClient::search_index_page(uint32_t start, bool require_indexing) 
   uint32_t total = 0;
   int32_t playlist_id = -1;
   std::string name;
-  if (!playlist_index_.search_page(queue_filter_, queue_filter_mode_, start, 100, tracks,
-                                   total, playlist_id, name)) {
+  const int64_t search_started_us = esp_timer_get_time();
+  model_.update([](Snapshot &state) {
+    state.queue_searching = true;
+    state.search_done = 0;
+    state.search_total = 0;
+  });
+  const bool searched = playlist_index_.search_page(
+      queue_filter_, queue_filter_mode_, start, 100, tracks, total, playlist_id, name,
+      [this, search_started_us](uint32_t done, uint32_t entries) {
+        if (done == entries) {
+          ESP_LOGI(kTag, "Scanned %" PRIu32 " search entries in %" PRId64 " ms", entries,
+                   (esp_timer_get_time() - search_started_us) / 1000);
+        }
+        model_.update([done, entries](Snapshot &state) {
+          state.search_done = done;
+          state.search_total = entries;
+        });
+        // The scan runs on this task for several seconds; keep AIMP from
+        // dropping a silent client meanwhile.
+        if (socket_ >= 0 &&
+            connection_policy::keepalive_due(esp_timer_get_time(), last_send_us_)) {
+          send_packet(23);
+        }
+      });
+  model_.update([](Snapshot &state) { state.queue_searching = false; });
+  ESP_LOGI(kTag, "Searched the index in %" PRId64 " ms: %" PRIu32 " matches",
+           (esp_timer_get_time() - search_started_us) / 1000, total);
+  if (!searched) {
     const Snapshot before_failure = model_.copy();
     const bool cached_rows_visible = using_persisted_playlist_cache_.load() ||
                                      before_failure.queue_from_persisted_cache;
@@ -1352,6 +1476,11 @@ bool MonkeyMoteClient::process_frame(uint32_t type, std::vector<uint8_t> &payloa
       model_.update([index](Snapshot &state) {
         state.active_queue_index = index;
       });
+      if (play_verification_.active) {
+        play_verification_.row_reported = true;
+        play_verification_.row_matched = index == play_verification_.row;
+        check_play_verification(esp_timer_get_time());
+      }
       return true;
     }
     return false;
@@ -1359,6 +1488,16 @@ bool MonkeyMoteClient::process_frame(uint32_t type, std::vector<uint8_t> &payloa
   case 17:
   case 30:
   case 35:
+    if (type == 12 && take_activation_echo(esp_timer_get_time())) {
+      // AIMP answers every playlist activation, including of the already
+      // active playlist, with one type 12 before it processes the next
+      // command. Treating the echo as a change made the following reply
+      // stale, so a cached-row tap never played and the playlist transferred
+      // twice more.
+      ESP_LOGI(kTag, "AIMP echoed our playlist activation");
+      return true;
+    }
+    ESP_LOGI(kTag, "AIMP playlist notification type %" PRIu32, type);
     playlist_stream_generation_.fetch_add(1);
     playlist_mutation_generation_.fetch_add(1);
     if (index_building_) {
@@ -1470,7 +1609,7 @@ bool MonkeyMoteClient::process_frame(uint32_t type, std::vector<uint8_t> &payloa
       // A rejection does not identify which later queue response, if any,
       // belongs to the already-sent confirmation request. Reset the stream.
       if (library_play_pending) {
-        close_socket();
+        close_socket("AIMP rejected a library selection; resetting playlist correlation");
       }
     }
     return true;
@@ -1502,12 +1641,13 @@ bool MonkeyMoteClient::send_packet(uint32_t type, const void *data, size_t size)
     }
     sent += static_cast<size_t>(result);
   }
+  last_send_us_ = esp_timer_get_time();
   return true;
 }
 
 bool MonkeyMoteClient::send_playlist_request(int32_t playlist_id,
                                              bool confirms_library_play,
-                                             bool cacheable_active) {
+                                             bool cacheable_active, bool request_current) {
   const uint64_t mutation_generation = playlist_mutation_generation_.load();
   {
     std::lock_guard lock(playlist_requests_mutex_);
@@ -1527,7 +1667,7 @@ bool MonkeyMoteClient::send_playlist_request(int32_t playlist_id,
     }
   }
   std::vector<uint8_t> payload{10};
-  append_i32(payload, playlist_id);
+  append_i32(payload, request_current ? -1 : playlist_id);
   append_i32(payload, 1);
   playlist_stream_generation_.fetch_add(1);
   if (index_building_) {
@@ -1549,7 +1689,8 @@ bool MonkeyMoteClient::send_playlist_request(int32_t playlist_id,
                                   .deadline_us = becomes_head
                                                      ? esp_timer_get_time() + 15'000'000
                                                      : 0,
-                                  .mutation_generation = mutation_generation});
+                                  .mutation_generation = mutation_generation,
+                                  .sent_us = esp_timer_get_time()});
   }
   if (confirms_library_play) {
     pending_library_play_token_ = token_id;
@@ -1633,7 +1774,7 @@ void MonkeyMoteClient::send_command(const Command &command) {
       model_.update([](Snapshot &state) {
         state.status = "PLAYLIST REFRESH FAILED - RECONNECTING";
       });
-      close_socket();
+      close_socket("playlist refresh could not be queued");
     }
     break;
   case CommandType::activate_playlist:
@@ -1644,44 +1785,79 @@ void MonkeyMoteClient::send_command(const Command &command) {
     queue_filter_.clear();
     invalidate_streamed_playlist();
     begin_playlist_refresh("SWITCHING PLAYLIST");
-    simple(12, command.first);
-    enqueue({CommandType::request_playlist, command.first});
+    // Rows of the previous playlist must not stay tappable during the switch.
+    model_.update([switching_to = command.first](Snapshot &state) {
+      if (state.active_playlist_id == switching_to) {
+        return;
+      }
+      state.queue.clear();
+      state.queue_total_count = 0;
+      state.queue_page_start = 0;
+      state.queue_index_ready = false;
+      state.queue_filter_active = false;
+      state.queue_filter_label.clear();
+      ++state.queue_revision;
+    });
+    // Request the playlist in the same pass as the activation, so AIMP's echo
+    // of the activation arrives while this request is outstanding.
+    // The reply describes the playlist just made active, so a large one may
+    // persist the cached-queue marker.
+    if (simple(12, command.first)) {
+      if (send_playlist_request(command.first, false, true, true)) {
+        expect_activation_echo(esp_timer_get_time());
+      } else {
+        close_socket("playlist switch could not be queued");
+      }
+    }
     break;
-  case CommandType::play_index:
+  case CommandType::play_index: {
+    // Optimistic play: nothing on this path waits for a playlist transfer.
+    // The row is verified afterwards against AIMP's now-playing metadata.
     if (pending_library_play_row_ >= 0) {
       fail_pending_library_play("LIBRARY PLAY CANCELLED");
     }
-    if (model_.copy().queue_from_persisted_cache) {
-      const int32_t playlist_id = model_.copy().active_playlist_id;
-      if (playlist_id >= 0) {
-        pending_cached_queue_play_ = true;
-        pending_library_play_row_ = command.first;
-        pending_library_play_destination_ = playlist_id;
-        pending_library_play_deadline_us_ = esp_timer_get_time() + 15'000'000;
-        // Activating the cached playlist is a switch: responses requested
-        // before it (e.g. a refresh of another host playlist) must be rejected.
+    const Snapshot current = model_.copy();
+    const int32_t row = command.first;
+    // A cached queue's playlist may not be AIMP's active one after a reboot;
+    // an authoritative queue already is.
+    if (current.queue_from_persisted_cache && current.active_playlist_id >= 0) {
+      bool refresh_in_flight = index_building_ || streamed_frame_ != nullptr;
+      {
+        std::lock_guard lock(playlist_requests_mutex_);
+        refresh_in_flight = refresh_in_flight || !playlist_requests_.empty();
+      }
+      if (refresh_in_flight) {
+        // The activation may be a switch, so a reply already requested could
+        // describe the previous playlist: reject it and ask again.
         invalidate_streamed_playlist();
-        const bool activated = simple(12, playlist_id);
-        const bool confirming =
-            activated && send_playlist_request(-1, true, true);
-        if (!confirming) {
-          fail_pending_library_play("CACHED PLAY CONFIRM FAILED");
-          // The generation bump above makes every outstanding reply stale; if
-          // the confirmation could not be queued nothing would finish the
-          // refresh. Reconnect to reset correlation and re-request the queue.
-          close_socket();
-        } else {
-          model_.update([](Snapshot &state) {
-            state.library_play_pending = true;
-            state.status = "VERIFYING CACHED PLAYLIST";
-          });
-        }
-        break;
+        enqueue({CommandType::request_playlist, -1});
+      }
+      if (simple(12, current.active_playlist_id)) {
+        expect_activation_echo(esp_timer_get_time());
       }
     }
-    simple(10, command.first);
-    simple(1, 0);
+    const int64_t sent_us = esp_timer_get_time();
+    const bool played = simple(10, row) && simple(1, 0);
+    ESP_LOGI(kTag, "Play row %" PRId32 " sent %" PRId64 " us after the tap reached the client",
+             row, sent_us - command.enqueued_us);
+    play_verification_ = {};
+    if (played) {
+      for (const Track &track : current.queue) {
+        if (track.queue_row == row) {
+          play_verification_ = {.active = true,
+                                .row = row,
+                                .title = track.title,
+                                .artist = track.artist,
+                                .deadline_us = sent_us + kPlayVerificationUs};
+          break;
+        }
+      }
+    }
+    model_.update([played](Snapshot &state) {
+      state.status = played ? "Playing" : "Play failed";
+    });
     break;
+  }
   case CommandType::delete_index:
     if (model_.copy().queue_from_persisted_cache) {
       model_.update([](Snapshot &state) { state.status = "REFRESH PLAYLIST FIRST"; });
@@ -1734,6 +1910,14 @@ void MonkeyMoteClient::send_command(const Command &command) {
     break;
   }
   case CommandType::request_queue_page:
+    // While a re-validated page stays visible, the transfer and build own the
+    // queue state and INDEX.DAT may be replaced at any moment; the build
+    // republishes the requested page itself.
+    if (index_building_ || streamed_frame_ != nullptr) {
+      revalidation_page_start_ =
+          static_cast<uint32_t>(std::max<int32_t>(command.first, 0)) / 100 * 100;
+      break;
+    }
     if (model_.copy().queue_index_ready) {
       const uint32_t start = static_cast<uint32_t>(std::max<int32_t>(command.first, 0));
       if (queue_filter_active_) {
@@ -1744,7 +1928,7 @@ void MonkeyMoteClient::send_command(const Command &command) {
     }
     break;
   case CommandType::filter_queue:
-    if (model_.copy().queue_index_ready &&
+    if (!index_building_ && streamed_frame_ == nullptr && model_.copy().queue_index_ready &&
         command.first >= static_cast<int32_t>(PlaylistIndex::SearchMode::contains) &&
         command.first <= static_cast<int32_t>(PlaylistIndex::SearchMode::non_alpha)) {
       queue_filter_active_ = true;
@@ -1753,13 +1937,20 @@ void MonkeyMoteClient::send_command(const Command &command) {
       search_index_page(static_cast<uint32_t>(std::max<int32_t>(command.second, 0)));
     }
     break;
-  case CommandType::clear_queue_filter:
+  case CommandType::clear_queue_filter: {
+    // `first` is the unfiltered page to show, e.g. the one containing a
+    // search result that was just selected.
     queue_filter_active_ = false;
     queue_filter_.clear();
-    if (model_.copy().queue_index_ready) {
-      load_index_page(0);
+    const uint32_t start =
+        static_cast<uint32_t>(std::max<int32_t>(command.first, 0)) / 100 * 100;
+    if (index_building_ || streamed_frame_ != nullptr) {
+      revalidation_page_start_ = start;
+    } else if (model_.copy().queue_index_ready) {
+      load_index_page(start);
     }
     break;
+  }
   case CommandType::request_library_root: {
     static constexpr std::array<uint8_t, 4> kSubcommands{7, 16, 9, 12};
     static constexpr std::array<const char *, 4> kTitles{"ARTISTS", "ALBUMS", "GENRES",
@@ -2021,7 +2212,6 @@ void MonkeyMoteClient::select_library_item(const Command &command, bool play) {
     model_.update([](Snapshot &state) { state.status = "WAIT FOR LIBRARY ADD"; });
     return;
   }
-  pending_cached_queue_play_ = false;
   if (play && (!current.active_playlist_count_known ||
                current.active_playlist_track_count > static_cast<uint32_t>(INT32_MAX))) {
     model_.update([](Snapshot &state) { state.status = "REFRESH PLAYLIST FIRST"; });
@@ -2042,7 +2232,7 @@ void MonkeyMoteClient::select_library_item(const Command &command, bool play) {
     pending_library_play_deadline_us_ = esp_timer_get_time() + 15'000'000;
     if (!send_playlist_request(destination, true)) {
       fail_pending_library_play("LIBRARY PLAY CONFIRM FAILED");
-      close_socket();
+      close_socket("library-play confirmation could not be queued");
       return false;
     }
     return true;
@@ -2115,23 +2305,19 @@ void MonkeyMoteClient::complete_pending_library_play() {
     return;
   }
   const int32_t row = pending_library_play_row_;
-  const bool cached_queue_play = pending_cached_queue_play_;
   pending_library_play_row_ = -1;
   pending_library_play_destination_ = -1;
   pending_library_play_deadline_us_ = 0;
   pending_library_play_token_ = 0;
-  pending_cached_queue_play_ = false;
   std::vector<uint8_t> body{10};
   append_i32(body, row);
   const bool selected = send_packet(7, body.data(), body.size());
   body.assign(1, 1);
   append_i32(body, 0);
   const bool started = selected && send_packet(7, body.data(), body.size());
-  model_.update([started, cached_queue_play](Snapshot &state) {
+  model_.update([started](Snapshot &state) {
     state.library_play_pending = false;
-    state.status = !started                 ? "LIBRARY PLAY FAILED"
-                   : cached_queue_play      ? "PLAYING CACHED QUEUE ITEM"
-                                            : "PLAYING LIBRARY ITEM";
+    state.status = started ? "PLAYING LIBRARY ITEM" : "LIBRARY PLAY FAILED";
   });
 }
 
@@ -2143,7 +2329,6 @@ void MonkeyMoteClient::fail_pending_library_play(const char *message) {
   pending_library_play_destination_ = -1;
   pending_library_play_deadline_us_ = 0;
   pending_library_play_token_ = 0;
-  pending_cached_queue_play_ = false;
   model_.update([message = std::string(message)](Snapshot &state) {
     state.active_playlist_count_known = false;
     state.library_play_pending = false;
@@ -2165,6 +2350,58 @@ MonkeyMoteClient::take_playlist_response_token() {
   return token;
 }
 
+void MonkeyMoteClient::check_play_verification(int64_t now_us) {
+  if (!play_verification_.active) {
+    return;
+  }
+  const PlayVerification &check = play_verification_;
+  const bool decided = check.row_reported && check.track_reported;
+  const bool matched = decided && check.row_matched && check.track_matched;
+  if (!decided && now_us < check.deadline_us) {
+    return;
+  }
+  const int32_t row = check.row;
+  play_verification_ = {};
+  if (matched) {
+    // Playback is confirmed, but one matching row says nothing about the
+    // rest: cached [A, B, C] against live [A, C, B] matches a tap on A, and a
+    // long-press on the displayed B would then remove live C (items are
+    // addressed by row). The edit guard stays until a full refresh matches or
+    // rebuilds the index.
+    ESP_LOGI(kTag, "Played row %" PRId32 " matched the index", row);
+    return;
+  }
+  ESP_LOGW(kTag, "Played row %" PRId32 " %s the index; refreshing", row,
+           decided ? "does not match" : "was not confirmed by AIMP for");
+  // Playback continues; the rows stay visible as unverified while the
+  // existing background refresh transfers and re-checks the playlist.
+  if (!send_playlist_request(-1)) {
+    enqueue({CommandType::request_playlist, -1});
+  }
+  model_.update([](Snapshot &state) {
+    state.queue_from_persisted_cache = true;
+    state.status = "Playlist changed";
+  });
+}
+
+void MonkeyMoteClient::expect_activation_echo(int64_t now_us) {
+  if (activation_echo_deadlines_.size() >= 8) {
+    activation_echo_deadlines_.pop_front();
+  }
+  activation_echo_deadlines_.push_back(now_us + kActivationEchoUs);
+}
+
+bool MonkeyMoteClient::take_activation_echo(int64_t now_us) {
+  while (!activation_echo_deadlines_.empty() && now_us >= activation_echo_deadlines_.front()) {
+    activation_echo_deadlines_.pop_front();
+  }
+  if (activation_echo_deadlines_.empty()) {
+    return false;
+  }
+  activation_echo_deadlines_.pop_front();
+  return true;
+}
+
 void MonkeyMoteClient::finish_playlist_response(
     const std::optional<PlaylistRequestToken> &token, bool valid,
     int32_t resolved_playlist_id, uint32_t count) {
@@ -2176,9 +2413,7 @@ void MonkeyMoteClient::finish_playlist_response(
       valid && resolved_playlist_id == pending_library_play_destination_ &&
       count > static_cast<uint32_t>(pending_library_play_row_);
   if (!appended_row_confirmed) {
-    fail_pending_library_play(pending_cached_queue_play_
-                                  ? "CACHED PLAYLIST NOT CONFIRMED"
-                                  : "LIBRARY APPEND NOT CONFIRMED");
+    fail_pending_library_play("LIBRARY APPEND NOT CONFIRMED");
     // The failed response token has already been consumed, so a fresh
     // authoritative request cannot be mis-correlated with it. Request the
     // current queue (-1), never the old destination: AIMP may have switched
@@ -2519,6 +2754,19 @@ void MonkeyMoteClient::parse_track_info(const std::vector<uint8_t> &payload) {
           }
         }
       });
+  if (is_now_playing && play_verification_.active) {
+    // Type 5 carries each string with a one-byte length.
+    const auto same = [](const std::string &expected, const std::string &reported) {
+      return expected == reported ||
+             (reported.size() == 255 && expected.starts_with(reported));
+    };
+    const Snapshot reported = model_.copy();
+    play_verification_.track_reported = true;
+    play_verification_.track_matched =
+        same(play_verification_.title, reported.now_playing.title) &&
+        same(play_verification_.artist, reported.now_playing.artist);
+    check_play_verification(esp_timer_get_time());
+  }
   if (is_now_playing && track_key != cover_track_key_) {
     cover_track_key_ = track_key;
     artwork_decoder_.select_track(track_key);
@@ -2828,7 +3076,7 @@ void MonkeyMoteClient::parse_compressed(std::vector<uint8_t> &payload) {
         state.active_playlist_count_known = false;
         state.status = "PLAYLIST RESPONSE INVALID";
       });
-      close_socket();
+      close_socket("unclassifiable compressed reply while playlist responses are pending");
     }
   };
   if (payload.size() < 10) {
@@ -2955,8 +3203,7 @@ std::string MonkeyMoteClient::take_lyrics_request() {
   std::string track_key = std::move(lyrics_requests_.front().track_key);
   lyrics_requests_.pop_front();
   if (!lyrics_requests_.empty()) {
-    // Only the head's deadline is extended while a large frame blocks the
-    // stream, so a queued request times its reply from when it reaches the head.
+    // A queued request times its reply from when it reaches the head.
     auto &head = lyrics_requests_.front();
     head.deadline_us = std::max(head.deadline_us, esp_timer_get_time() + 15'000'000);
   }
@@ -2964,6 +3211,42 @@ std::string MonkeyMoteClient::take_lyrics_request() {
 }
 
 void MonkeyMoteClient::expire_requests(int64_t now_us) {
+  // Bytes left in the receive buffer after parsing belong to an incomplete
+  // frame. While one is in flight, including a large playlist frame being
+  // streamed to storage or an oversized frame being drained, every reply
+  // behind it is legitimately delayed: pause all request deadlines.
+  const bool stream_blocked =
+      streamed_frame_ != nullptr || discard_remaining_ != 0 || !receive_buffer_.empty();
+  const int64_t paused_us = stream_pause_clock_.advance(now_us, stream_blocked);
+  if (paused_us != 0) {
+    connection_policy::defer(persisted_cache_validation_deadline_us_, paused_us);
+    connection_policy::defer(library_request_deadline_us_, paused_us);
+    // The index worker also renews this deadline; never overwrite its value.
+    int64_t library_play_deadline_us = pending_library_play_deadline_us_.load();
+    while (library_play_deadline_us != 0 &&
+           !pending_library_play_deadline_us_.compare_exchange_weak(
+               library_play_deadline_us, library_play_deadline_us + paused_us)) {
+    }
+    {
+      std::lock_guard lock(playlist_requests_mutex_);
+      for (auto &request : playlist_requests_) {
+        connection_policy::defer(request.deadline_us, paused_us);
+      }
+    }
+    for (auto &request : lyrics_requests_) {
+      connection_policy::defer(request.deadline_us, paused_us);
+    }
+    advanced_requests_.defer(paused_us);
+    equalizer_edits_.defer(paused_us);
+    connection_policy::defer(play_verification_.deadline_us, paused_us);
+    for (auto &deadline : activation_echo_deadlines_) {
+      connection_policy::defer(deadline, paused_us);
+    }
+  }
+  check_play_verification(now_us);
+  if (socket_ < 0) {
+    return;
+  }
   if (persisted_playlist_cache_.awaiting_root_validation &&
       persisted_cache_validation_deadline_us_ != 0 &&
       now_us >= persisted_cache_validation_deadline_us_) {
@@ -2985,7 +3268,7 @@ void MonkeyMoteClient::expire_requests(int64_t now_us) {
     });
     // Never drop only the head token: without response IDs that would shift
     // every subsequent response. Reconnect to reset the complete correlation.
-    close_socket();
+    close_socket("playlist response deadline expired");
     return;
   }
   if (library_request_deadline_us_ != 0 && now_us >= library_request_deadline_us_) {
@@ -3001,13 +3284,6 @@ void MonkeyMoteClient::expire_requests(int64_t now_us) {
     });
   }
   if (!lyrics_requests_.empty() &&
-      (streamed_frame_ != nullptr || discard_remaining_ != 0)) {
-    // Replies queue behind a large frame on the same stream; time them only
-    // once that frame has been received.
-    lyrics_requests_.front().deadline_us =
-        std::max(lyrics_requests_.front().deadline_us, now_us + 15'000'000);
-  }
-  if (!lyrics_requests_.empty() &&
       now_us >= lyrics_requests_.front().deadline_us) {
     model_.update([](Snapshot &state) {
       if (state.lyrics_state == LyricsState::loading) {
@@ -3019,7 +3295,7 @@ void MonkeyMoteClient::expire_requests(int64_t now_us) {
     });
     // Type 36 has no request identifier, so a late reply would match a newer
     // request. Reconnect to reset correlation, as for playlist responses.
-    close_socket();
+    close_socket("lyrics response deadline expired");
     return;
   }
   const uint8_t expired_advanced = advanced_requests_.expire(now_us);

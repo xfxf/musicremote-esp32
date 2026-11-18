@@ -23,7 +23,6 @@
 #include "cjk_font_policy.hpp"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
-#include "lv_mem_psram.h"
 #include "lvgl.h"
 
 #if !LV_USE_TINY_TTF || !LV_TINY_TTF_FILE_SUPPORT
@@ -82,25 +81,22 @@ decltype(lv_font_t::get_glyph_dsc) ttf_get_glyph_dsc = nullptr;
 decltype(lv_font_t::get_glyph_bitmap) ttf_get_glyph_bitmap = nullptr;
 decltype(lv_font_t::release_glyph) ttf_release_glyph = nullptr;
 
-// Every tiny_ttf entry point runs with LVGL allocations in PSRAM: its glyph
-// and bitmap caches, stb_truetype's rasteriser buffers, and cache evictions.
+// tiny_ttf allocates its glyph and bitmap caches and stb_truetype's rasteriser
+// buffers through LVGL, which prefers PSRAM (main/lvgl_allocator.cpp).
 
 bool cjk_get_glyph_dsc(const lv_font_t *font, lv_font_glyph_dsc_t *dsc_out, uint32_t letter,
                        uint32_t letter_next) {
   if (policy::is_private_use(letter)) {
     return false;
   }
-  LvglPsramScope psram;
   return ttf_get_glyph_dsc(font, dsc_out, letter, letter_next);
 }
 
 const void *cjk_get_glyph_bitmap(lv_font_glyph_dsc_t *g_dsc, lv_draw_buf_t *draw_buf) {
-  LvglPsramScope psram;
   return ttf_get_glyph_bitmap(g_dsc, draw_buf);
 }
 
 void cjk_release_glyph(const lv_font_t *font, lv_font_glyph_dsc_t *g_dsc) {
-  LvglPsramScope psram;
   ttf_release_glyph(font, g_dsc);
 }
 
@@ -250,7 +246,6 @@ bool load_cjk_font(bool sd_mounted) {
   std::array<lv_font_t *, policy::kSizes.size()> loaded{};
   bool complete = true;
   {
-    LvglPsramScope psram;
     for (std::size_t i = 0; i < loaded.size(); ++i) {
       loaded[i] = lv_tiny_ttf_create_file_ex(kLvglPath, policy::kSizes[i].pixel_size,
                                              LV_FONT_KERNING_NONE,

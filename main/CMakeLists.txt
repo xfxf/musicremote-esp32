@@ -97,7 +97,6 @@ idf_component_register(
         "playlist_index.cpp"
         "music_ui.cpp"
         "cjk_font.cpp"
-        "lv_mem_core_psram.c"
         "fonts/ui_font_14.c"
         "fonts/ui_font_14_semibold.c"
         "fonts/ui_font_18.c"
@@ -107,6 +106,7 @@ idf_component_register(
         "fonts/ui_font_ext_18.c"
         "fonts/ui_font_ext_22.c"
         "fonts/ui_font_ext_28.c"
+        "lvgl_allocator.cpp"
     INCLUDE_DIRS "." "${generated_include_dir}"
     REQUIRES
         esp_event
@@ -114,6 +114,7 @@ idf_component_register(
         esp_wifi
         esp_http_server
         esp_rom
+        esp_driver_gpio
         fatfs
         spiffs
         nvs_flash
@@ -125,3 +126,7 @@ target_compile_features(${COMPONENT_LIB} PUBLIC cxx_std_20)
 # The generated fonts include "lvgl/lvgl.h" unless this is defined; the managed
 # LVGL component is not installed under an lvgl/ directory.
 target_compile_definitions(${COMPONENT_LIB} PRIVATE LV_LVGL_H_INCLUDE_SIMPLE)
+
+# LVGL's custom-allocator hooks live in libmain, which is linked before
+# liblvgl; pull that object in up front (see lvgl_allocator.cpp).
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-u lv_mem_init")

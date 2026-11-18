@@ -81,6 +81,14 @@ int main() {
     auto later = stale;
     assert(!overlay.apply(later, 100));
     assert(later == stale && overlay.size() == 0);
+    // A stale readback delayed behind a large frame is still overridden.
+    overlay.record(0, 170, 100);
+    overlay.defer(50);
+    later = stale;
+    assert(overlay.apply(later, 120));
+    assert(overlay.size() == 1);
+    assert(!overlay.apply(later, 150));
+    assert(overlay.size() == 0);
     // Edits for bands absent from the reply are discarded.
     overlay.record(5, 200, 100);
     later = stale;
@@ -112,6 +120,16 @@ int main() {
   assert(requests.expire(100) ==
          (kEqualizerPresetsRequest | kSleepTimerStateRequest));
   assert(requests.pending_mask() == 0 && requests.deadline_us() == 0);
+
+  // A large frame ahead of the reply pauses the deadline; none stays none.
+  requests.defer(50);
+  assert(requests.deadline_us() == 0);
+  requests.begin(kSleepTimerStateRequest, 100);
+  requests.defer(50);
+  requests.defer(-10);
+  assert(requests.deadline_us() == 150);
+  assert(requests.expire(149) == 0);
+  assert(requests.expire(150) == kSleepTimerStateRequest);
 
   // A retry gets a fresh deadline. A valid reply completes it even if an
   // earlier request for the same response kind already timed out.

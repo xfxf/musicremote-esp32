@@ -14,6 +14,7 @@
       "main/monkeymote_client.*",
       "main/playlist_index.*",
       "main/playlist_cache_policy.hpp",
+      "main/connection_policy.hpp",
       "main/device_settings.*",
       "main/settings_policy.hpp",
       "main/artwork_decoder.*",

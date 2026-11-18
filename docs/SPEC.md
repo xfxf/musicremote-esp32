@@ -32,8 +32,9 @@ controls, state feedback, queue manipulation, and playlist management.
 - Activate a playlist and render bounded 100-row pages. Stream queues too large
   for RAM into a persistent microSD-preferred index without retaining the full
   decoded collection in PSRAM.
-- Browse indexed queues by A-Z title prefix and case-insensitive title/artist
-  substring search while preserving the original AIMP row for playback.
+- Browse indexed queues by A-Z title prefix and case-insensitive
+  title, artist, and album substring search while preserving the original AIMP
+  row for playback.
 - Play or remove an item; clear the active playlist; create a named playlist;
   and delete an inactive playlist.
 - Require a long press for destructive operations.

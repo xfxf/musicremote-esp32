@@ -33,8 +33,8 @@ CONFIG_LV_COLOR_DEPTH_16=y
 CONFIG_LV_DEF_REFR_PERIOD=16
 CONFIG_LV_USE_THEME_DEFAULT=y
 CONFIG_LV_THEME_DEFAULT_DARK=y
-# LVGL allocates through main/lv_mem_core_psram.c: plain malloc, except that
-# the microSD CJK font's tiny_ttf caches go to PSRAM.
+# LVGL objects go to PSRAM first, including the microSD CJK font's tiny_ttf
+# caches; see main/lvgl_allocator.cpp.
 CONFIG_LV_USE_CUSTOM_MALLOC=y
 CONFIG_LV_USE_SNAPSHOT=y
 CONFIG_LV_THEME_DEFAULT_GROW=y

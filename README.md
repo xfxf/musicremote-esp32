@@ -20,7 +20,7 @@ requests to include refreshed device evidence.
 
 | Now playing | 48,321-track queue |
 |---|---|
-| ![Now-playing screen connected to AIMP](artifacts/issue20-now.png) | ![Persisted 48,321-track queue reused after reboot](artifacts/issue28-cached-queue.png) |
+| ![Now-playing screen connected to AIMP](artifacts/issue20-now.png) | ![Persisted 48,321-track queue reused after reboot, with its refresh control](artifacts/issue48-cached-queue.png) |
 | Playlists | Media library |
 | ![AIMP playlist browser](artifacts/device-playlists.png) | ![AIMP media-library browser](artifacts/device-library-root.png) |
 | Display settings | Advanced AIMP controls |
@@ -31,9 +31,10 @@ requests to include refreshed device evidence.
 - Play, pause, stop, previous, next, seek, volume, shuffle, and repeat modes.
 - Live now-playing metadata, playback state, position, and per-track artwork.
 - Browse AIMP playlists, switch the active playlist, and browse its queue.
-- Page, browse A-Z, and search title/artist across very large SD-backed queues.
+- Page, browse A-Z, and search title, artist, and album across very large
+  SD-backed queues.
 - Reuse a validated persisted large-playlist index after reboot, with an
-  explicit `CACHED` state and a manual authoritative refresh.
+  explicit `CACHED` state and a refresh button in the queue header.
 - Tap a queue item to play it; long-press to remove it.
 - Long-press `CLEAR` to clear the active playlist.
 - Long-press an inactive playlist to delete it.
@@ -122,7 +123,9 @@ The board exposes a LAN-only diagnostic framebuffer at
 are available as `advanced-demo`, `equalizer-demo`, and `power-confirm-demo`;
 they retain the real connection state and cannot enqueue control commands. For
 non-mutating index diagnostics, the queue capture also
-accepts `start=10000`, `filter=A`, or `search=Mars`. This endpoint has no
+accepts `start=10000`, `filter=A`, or `search=Mars`. `refresh=1` performs the
+queue header's refresh: it re-requests the active playlist from AIMP, which is
+read-only on the server. This endpoint has no
 authentication; use the firmware only on a trusted Wi-Fi network.
 The diagnostics server task stack is allocated from PSRAM so it does not
 compete with the AIMP client for the ESP32-S3's smaller internal-memory pool.

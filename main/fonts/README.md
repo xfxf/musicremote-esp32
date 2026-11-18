@@ -186,12 +186,10 @@ The worst case is about 315 KB of PSRAM, which `make check` asserts stays below
 384 KB. It adds no run-time internal RAM, unless PSRAM is exhausted, in which
 case allocations fall back to internal RAM instead of failing.
 
-LVGL allocates through `main/lv_mem_core_psram.c`
-(`CONFIG_LV_USE_CUSTOM_MALLOC`). It is plain `malloc()`, which places blocks of
-4 KB or less in internal RAM (`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096`),
-except inside the CJK font's wrappers around tiny_ttf. Those prefer PSRAM for
-everything tiny_ttf allocates: cache entries, glyph bitmaps, and stb_truetype's
-rasteriser buffers. The rest of LVGL allocates exactly as before.
+LVGL allocates through `main/lvgl_allocator.cpp`
+(`CONFIG_LV_USE_CUSTOM_MALLOC`), which prefers PSRAM for every LVGL block, so
+everything tiny_ttf allocates (cache entries, glyph bitmaps, and stb_truetype's
+rasteriser buffers) lands there too.
 
 A custom lv_fs driver (drive `F:`) serves the file to all four sizes through
 one descriptor and the shared block cache. Four `fopen()` handles would hold
