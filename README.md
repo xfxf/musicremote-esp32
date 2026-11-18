@@ -89,16 +89,49 @@ credentials.
 
 Chinese and Japanese text (track, album, artist and playlist names) needs a
 font file on the microSD card; without it those characters show as boxes.
-With the card mounted on a computer, run:
+With the board connected, `make load-data` (below) fetches Droid Sans Fallback
+Full (Apache 2.0) from a pinned AOSP commit, checks its SHA-256, and uploads
+it to `fonts/cjk.ttf` on the card. Alternatively, with the card on a computer,
+run `tools/fetch_cjk_font.sh /media/$USER/SDCARD/fonts/cjk.ttf`. The board
+loads the font at boot and logs a `cjk-font:` line. The font has no Hangul
+syllables, so Korean still shows boxes. See `main/fonts/README.md`.
+
+### Loading data onto the microSD card
+
+Data files such as the run-time CJK font can be written to the microSD card
+over the same USB connection, without opening the enclosure. Close
+`idf.py monitor` first, then run:
 
 ```sh
-tools/fetch_cjk_font.sh /media/$USER/SDCARD/fonts/cjk.ttf
+make load-data            # PORT=/dev/ttyACM0 by default
 ```
 
-This downloads Droid Sans Fallback Full (Apache 2.0) from a pinned AOSP
-commit, checks its SHA-256, and writes it to `fonts/cjk.ttf` on the card. The
-board loads it at boot and logs a `cjk-font:` line. The font has no Hangul
-syllables, so Korean still shows boxes. See `main/fonts/README.md`.
+This fetches the pinned font with `tools/fetch_cjk_font.sh` into
+`build/data/fonts/cjk.ttf`, asks the device whether the card already holds an
+identical `fonts/cjk.ttf`, and uploads it if not. The board is not reset, and
+the firmware keeps running during the upload. Firmware that opens a file at
+boot, such as the CJK font, sees the new file after the next restart. To load
+another file or inspect the card:
+
+```sh
+python3 tools/load_sd_data.py --port /dev/ttyACM0 <local-file> fonts/<name>
+python3 tools/load_sd_data.py --port /dev/ttyACM0 --query fonts/cjk.ttf
+```
+
+The firmware accepts only 8.3 file names directly under an allow-listed
+directory (currently `fonts/`), up to 16 MiB each. It writes to a temporary
+file (`fonts/cjk.tmp`) and verifies the SHA-256 before it replaces the
+existing file. A failed, interrupted, or corrupt upload leaves the existing
+file in place. The replacement itself is journalled (`fonts/cjk.jnl`, with the
+old file kept as `fonts/cjk.bak` until the next boot), so a reset part-way
+through is finished or undone at boot. In the rare case where a reset leaves
+two names that may share data, the firmware leaves them alone, logs a
+warning, and refuses uploads of that file (`device refused BEGIN: recovery`).
+To repair the card, power off, back up `fonts/` with a card reader, recreate
+the directory, and restore only the data files: leave `.tmp`, `.bak` and
+`.jnl` files in the backup. A replacement that fails part-way while running
+is left for the same boot-time recovery, so reboot before retrying. The
+protocol is documented in `main/sd_loader_policy.hpp`.
 
 ## Touch controls
 
