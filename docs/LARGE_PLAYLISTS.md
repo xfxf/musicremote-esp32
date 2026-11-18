@@ -112,7 +112,9 @@ and paging and `FIND` wait for it; it then republishes the same page. Moving
 between the NOW and QUEUE tabs never requests anything from AIMP.
 
 Tapping a row plays it at once and verifies it afterwards against AIMP's
-now-playing report, without a transfer (`docs/PROTOCOL.md`).
+now-playing report, without a transfer (`docs/PROTOCOL.md`). A match confirms
+playback only; editing cached rows (remove, CLEAR) waits for a refresh and
+otherwise shows "Refresh to edit".
 
 One shared modal ("Indexing", "Searching", or "Loading playlist", with a bar)
 covers waits that leave nothing useful to do: an index build with no rows to

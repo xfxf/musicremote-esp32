@@ -73,6 +73,9 @@ private:
   void update_busy_overlay(int64_t now_us);
   void update_queue_selection(const Snapshot &snapshot);
   void reveal_selected_queue_row(int64_t now_us);
+  std::string queue_title_text(const Snapshot &snapshot) const;
+  void show_queue_notice(const char *text);
+  void expire_queue_notice(int64_t now_us);
   void rebuild_playlists(const Snapshot &snapshot);
   void show_library_root();
   void rebuild_library(const Snapshot &snapshot);
@@ -136,6 +139,8 @@ private:
   bool suppress_queue_click_{false};
   // A played row to scroll into view when the QUEUE page is next shown.
   int32_t reveal_queue_row_{-1};
+  std::string queue_notice_;
+  int64_t queue_notice_until_us_{0};
   int64_t reveal_queue_row_deadline_us_{0};
   uint64_t reveal_requested_revision_{UINT64_MAX};
   bool suppress_playlist_click_{false};

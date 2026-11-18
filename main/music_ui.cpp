@@ -30,6 +30,8 @@ constexpr char kTag[] = "music_ui";
 constexpr int64_t kRevealQueueRowTimeoutUs = 600'000'000;
 // A wait shorter than this never shows the busy modal.
 constexpr int64_t kBusyModalDelayUs = 300'000;
+// How long a refusal notice replaces the queue title.
+constexpr int64_t kQueueNoticeUs = 2'000'000;
 // A playlist load that has not finished by then stops blocking the screen.
 constexpr int64_t kSwitchModalTimeoutUs = 30'000'000;
 // A GUI pass slower than this within a report window is logged.
@@ -334,6 +336,7 @@ void MusicUi::run() {
       append_queue_rows(snapshot_);
       reveal_selected_queue_row(esp_timer_get_time());
       update_busy_overlay(esp_timer_get_time());
+      expire_queue_notice(esp_timer_get_time());
       const int64_t render_started_us = esp_timer_get_time();
       lv_timer_handler();
       worst_render_us = std::max(worst_render_us, esp_timer_get_time() - render_started_us);
@@ -1836,11 +1839,7 @@ void MusicUi::update(const Snapshot &snapshot) {
   apply_toggle(more_shuffle_, snapshot.shuffle);
   apply_toggle(repeat_button_, snapshot.repeat != 0);
   apply_toggle(more_repeat_, snapshot.repeat != 0);
-  const std::string queue_title = snapshot.queue_indexing
-                                      ? snapshot.status
-                                  : snapshot.queue_filter_active
-                                      ? snapshot.queue_filter_label
-                                      : snapshot.active_playlist_name;
+  const std::string queue_title = queue_title_text(snapshot);
   const bool cached = snapshot.queue_from_persisted_cache && !snapshot.queue_indexing;
   lv_obj_set_pos(queue_title_, 14, cached ? 18 : 8);
   if (cached) {
@@ -2055,6 +2054,29 @@ void MusicUi::append_queue_rows(const Snapshot &snapshot) {
   }
 }
 
+std::string MusicUi::queue_title_text(const Snapshot &snapshot) const {
+  if (queue_notice_until_us_ != 0) {
+    return queue_notice_;
+  }
+  return snapshot.queue_indexing        ? snapshot.status
+         : snapshot.queue_filter_active ? snapshot.queue_filter_label
+                                        : snapshot.active_playlist_name;
+}
+
+void MusicUi::show_queue_notice(const char *text) {
+  // A short-lived title, e.g. why an edit was refused.
+  queue_notice_ = text;
+  queue_notice_until_us_ = esp_timer_get_time() + kQueueNoticeUs;
+  lv_label_set_text(queue_title_, queue_notice_.c_str());
+}
+
+void MusicUi::expire_queue_notice(int64_t now_us) {
+  if (queue_notice_until_us_ != 0 && now_us >= queue_notice_until_us_) {
+    queue_notice_until_us_ = 0;
+    lv_label_set_text(queue_title_, queue_title_text(snapshot_).c_str());
+  }
+}
+
 void MusicUi::reveal_selected_queue_row(int64_t now_us) {
   if (reveal_queue_row_ < 0) {
     return;
@@ -2068,6 +2090,11 @@ void MusicUi::reveal_selected_queue_row(int64_t now_us) {
     return;
   }
   const uint32_t row = static_cast<uint32_t>(reveal_queue_row_);
+  if (row >= snapshot.queue_total_count) {
+    // The queue shrank or another playlist is shown: nothing to reveal.
+    reveal_queue_row_ = -1;
+    return;
+  }
   const uint32_t start = snapshot.queue_page_start;
   if (row < start || row >= start + snapshot.queue.size()) {
     // A refresh may republish another page; ask for the page holding the
@@ -2159,6 +2186,7 @@ void MusicUi::queue_row_handler(lv_event_t *event) {
   if (lv_event_get_code(event) == LV_EVENT_LONG_PRESSED) {
     ui->suppress_queue_click_ = true;
     if (ui->snapshot_.queue_from_persisted_cache) {
+      ui->show_queue_notice("Refresh to edit");
       return;
     }
     const Track &track = ui->snapshot_.queue[index];
@@ -2686,7 +2714,9 @@ void MusicUi::handle_event(lv_event_t *event) {
     const int32_t folder = playlist_folder_ids_.empty() ? -1 : playlist_folder_ids_.back();
     client_.enqueue({CommandType::request_playlists, folder});
   } else if (std::strcmp(text, "CLEAR") == 0 && code == LV_EVENT_LONG_PRESSED &&
-             !snapshot_.queue_from_persisted_cache) {
+             snapshot_.queue_from_persisted_cache) {
+    show_queue_notice("Refresh to edit");
+  } else if (std::strcmp(text, "CLEAR") == 0 && code == LV_EVENT_LONG_PRESSED) {
     client_.enqueue({CommandType::clear_playlist, snapshot_.active_playlist_id});
   } else if (std::strcmp(text, "+ ESP REMOTE") == 0 && code == LV_EVENT_LONG_PRESSED) {
     client_.enqueue({CommandType::create_playlist, -1, 0, "ESP Remote"});

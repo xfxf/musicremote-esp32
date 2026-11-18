@@ -2363,27 +2363,12 @@ void MonkeyMoteClient::check_play_verification(int64_t now_us) {
   const int32_t row = check.row;
   play_verification_ = {};
   if (matched) {
-    // AIMP is playing the tapped row of this index: the cached rows are the
-    // active playlist's. Edits become available without a transfer.
-    if (using_persisted_playlist_cache_.load() || model_.copy().queue_from_persisted_cache) {
-      ESP_LOGI(kTag, "Played row %" PRId32 " matched the index; cached queue verified", row);
-    }
-    using_persisted_playlist_cache_ = false;
-    model_.update([](Snapshot &state) {
-      if (state.queue_indexing) {
-        return;  // A running refresh will publish its own trust state.
-      }
-      state.queue_from_persisted_cache = false;
-      bool playlist_state_changed = false;
-      for (auto &playlist : state.playlists) {
-        const bool active = playlist.id == state.active_playlist_id;
-        playlist_state_changed = playlist_state_changed || playlist.active != active;
-        playlist.active = active;
-      }
-      if (playlist_state_changed) {
-        ++state.playlists_revision;
-      }
-    });
+    // Playback is confirmed, but one matching row says nothing about the
+    // rest: cached [A, B, C] against live [A, C, B] matches a tap on A, and a
+    // long-press on the displayed B would then remove live C (items are
+    // addressed by row). The edit guard stays until a full refresh matches or
+    // rebuilds the index.
+    ESP_LOGI(kTag, "Played row %" PRId32 " matched the index", row);
     return;
   }
   ESP_LOGW(kTag, "Played row %" PRId32 " %s the index; refreshing", row,

@@ -355,8 +355,11 @@ The persisted-index policy therefore remains deliberately bounded:
   and play, and switches to Now Playing at once; no transfer or confirmation
   request sits on the tap path. It then compares AIMP's next type 11 current
   row and type 5 title and artist with the index row, within 6 seconds
-  (paused while a large frame is received). A match marks the cached queue
-  verified, clearing `CACHED` and enabling edits, without a transfer. A
+  (paused while a large frame is received). A match confirms playback only:
+  one row says nothing about the others (cached A, B, C against live A, C, B
+  matches a tap on A), and rows are addressed by number, so `CACHED` and the
+  edit guard stay until a full refresh matches or rebuilds the index; a
+  long-press edit or CLEAR on cached rows shows "Refresh to edit". A
   mismatch or timeout marks it unverified again, shows "Playlist changed",
   and starts the background refresh with the rows still on screen; playback
   continues. The trade-off: a stale cache can briefly play the wrong row,
