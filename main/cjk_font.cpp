@@ -14,6 +14,7 @@
 #include "cjk_font.hpp"
 
 #include <array>
+#include <atomic>
 #include <cinttypes>
 #include <fcntl.h>
 #include <new>
@@ -23,7 +24,12 @@
 #include "cjk_font_policy.hpp"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
+#include "freertos/task.h"
 #include "lvgl.h"
+#include "mbedtls/sha256.h"
 
 #if !LV_USE_TINY_TTF || !LV_TINY_TTF_FILE_SUPPORT
 #error "sdkconfig predates the CJK font; run tools/configure.sh to regenerate it from sdkconfig.defaults"
@@ -41,7 +47,7 @@ lv_font_t symbols_only(const lv_font_t &montserrat) {
 
 // Dynamic initialisation runs before app_main, and the Montserrat fonts are
 // constant data, so these are valid before LVGL draws anything. They are
-// deliberately not const: load_cjk_font() overwrites them.
+// deliberately not const: activate() overwrites them once the font is verified.
 extern "C" {
 lv_font_t ui_font_cjk_14 = symbols_only(lv_font_montserrat_14);
 lv_font_t ui_font_cjk_18 = symbols_only(lv_font_montserrat_18);
@@ -206,62 +212,96 @@ unsigned kib(std::size_t bytes) { return static_cast<unsigned>((bytes + 1023) / 
 
 } // namespace
 
-bool load_cjk_font(bool sd_mounted) {
-  if (!sd_mounted) {
-    ESP_LOGI(kTag, "microSD not mounted; CJK text will show placeholder boxes");
-    return false;
-  }
-  struct stat info {};
-  if (stat(policy::kFontPath, &info) != 0) {
-    ESP_LOGI(kTag, "%s not found; CJK text will show placeholder boxes", policy::kFontPath);
-    return false;
-  }
-  if (!S_ISREG(info.st_mode) || info.st_size < static_cast<off_t>(policy::kMinFileBytes) ||
-      info.st_size > static_cast<off_t>(policy::kMaxFileBytes)) {
-    ESP_LOGW(kTag, "%s is not a usable font file (%ld bytes); CJK text will show boxes",
-             policy::kFontPath, static_cast<long>(info.st_size));
-    return false;
-  }
+namespace {
 
-  font_fd = open(policy::kFontPath, O_RDONLY);
+// Verification state, handed from the verify task to the GUI task.
+enum class Stage : uint8_t { idle, verifying, verified, rejected, active };
+std::atomic<Stage> stage{Stage::idle};
+uint32_t verified_size = 0;
+int64_t verify_ms = 0;
+const char *verified_name = nullptr;
+
+constexpr std::size_t kHashChunkBytes = 16384;
+constexpr uint32_t kVerifyStackBytes = 4096;
+constexpr UBaseType_t kVerifyPriority = 2;
+
+// Hashes the already-open font_fd. The descriptor that was hashed is the one
+// tiny_ttf later reads, so a file replaced on the card meanwhile is never
+// used unverified.
+void verify_task(void *) {
+  const int64_t started_us = esp_timer_get_time();
+  auto *buffer = static_cast<uint8_t *>(
+      heap_caps_malloc(kHashChunkBytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  mbedtls_sha256_context sha;
+  mbedtls_sha256_init(&sha);
+  bool ok = buffer != nullptr && mbedtls_sha256_starts(&sha, 0) == 0;
+  uint32_t total = 0;
+  while (ok) {
+    const ssize_t got = pread(font_fd, buffer, kHashChunkBytes, total);
+    if (got < 0) {
+      ok = false;
+    } else if (got == 0) {
+      break;
+    } else {
+      ok = mbedtls_sha256_update(&sha, buffer, static_cast<std::size_t>(got)) == 0;
+      total += static_cast<uint32_t>(got);
+    }
+  }
+  std::array<uint8_t, 32> digest{};
+  ok = ok && mbedtls_sha256_finish(&sha, digest.data()) == 0;
+  mbedtls_sha256_free(&sha);
+  heap_caps_free(buffer);
+  const policy::ReviewedFont *font = ok ? policy::reviewed_font(total, digest) : nullptr;
+  verify_ms = (esp_timer_get_time() - started_us) / 1000;
+  if (font == nullptr) {
+    ESP_LOGW(kTag, "%s is not a reviewed font (%s); CJK text will show boxes",
+             policy::kFontPath, ok ? "SHA-256 mismatch" : "read error");
+    close(font_fd);
+    font_fd = -1;
+    stage.store(Stage::rejected);
+  } else {
+    verified_size = total;
+    verified_name = font->name;
+    stage.store(Stage::verified);
+  }
+  vTaskDelete(nullptr);
+}
+
+// Creates the tiny_ttf fonts over the verified descriptor and swaps them into
+// the ui_font_cjk_<size> proxies. Runs on the GUI task with LVGL locked.
+bool activate() {
   void *cache_memory =
       heap_caps_malloc(sizeof(policy::FontBlockCache), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   auto *storage = static_cast<uint8_t *>(heap_caps_malloc(policy::FontBlockCache::kStorageBytes,
                                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (font_fd < 0 || cache_memory == nullptr || storage == nullptr) {
+  if (cache_memory == nullptr || storage == nullptr) {
     heap_caps_free(cache_memory);
     heap_caps_free(storage);
-    if (font_fd >= 0) {
-      close(font_fd);
-      font_fd = -1;
-    }
-    ESP_LOGW(kTag, "Could not open %s or reserve its PSRAM cache; CJK text will show boxes",
-             policy::kFontPath);
+    close(font_fd);
+    font_fd = -1;
+    ESP_LOGW(kTag, "Could not reserve the CJK font's PSRAM cache; CJK text will show boxes");
     return false;
   }
   block_cache = new (cache_memory) policy::FontBlockCache();
-  block_cache->attach(storage, static_cast<uint32_t>(info.st_size), read_at, &font_fd);
+  block_cache->attach(storage, verified_size, read_at, &font_fd);
   register_driver();
 
   std::array<lv_font_t *, policy::kSizes.size()> loaded{};
   bool complete = true;
-  {
-    for (std::size_t i = 0; i < loaded.size(); ++i) {
-      loaded[i] = lv_tiny_ttf_create_file_ex(kLvglPath, policy::kSizes[i].pixel_size,
-                                             LV_FONT_KERNING_NONE,
-                                             policy::kSizes[i].cache_glyphs);
-      if (loaded[i] == nullptr) {
-        complete = false;
-        break;
-      }
-    }
-    if (!complete) {
-      for (lv_font_t *font : loaded) {
-        lv_tiny_ttf_destroy(font);
-      }
+  for (std::size_t i = 0; i < loaded.size(); ++i) {
+    loaded[i] = lv_tiny_ttf_create_file_ex(kLvglPath, policy::kSizes[i].pixel_size,
+                                           LV_FONT_KERNING_NONE, policy::kSizes[i].cache_glyphs);
+    if (loaded[i] == nullptr) {
+      complete = false;
+      break;
     }
   }
   if (!complete) {
+    for (lv_font_t *font : loaded) {
+      if (font != nullptr) {
+        lv_tiny_ttf_destroy(font);
+      }
+    }
     release_file();
     ESP_LOGW(kTag, "%s is not a TrueType font tiny_ttf can read; CJK text will show boxes",
              policy::kFontPath);
@@ -282,15 +322,63 @@ bool load_cjk_font(bool sd_mounted) {
     // which owns the caches and the open file, now belongs to the proxy.
     lv_free(loaded[i]);
   }
+  // Labels measured their text with the placeholder glyphs; re-measure.
+  lv_obj_report_style_change(nullptr);
 
   ESP_LOGI(kTag,
-           "Loaded %s (%" PRIu32 " KB) at 14/18/22/28 px; PSRAM cache up to %u KB; "
-           "internal RAM free %u KB, PSRAM free %u KB",
-           policy::kFontPath, static_cast<uint32_t>(kib(info.st_size)),
+           "Loaded %s (%s, %" PRIu32 " KB, SHA-256 verified in %lld ms) at 14/18/22/28 px; "
+           "PSRAM cache up to %u KB; internal RAM free %u KB, PSRAM free %u KB",
+           policy::kFontPath, verified_name, static_cast<uint32_t>(kib(verified_size)),
+           static_cast<long long>(verify_ms),
            kib(policy::FontBlockCache::kStorageBytes + policy::glyph_cache_bytes_upper_bound()),
            kib(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
            kib(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
   return true;
+}
+
+} // namespace
+
+bool start_cjk_font(bool sd_mounted) {
+  if (!sd_mounted) {
+    ESP_LOGI(kTag, "microSD not mounted; CJK text will show placeholder boxes");
+    return false;
+  }
+  struct stat info {};
+  if (stat(policy::kFontPath, &info) != 0) {
+    ESP_LOGI(kTag, "%s not found; CJK text will show placeholder boxes", policy::kFontPath);
+    return false;
+  }
+  if (!S_ISREG(info.st_mode) || info.st_size < 0 ||
+      !policy::reviewed_size(static_cast<uint32_t>(info.st_size))) {
+    ESP_LOGW(kTag, "%s is not a reviewed font (%ld bytes); CJK text will show boxes",
+             policy::kFontPath, static_cast<long>(info.st_size));
+    return false;
+  }
+  font_fd = open(policy::kFontPath, O_RDONLY);
+  if (font_fd < 0) {
+    ESP_LOGW(kTag, "Could not open %s; CJK text will show boxes", policy::kFontPath);
+    return false;
+  }
+  stage.store(Stage::verifying);
+  if (xTaskCreatePinnedToCoreWithCaps(verify_task, "cjk_verify", kVerifyStackBytes, nullptr,
+                                      kVerifyPriority, nullptr, tskNO_AFFINITY,
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS &&
+      xTaskCreatePinnedToCore(verify_task, "cjk_verify", kVerifyStackBytes, nullptr,
+                              kVerifyPriority, nullptr, tskNO_AFFINITY) != pdPASS) {
+    close(font_fd);
+    font_fd = -1;
+    stage.store(Stage::rejected);
+    ESP_LOGW(kTag, "Could not start CJK font verification; CJK text will show boxes");
+    return false;
+  }
+  return true;
+}
+
+void poll_cjk_font() {
+  Stage expected = Stage::verified;
+  if (stage.compare_exchange_strong(expected, Stage::active)) {
+    activate();
+  }
 }
 
 } // namespace musicremote

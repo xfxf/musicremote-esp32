@@ -20,11 +20,11 @@ requests to include refreshed device evidence.
 
 | Now playing | Japanese text from the microSD CJK font |
 |---|---|
-| ![Now-playing screen in the Selawik-derived UI font](artifacts/issue45-now-playing.png) | ![Now-playing screen with a Japanese title, artist and album](artifacts/issue45-now-playing-cjk.png) |
-| 48,321-track queue | |
-| ![Persisted 48,321-track queue reused after reboot, with its refresh control](artifacts/issue48-cached-queue.png) | |
-| Playlists | Media library |
-| ![AIMP playlist browser](artifacts/device-playlists.png) | ![AIMP media-library browser](artifacts/device-library-root.png) |
+| ![Now-playing screen in the Selawik-derived UI font](artifacts/issue45-now-playing.png) | ![Now-playing screen with Japanese and full-width text in the artist line](artifacts/issue45-now-playing-cjk.png) |
+| Queue | Playlists |
+| ![Queue with Japanese track titles and artists](artifacts/issue45-queue.png) | ![AIMP playlist browser including the 48,321-track playlist](artifacts/issue45-playlists.png) |
+| Media library | 48,321-track queue |
+| ![AIMP media-library browser](artifacts/issue45-library.png) | ![Persisted 48,321-track queue reused after reboot, with its refresh control](artifacts/issue48-cached-queue.png) |
 | Display settings | Advanced AIMP controls |
 | ![Brightness, screen-off, and flip-screen settings](artifacts/device-settings-display.png) | ![Advanced controls with unavailable sleep timer](artifacts/issue22-advanced-unavailable.png) |
 

@@ -154,9 +154,11 @@ for size in 14 18 22 28; do
         -o "main/fonts/ui_font_ext_${size}.c"
 done
 
-# lv_font_conv quotes each character in a comment. Drop the quoted character
-# for format and control characters (bidirectional marks and the like), which
-# GCC rightly flags (-Wbidi-chars) and which are invisible in review anyway.
+# Post-process the generated sources. lv_font_conv quotes each character in a
+# comment: drop the quoted character for format and control characters
+# (bidirectional marks and the like), which GCC rightly flags (-Wbidi-chars)
+# and which are invisible in review anyway. Then blank default-ignorable
+# glyphs.
 python3 -I - main/fonts/ui_font_*.c <<'PY'
 import re
 import sys
@@ -170,9 +172,42 @@ def plain(match):
         return f"/* U+{match.group(1)} */"
     return match.group(0)
 
+# Unicode Default_Ignorable_Code_Point (DerivedCoreProperties.txt): these
+# must render as nothing, but some source fonts draw a visible box (Noto's
+# U+034F). Their glyphs become zero-size and zero-advance.
+IGNORABLE = [(0x00AD, 0x00AD), (0x034F, 0x034F), (0x061C, 0x061C), (0x115F, 0x1160),
+             (0x17B4, 0x17B5), (0x180B, 0x180F), (0x200B, 0x200F), (0x202A, 0x202E),
+             (0x2060, 0x206F), (0x3164, 0x3164), (0xFE00, 0xFE0F), (0xFEFF, 0xFEFF),
+             (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8), (0x1BCA0, 0x1BCA3), (0x1D173, 0x1D17A),
+             (0xE0000, 0xE0FFF)]
+
+def ignorable(code):
+    return any(first <= code <= last for first, last in IGNORABLE)
+
+bitmap_comment = re.compile(r'^    /\* U\+([0-9A-F]+)[ *"]', re.M)
+glyph_line = re.compile(r'^    \{\.bitmap_index = (\d+), \.adv_w = \d+, \.box_w = \d+, '
+                        r'\.box_h = \d+, \.ofs_x = -?\d+, \.ofs_y = -?\d+\}', re.M)
+
+def blank_ignorables(text):
+    # Bitmaps are emitted in glyph-id order, one commented block per glyph,
+    # and glyph_dsc lists id 0 (reserved) then the same glyphs in order.
+    start = text.index("glyph_dsc[] = {")
+    codes = [int(code, 16) for code in bitmap_comment.findall(text[:start])]
+    lines = list(glyph_line.finditer(text, start))
+    assert len(lines) == len(codes) + 1, "unexpected lv_font_conv layout"
+    pieces, last = [], 0
+    for code, line in zip(codes, lines[1:]):
+        if ignorable(code):
+            pieces.append(text[last:line.start()])
+            pieces.append(f"    {{.bitmap_index = {line.group(1)}, .adv_w = 0, .box_w = 0, "
+                          f".box_h = 0, .ofs_x = 0, .ofs_y = 0}}")
+            last = line.end()
+    pieces.append(text[last:])
+    return "".join(pieces)
+
 for path in sys.argv[1:]:
     with open(path, encoding="utf-8") as source:
         text = source.read()
     with open(path, "w", encoding="utf-8") as output:
-        output.write(comment.sub(plain, text))
+        output.write(blank_ignorables(comment.sub(plain, text)))
 PY

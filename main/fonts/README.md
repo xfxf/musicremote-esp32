@@ -156,26 +156,36 @@ Alternatively, with the card on a computer (for example at
 /media/$USER/SDCARD/fonts/cjk.ttf`. The firmware's FAT driver uses 8.3 names
 only, so keep the name `cjk.ttf`.
 
-Any TrueType (`glyf`) font at that path is used. tiny_ttf's stb_truetype has a
-CFF path, but the CFF-based Noto CJK OTFs have not been tested with streaming,
-so prefer a `glyf` font.
+Only a reviewed font is used: its size and SHA-256 must match an entry in
+`kReviewedFonts` (`main/cjk_font_policy.hpp`), currently the pinned Droid Sans
+Fallback Full that `tools/fetch_cjk_font.sh` fetches. Any other file at that
+path is ignored and CJK text shows boxes. To use another font, review it, then
+add its size and SHA-256 there (prefer a TrueType `glyf` font; the CFF-based
+Noto CJK OTFs have not been tested with streaming).
 
 ### Boot behavior
 
-`musicremote::load_cjk_font()` runs in `app_main` after the card mounts and
-before the UI is created, so no other task is using LVGL. It logs one line:
+`musicremote::start_cjk_font()` runs in `app_main` after the card mounts and
+after the USB loader's boot recovery. It checks the file's size against the
+reviewed list and starts a low-priority task that hashes it (about 5 s for
+the 4 MB font). When the hash matches, the GUI task's `poll_cjk_font()`
+creates the tiny_ttf fonts over the same, already-hashed file descriptor,
+swaps them into the proxies, and re-measures every label. Until then CJK
+text shows boxes. One line is logged:
 
 - `cjk-font: microSD not mounted; ...` or `cjk-font: /sdcard/fonts/cjk.ttf not
   found; ...`: boot continues with CJK text as boxes.
-- `cjk-font: Loaded /sdcard/fonts/cjk.ttf (3940 KB) at 14/18/22/28 px; PSRAM
-  cache up to 315 KB; internal RAM free N KB, PSRAM free M KB`.
-- A warning if the file is empty, oversized (over 32 MB), unreadable, or not a
-  font stb_truetype accepts; boot continues without it.
+- `cjk-font: Loaded /sdcard/fonts/cjk.ttf (Droid Sans Fallback Full (AOSP),
+  3940 KB, SHA-256 verified in N ms) at 14/18/22/28 px; PSRAM cache up to
+  315 KB; internal RAM free N KB, PSRAM free M KB`.
+- A warning if the file is not a reviewed font (size or SHA-256 mismatch),
+  is unreadable, or is not a font stb_truetype accepts; CJK text stays boxes.
 
 The card's file is untrusted input to stb_truetype. All font reads go through
 a bounds-checked block cache (`cjk_font_policy.hpp`): reads past the end of the
 file, or failed reads, return zeros instead of stale or out-of-bounds memory.
-stb_truetype is not hardened against hostile fonts, so use the verified file.
+stb_truetype is not hardened against hostile fonts (compound glyphs recurse
+without a depth limit, for one), which is why only reviewed fonts are parsed.
 
 ### Memory
 

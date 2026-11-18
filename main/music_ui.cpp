@@ -1,5 +1,6 @@
 #include "music_ui.hpp"
 #include "settings_policy.hpp"
+#include "cjk_font.hpp"
 #include "ui_fonts.hpp"
 
 #include <algorithm>
@@ -343,6 +344,7 @@ void MusicUi::run() {
       worst_render_us = std::max(worst_render_us, esp_timer_get_time() - render_started_us);
       poll_display_timeout(esp_timer_get_time());
       poll_artwork_linger(esp_timer_get_time());
+      poll_cjk_font();
     }
     const int64_t now_us = esp_timer_get_time();
     worst_iteration_us = std::max(worst_iteration_us, now_us - iteration_start_us);
@@ -599,7 +601,7 @@ void MusicUi::create_now_page() {
 
   title_label_ = make_label(page, "NOTHING PLAYING", &ui_font_28, color(kText));
   lv_obj_set_pos(title_label_, 176, 8);
-  lv_obj_set_size(title_label_, 286, 36);
+  lv_obj_set_size(title_label_, 286, lv_font_get_line_height(&ui_font_28));
   lv_label_set_long_mode(title_label_, LV_LABEL_LONG_DOT);
   artist_label_ = make_label(page, "AIMP", &ui_font_18, color(kAccent));
   lv_obj_set_pos(artist_label_, 176, 50);
@@ -789,7 +791,7 @@ void MusicUi::create_library_overlay() {
   library_title_ = make_label(library_overlay_, "MEDIA LIBRARY", &ui_font_22,
                               color(kText));
   lv_obj_set_pos(library_title_, 14, 8);
-  lv_obj_set_size(library_title_, 210, 28);
+  lv_obj_set_size(library_title_, 210, lv_font_get_line_height(&ui_font_22));
   lv_label_set_long_mode(library_title_, LV_LABEL_LONG_DOT);
   library_count_ = make_label(library_overlay_, "SELECT A VIEW", &ui_font_14,
                               color(kMuted));
@@ -831,7 +833,7 @@ void MusicUi::create_lyrics_overlay() {
 
   lyrics_title_ = make_label(lyrics_overlay_, "LYRICS", &ui_font_22, color(kText));
   lv_obj_set_pos(lyrics_title_, 14, 12);
-  lv_obj_set_size(lyrics_title_, 330, 28);
+  lv_obj_set_size(lyrics_title_, 330, lv_font_get_line_height(&ui_font_22));
   lv_label_set_long_mode(lyrics_title_, LV_LABEL_LONG_DOT);
   lv_obj_t *close = make_button(lyrics_overlay_, "CLOSE", 100, 48);
   lv_obj_set_pos(close, 368, 4);
@@ -2014,11 +2016,11 @@ lv_obj_t *MusicUi::create_queue_row() {
   lv_obj_t *index = make_label(row, "", &ui_font_14, color(kMuted));
   lv_obj_align(index, LV_ALIGN_LEFT_MID, 0, 0);
   lv_obj_t *name = make_label(row, "", &ui_font_18, color(kText));
-  lv_obj_set_size(name, 318, 21);
+  lv_obj_set_size(name, 318, lv_font_get_line_height(&ui_font_18));
   lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
-  lv_obj_align(name, LV_ALIGN_LEFT_MID, 48, -8);
+  lv_obj_align(name, LV_ALIGN_LEFT_MID, 48, -9);
   lv_obj_t *artist = make_label(row, "", &ui_font_14, color(kMuted));
-  lv_obj_set_size(artist, 318, 17);
+  lv_obj_set_size(artist, 318, lv_font_get_line_height(&ui_font_14));
   lv_label_set_long_mode(artist, LV_LABEL_LONG_DOT);
   lv_obj_align(artist, LV_ALIGN_LEFT_MID, 48, 11);
   lv_obj_t *time = make_label(row, "", &ui_font_14, color(kMuted));

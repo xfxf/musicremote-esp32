@@ -16,6 +16,8 @@ output="$1"
 # 68641aad1d1b02922fc1ca61fdcd119cb051ef06. Gitiles serves files base64-encoded.
 commit="4e43ad12e1b211f15152e9c5b16b0fe88e6b93f3"
 url="https://android.googlesource.com/platform/frameworks/base/+/${commit}/data/fonts/DroidSansFallbackFull.ttf?format=TEXT"
+# Also pinned in main/cjk_font_policy.hpp (kReviewedFonts): the firmware only
+# parses a font whose size and SHA-256 match.
 sha256="2392015530438bafc48edfc4aee6d9de2387f627a6134d8ab3dfcc99d21c8240"
 size=4033576
 
