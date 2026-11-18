@@ -18,9 +18,11 @@ These are framebuffer captures from the physical 480x320 device, not desktop
 mockups. CI validates every image referenced here and requires UI-changing pull
 requests to include refreshed device evidence.
 
-| Now playing | 48,321-track queue |
+| Now playing | Japanese text from the microSD CJK font |
 |---|---|
-| ![Now-playing screen connected to AIMP](artifacts/issue20-now.png) | ![Persisted 48,321-track queue reused after reboot, with its refresh control](artifacts/issue48-cached-queue.png) |
+| ![Now-playing screen in the Selawik-derived UI font](artifacts/issue45-now-playing.png) | ![Now-playing screen with a Japanese title, artist and album](artifacts/issue45-now-playing-cjk.png) |
+| 48,321-track queue | |
+| ![Persisted 48,321-track queue reused after reboot, with its refresh control](artifacts/issue48-cached-queue.png) | |
 | Playlists | Media library |
 | ![AIMP playlist browser](artifacts/device-playlists.png) | ![AIMP media-library browser](artifacts/device-library-root.png) |
 | Display settings | Advanced AIMP controls |
