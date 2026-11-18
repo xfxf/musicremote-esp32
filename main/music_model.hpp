@@ -115,6 +115,13 @@ struct Snapshot {
   uint32_t queue_page_start{0};
   bool queue_index_ready{false};
   bool queue_indexing{false};
+  // Rows built so far by a running index rebuild (0 / 0 when none is).
+  uint32_t index_build_done{0};
+  uint32_t index_build_total{0};
+  // A FIND search or A-Z filter is scanning the index.
+  bool queue_searching{false};
+  uint32_t search_done{0};
+  uint32_t search_total{0};
   // The queue came from a structurally valid persisted index whose ID/name/
   // count still match AIMP. The protocol exposes no content revision, so this
   // remains explicitly stale until a full refresh is requested or received.

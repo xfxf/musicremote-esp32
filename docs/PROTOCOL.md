@@ -11,6 +11,32 @@ For password-protected sessions, type 2 contains `MD5(password || nonce)` plus
 client capability bytes `0x81, 0x05`. Type 3 with payload `01` accepts the
 session. Passwords and digests must never be logged.
 
+## Keepalive and client liveness
+
+Live probing on 2026-11-17 (issue #48) established the session timing. AIMP
+sends an empty type 23 keepalive about every 6 seconds; the client echoes it.
+A client-initiated type 23 receives no reply. AIMP closes a client that has
+sent it nothing for about 10 seconds: a probe that stopped answering
+closed 10.5 seconds after its last packet.
+
+AIMP's keepalives are queued on the same TCP stream as its replies, so a
+client that is still receiving a large frame cannot see, or echo, them. A
+probe reading the 1.2 MB `NAS:Music` response at 20 KB/s was disconnected
+after 13 seconds and 268 KB; at 120 KB/s it received the whole frame and was
+still disconnected at 10.2 seconds. The same 20 KB/s read with a client
+keepalive every 3 seconds stayed connected for the full 90-second test.
+Earlier firmware sent a keepalive only after 10 seconds without receiving
+data, which never happens during a transfer, so a frame written to slow
+storage (about 20 KB/s on the internal SPIFFS fallback) was cut off every
+time. The firmware now sends a type 23 whenever it has sent nothing for
+4 seconds, whether or not it is receiving.
+
+Its request deadlines likewise pause while a frame is partially received,
+including a large playlist frame streamed to storage or an oversized frame
+being drained, because every later reply is queued behind it. A stalled
+transfer still ends the session after 30 seconds without data. Every
+deliberate disconnect logs `Closing AIMP connection: <reason>`.
+
 ## Received messages
 
 | Type | Meaning |
@@ -19,7 +45,7 @@ session. Passwords and digests must never be logged.
 | 6 | Position, playback, shuffle, repeat, and volume state |
 | 8 | Current-track cover-art response |
 | 11 | Current queue index |
-| 12 / 17 / 30 / 35 | Queue/playlist changed notification; request the current queue again |
+| 12 / 17 / 30 / 35 | Queue/playlist changed notification; request the current queue again (see below for the activation echo) |
 | 19 | Media-library node, album, or track result |
 | 23 | Keepalive (echoed) |
 | 28 | Eight-byte capability mask |
@@ -78,6 +104,25 @@ The play value for subcommand 10 is the zero-based row in the current queue,
 not the per-item ID in playlist metadata (which AIMP may report as `-1`). Type
 11 publishes the current zero-based queue row.
 
+Live probing on 2026-11-17 (issue #48) showed that play-row, play, next,
+previous, pause, and stop produce only type 5, 6, and 11 frames, never a
+type 12/17/30/35 notification. Activating a playlist (subcommand 12), even
+the one already active, is answered with one empty type 12 before AIMP
+answers any request sent after the activation. Treating that echo as a change
+had made the reply to the following request stale, so a tap on a cached row
+never played and the 1.2 MB playlist was transferred two more times. The
+firmware now expects one echo per activation it sends, in order, each for
+5 seconds (AIMP once took 2.3 seconds), paused while a large frame is being
+received; several activations can be outstanding at once. A type 12 matching
+an expectation is absorbed; any other is handled as a change. The trade-off is
+that a genuine change notified inside that window is missed until the next
+notification, refresh, or tap verification.
+A playlist switch asks for the current playlist (`-1`) right after the
+activation instead of the explicit ID: that response is byte-identical to the
+one the index was last built or verified from, so an unchanged large playlist
+is reused by source hash (5.2 s end to end for `NAS:Music`) instead of being
+decoded for a content check (11.2 s).
+
 ## Other implemented operations
 
 - Type 4 subcommand 13 requests playlists. Its `int32_t` argument is `-1` for
@@ -87,6 +132,35 @@ not the per-item ID in playlist metadata (which AIMP may report as `-1`). Type
 - Type 4 subcommand 10 requests a playlist and queue. Its payload is the
   subcommand byte, playlist ID (`int32_t`, with `-1` meaning current), and an
   observed constant `int32_t` value of 1.
+
+  The type 9/31/50 response starts with `uint32_t count`, `int32_t
+  playlist_id`, `uint16_t name_length`, one flags byte, and the name plus a
+  NUL. Requested as `-1`, `NAS:Music` came back with ID `-1` and flags `1`;
+  requested as ID 2, with ID 2 and flags `0`. Those five bytes were the only
+  differences in 3,933,117 decoded bytes, yet the compressed frames were
+  1,223,087 and 1,223,090 bytes. Each of the `count` rows is a 32-byte base followed by four strings,
+  each of its declared length plus a NUL:
+
+  | Offset | Field |
+  |---:|---|
+  | 0 | `int32_t` item ID (`-1` on every `NAS:Music` row) |
+  | 4 | `int32_t` duration in milliseconds |
+  | 8 | `uint16_t` bitrate in kbit/s |
+  | 10 | `uint8_t` sample rate in kHz (44, 22, ...), inferred |
+  | 11 | `uint8_t` rating, 0 through 5 |
+  | 12 | `uint16_t` year, 0 when unknown |
+  | 14 | `uint16_t`, non-zero on 62% of rows; probably track number (unverified) |
+  | 16 | eight bytes, unidentified, almost always zero |
+  | 24 | `uint16_t` title, artist, album, and genre byte lengths |
+
+  The string order is title, artist, album, genre. Earlier notes and the
+  in-memory model called the fourth string `codec`; the live 48,321-row
+  `NAS:Music` response (3,933,117 bytes decoded, no trailing bytes) shows
+  genre names such as `Electronic`, `Rock`, and `Drum & Bass`. Non-empty
+  counts there were 48,056 titles, 39,549 artists, 37,777 albums, and 29,622
+  genres; the longest were 150, 96, 127, and 90 bytes. There is no file path,
+  composer, or per-row revision. The large-playlist index stores title,
+  artist, and album, and searches all three (`docs/LARGE_PLAYLISTS.md`).
 - Type 4 subcommand 3 requests artwork. The first `int32_t` is a queue row in
   the current playlist, with `-1` meaning the current track. The second is
   the maximum edge in pixels: `0` gives a default size, and `-1` gives the
@@ -115,7 +189,8 @@ not the per-item ID in playlist metadata (which AIMP may report as `-1`). Type
   state, equalizer preset names, and sleep-timer state respectively. They
   produce types 48, 49, and 51. The production client sends these requests
   only after the corresponding capability bit is known. Each outstanding
-  response kind has a five-second deadline. A missing response marks only that
+  response kind has a five-second deadline, paused like every other request
+  deadline while a large frame is received. A missing response marks only that
   state unavailable without disconnecting the otherwise healthy session; a
   later valid response remains authoritative and restores the ready state.
   Sleep-timer writes additionally require a received type-51 baseline, not
@@ -241,7 +316,7 @@ reduce the network or decoding cost: full-library search requires streaming the
 single response into external storage and building a local index. The issue #7
 implementation prefers the SC01 Plus microSD slot, supports a size-gated 4 MB
 internal fallback, uses atomic promotion, and reads 100-row pages. A normalized
-local secondary index provides A-Z title prefixes and title/artist substring
+local secondary index provides A-Z title prefixes and title/artist/album substring
 search because no corresponding server operation was observed. If storage is
 unavailable or indexing fails, the frame is drained and the UI reports the
 failure without allocating the complete response or dropping the AIMP
@@ -272,11 +347,25 @@ The persisted-index policy therefore remains deliberately bounded:
   transferred and indexed and after a failed or throttled (stale) build, until
   an authoritative index or small playlist response replaces it. Paging, A-Z,
   and search of the local index are served while AIMP is offline. A throttled
-  build publishes no rows, playlist ID, or count from the kept index. Tapping a cached row first activates
-  the recorded playlist ID, requests the authoritative current playlist, and
-  sends the global queue row only after the response confirms that identity.
-  A throttled build never confirms it.
-  The manual refresh is the authoritative escape hatch.
+  build publishes no rows, playlist ID, or count from the kept index.
+  The manual refresh is the authoritative escape hatch;
+- tapping a row plays it optimistically (issue #48). On a cached queue the
+  firmware first activates the recorded playlist ID (its type 12 echo is
+  absorbed), then sends play-row (type 7 subcommand 10) with the global row
+  and play, and switches to Now Playing at once; no transfer or confirmation
+  request sits on the tap path. It then compares AIMP's next type 11 current
+  row and type 5 title and artist with the index row, within 6 seconds
+  (paused while a large frame is received). A match confirms playback only:
+  one row says nothing about the others (cached A, B, C against live A, C, B
+  matches a tap on A), and rows are addressed by number, so `CACHED` and the
+  edit guard stay until a full refresh matches or rebuilds the index; a
+  long-press edit or CLEAR on cached rows shows "Refresh to edit". A
+  mismatch or timeout marks it unverified again, shows "Playlist changed",
+  and starts the background refresh with the rows still on screen; playback
+  continues. The trade-off: a stale cache can briefly play the wrong row,
+  which then corrects itself through that refresh. On the board, play-row
+  left 20 to 95 ms after the tap, and the match arrived 0.2 to 2.3 seconds
+  after it.
 
 This avoids the large transfer on an unchanged second connection without
 inventing a server revision signal that AIMP does not provide.

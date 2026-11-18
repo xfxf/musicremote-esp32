@@ -16,25 +16,32 @@ Neither the compressed nor decoded response is held in memory.
 
 Decompression and index construction run on a dedicated FreeRTOS task so the
 network task continues answering AIMP keepalives and UI requests during the
-roughly 80-second full-library build. If another large response arrives while
-that task is active, the in-flight index is marked superseded and is not
-published; the current playlist is requested again after the worker exits.
+roughly 100-second full-library build (48,321 rows on microSD). If another
+large response arrives while that task is active, the in-flight index is
+marked superseded and is not published; the current playlist is requested
+again after the worker exits.
 Likewise, a late success or failure cannot replace a newer small-playlist queue.
 
-`INDEX.DAT` version 2 contains a versioned header, one fixed-size record per
-queue row, a variable string area, and a sequential secondary search area.
-Records retain the AIMP item ID, duration, and offsets and lengths for title,
-artist, and the normalized search key. Search entries map that key back to the
-original zero-based queue row. Normalization performs ASCII case-folding over
-`title<TAB>artist`; UTF-8 bytes outside ASCII are preserved. Only one page of
-100 display records is read into the model.
+`INDEX.DAT` version 3 contains a versioned header, one fixed-size 32-byte
+record per queue row, a variable string area, and a sequential secondary search
+area. Records retain the AIMP item ID, duration, and offsets and lengths for
+title, artist, album, and the normalized search key. Search entries map that
+key back to the original zero-based queue row. Normalization performs ASCII
+case-folding over `title<TAB>artist<TAB>album`, capped at 2,048 bytes; UTF-8
+bytes outside ASCII are preserved. Only one page of 100 display records is
+read into the model. AIMP also sends a genre string per row
+(`docs/PROTOCOL.md`); it is not indexed, because an unranked substring match
+on a genre word returns thousands of rows and buries title, artist, and album
+matches. Version 2 files (title and artist only, 28-byte records) fail the
+header version check: at boot they are not offered as a cached queue, and the
+next response rebuilds the index rather than reusing it by source hash.
 
 Index construction reserves the fixed-record table in `INDEX.TMP`, appends
 strings in wire order, fills records in 128-row batches, then appends the search
 area in a second bounded pass. This avoids duplicate record/string staging
 files and allows a fitting index to be built in the small internal partition.
 Before a build, free space is checked conservatively against six decoded sizes
-plus 1 MiB on microSD, or three decoded sizes plus 256 KiB on SPIFFS. The
+plus 1 MiB on microSD, or four decoded sizes plus 256 KiB on SPIFFS. The
 completed file is flushed and synced, the prior index is moved to `INDEX.BAK`,
 and `INDEX.TMP` is promoted. A failed promotion restores the backup; boot
 recovery also restores a structurally valid backup when the final file is
@@ -46,10 +53,24 @@ and `INDEX.DAT` remains on the selected storage across resets and power loss.
 The current format retains one promoted oversized-playlist index—the most
 recent one—not a separate cache for every AIMP playlist.
 After reboot, an identical response reuses the promoted file instead of
-rebuilding or rewriting it. MonkeyMote does not expose a playlist revision,
-delta, pagination, or changed-row notification, so AIMP must still send the
-complete compressed response before the device can verify that hash. A changed
-hash invalidates the complete local index; safe partial invalidation is not
+rebuilding or rewriting it. The header also records a 64-bit hash of the
+decoded playlist that leaves out its playlist-ID and flags fields. A response
+to a request for the current playlist (`-1`) and one to a request for its
+explicit ID describe the same rows but compress differently (1,223,087 and
+1,223,090 bytes for `NAS:Music`), so the compressed hash alone rebuilt the
+index after every switch away and back. When the compressed hash differs and
+a valid index exists, the firmware first decodes the response into a digest
+only, with no storage write, and compares the content hash, name, and count.
+A match reuses the index after that decode alone. Only a confirmed rebuild
+then faces the internal-flash wear throttle and the free-space reserve, so an
+unchanged playlist is never reported stale or `SD CARD FULL`. The stored
+playlist ID is published as the active playlist, so reuse also requires that
+ID to be `-1` or the response's own ID: a current-playlist (`-1`) response
+does not prove that an explicitly stored playlist is still the active one,
+and it rebuilds instead. MonkeyMote does not expose a playlist revision, delta,
+pagination, or changed-row notification, so AIMP must still send the complete
+compressed response before the device can verify that hash. A changed hash
+invalidates the complete local index; safe partial invalidation is not
 possible without row identities or a server revision. On
 internal flash, changed content received less than 15 minutes after boot or the
 last promotion keeps the previous index file and visibly reports
@@ -61,18 +82,72 @@ frequency during reconnect or
 notification storms. SPIFFS still has finite endurance; microSD is recommended
 for frequently edited or large libraries.
 
+Because AIMP offers no cheap change check, the queue header shows a refresh
+button (the LVGL refresh symbol, 44x42 px between the title and `FIND`)
+whenever the queue is served from the index or from the persisted cache. It
+sends the same authoritative request as Settings > Playback > `REFRESH FROM
+AIMP`: AIMP starts the complete response 0.9 seconds after the request and
+sends it in about 4 seconds; the source hash is computed while it streams, so
+an unchanged response is reused about 0.1 seconds later and the page is
+republished in under 0.1 seconds, about 5 seconds in all. The button is
+hidden for small playlists, which AIMP's change notifications keep current,
+and while a transfer or build is reporting progress in the title.
+
+Switching to another playlist keeps `INDEX.DAT` unless that playlist is also
+large: a small playlist uses the in-memory path and never touches the file.
+The switch clears the `ACTIVE.DAT` marker, so the next boot requests the
+active queue instead of offering the cached rows. Switching back transfers the
+large response again and reuses the kept index by source hash, about 5 seconds
+for `NAS:Music`, instead of rebuilding it (about 100 seconds). AIMP answers
+every activation with a type 12 notification before it answers the request
+sent with it; the firmware recognizes that echo and does not transfer the
+playlist again. A second large playlist replaces the single index, and
+switching back to the first then rebuilds it.
+
+Re-validating the playlist already on screen (the refresh button, a genuine
+change notification, or a tap whose row did not match) keeps the current page
+visible and tappable while the response is transferred and checked; the title
+shows "Refreshing". Destructive edits stay disabled until the build finishes,
+and paging and `FIND` wait for it; it then republishes the same page. Moving
+between the NOW and QUEUE tabs never requests anything from AIMP.
+
+Tapping a row plays it at once and verifies it afterwards against AIMP's
+now-playing report, without a transfer (`docs/PROTOCOL.md`). A match confirms
+playback only; editing cached rows (remove, CLEAR) waits for a refresh and
+otherwise shows "Refresh to edit".
+
+One shared modal ("Indexing", "Searching", or "Loading playlist", with a bar)
+covers waits that leave nothing useful to do: an index build with no rows to
+show, a FIND or A-Z scan, and loading a newly selected playlist. It appears
+only after 300 ms, absorbs taps, keeps rendering, and closes on completion or
+error. It is never shown over rows that are already usable. The index bar is
+weighted by the measured phases of a rebuild (decode 17%, rows 68%, search
+area 15%, finalize under 1%), so it does not sit full while work remains.
+The index worker runs below the GUI task on the same core, and queue rows are
+pooled widgets refilled within a 6 ms budget per frame, so neither a build nor
+a page change delays taps.
+
 `FIND` opens a full-screen A-Z surface. `#` matches titles whose first byte is
 not A-Z, letters perform a case-insensitive title-prefix scan, and `ALL` clears
 the filter. `SEARCH` opens the LVGL keyboard and performs a case-insensitive
-substring scan over both title and artist. The complete secondary area is
-scanned with a small buffer, but only the requested 100 matching rows are
-materialized. Result rows retain their global AIMP queue row, so selecting one
-plays the correct item and returns to Now Playing.
+substring scan over title, artist, and album. The complete secondary area is
+scanned sequentially through a 16 KiB internal stream buffer in about 2.5
+seconds for 48,321 rows, and only the requested 100 matching rows are
+materialized, reading records and strings in ascending order. Result rows
+retain their global AIMP queue row. Selecting one plays it and switches to Now
+Playing; in the background the filter is cleared and the queue returns to the
+playlist page that holds the track, scrolled to it and highlighted once AIMP
+reports it as current, so its album can be browsed in playlist order.
 
 AIMP may label a request for the current queue with playlist ID `-1`. On the
 first indexed page the firmware resolves that sentinel to a unique playlist
-with the same name and track count, then retains the resolved ID across later
-pages even while the user browses playlist folders.
+with the same name and track count, or else to the ID its request expected
+(a switch asks for `-1` right after activating a known ID), then retains the
+resolved ID across later pages even while the user browses playlist folders.
+A newly built index never inherits the ID of rows that stayed on screen while
+it was re-validated: AIMP may have switched playlists externally, and CLEAR,
+remove, and the cached-queue marker must target the playlist actually built.
+If neither rule resolves it, the ID stays unknown and no marker is written.
 
 An absent, full, interrupted or malformed card never causes the firmware to
 allocate the complete response. It drains the frame, preserves any previously

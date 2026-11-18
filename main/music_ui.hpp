@@ -4,6 +4,7 @@
 #include "monkeymote_client.hpp"
 #include "music_model.hpp"
 
+#include <atomic>
 #include <functional>
 #include <array>
 #include <mutex>
@@ -67,7 +68,14 @@ private:
   void update_timeline(int64_t now_us, bool force = false);
   void rebuild_queue(const Snapshot &snapshot);
   void append_queue_rows(const Snapshot &snapshot);
+  lv_obj_t *create_queue_row();
+  void create_busy_overlay();
+  void update_busy_overlay(int64_t now_us);
   void update_queue_selection(const Snapshot &snapshot);
+  void reveal_selected_queue_row(int64_t now_us);
+  std::string queue_title_text(const Snapshot &snapshot) const;
+  void show_queue_notice(const char *text);
+  void expire_queue_notice(int64_t now_us);
   void rebuild_playlists(const Snapshot &snapshot);
   void show_library_root();
   void rebuild_library(const Snapshot &snapshot);
@@ -114,6 +122,8 @@ private:
   std::string rendered_lyrics_track_key_;
   size_t queue_build_index_{0};
   size_t queue_build_limit_{0};
+  size_t queue_build_base_{0};
+  std::vector<lv_obj_t *> queue_row_pool_;
   size_t queue_page_start_{0};
   int32_t rendered_active_queue_index_{-1};
   int64_t rendered_position_second_{-1};
@@ -127,6 +137,12 @@ private:
   bool timeline_extrapolating_{false};
   bool suppress_play_click_{false};
   bool suppress_queue_click_{false};
+  // A played row to scroll into view when the QUEUE page is next shown.
+  int32_t reveal_queue_row_{-1};
+  std::string queue_notice_;
+  int64_t queue_notice_until_us_{0};
+  int64_t reveal_queue_row_deadline_us_{0};
+  uint64_t reveal_requested_revision_{UINT64_MAX};
   bool suppress_playlist_click_{false};
   bool suppress_library_click_{false};
   bool library_root_visible_{true};
@@ -169,6 +185,7 @@ private:
   lv_obj_t *queue_previous_page_{nullptr};
   lv_obj_t *queue_next_page_{nullptr};
   lv_obj_t *queue_filter_button_{nullptr};
+  lv_obj_t *queue_refresh_button_{nullptr};
   lv_obj_t *playlist_list_{nullptr};
   lv_obj_t *playlist_title_{nullptr};
   lv_obj_t *playlist_back_button_{nullptr};
@@ -227,6 +244,19 @@ private:
   std::vector<lv_obj_t *> equalizer_gain_sliders_;
   std::vector<lv_obj_t *> equalizer_gain_values_;
   lv_obj_t *power_confirm_overlay_{nullptr};
+  enum class BusyKind { none, indexing, searching, loading };
+  lv_obj_t *busy_overlay_{nullptr};
+  lv_obj_t *busy_title_{nullptr};
+  lv_obj_t *busy_detail_{nullptr};
+  lv_obj_t *busy_bar_{nullptr};
+  BusyKind busy_kind_{BusyKind::none};
+  int64_t busy_since_us_{0};
+  std::string busy_title_text_;
+  std::string busy_detail_text_;
+  // A playlist selected on the Playlists page, until its rows are loaded.
+  int32_t switch_target_{-1};
+  int64_t switch_started_us_{0};
+  uint64_t switch_revision_{0};
   lv_obj_t *power_confirm_message_{nullptr};
   lv_obj_t *power_confirm_button_{nullptr};
   lv_obj_t *power_cancel_button_{nullptr};

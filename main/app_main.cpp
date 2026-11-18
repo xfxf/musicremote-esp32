@@ -10,11 +10,13 @@
 #include <inttypes.h>
 #include <limits>
 
+#include "driver/gpio.h"
 #include "esp_event.h"
 #include "esp_heap_caps.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_rom_sys.h"
 #include "esp_spiffs.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -29,6 +31,63 @@ namespace {
 constexpr char kTag[] = "musicremote";
 constexpr EventBits_t kWifiConnected = BIT0;
 EventGroupHandle_t wifi_events;
+
+// A reset during a multi-block read (a panic, flash, or watchdog) can leave the
+// card mid-transfer, ignoring the CMD0 that mounting sends; earlier firmware
+// then fell back to internal flash on every boot (issue #48). Before each
+// mount attempt, bit-bang the SPI-mode STOP_TRANSMISSION (CMD12) and idle
+// clocks, which a card accepts in any data-transfer state and ignores when
+// idle. This recovered such a card after a USB chip reset.
+void release_stalled_sd_card() {
+  const auto pins = espp::SmartPanleeSc01Plus::sd_card_pins();
+  const gpio_config_t outputs{
+      .pin_bit_mask = (1ULL << pins.clk) | (1ULL << pins.mosi) | (1ULL << pins.cs),
+      .mode = GPIO_MODE_OUTPUT,
+      .pull_up_en = GPIO_PULLUP_DISABLE,
+      .pull_down_en = GPIO_PULLDOWN_DISABLE,
+      .intr_type = GPIO_INTR_DISABLE,
+  };
+  const gpio_config_t input{
+      .pin_bit_mask = 1ULL << pins.miso,
+      .mode = GPIO_MODE_INPUT,
+      .pull_up_en = GPIO_PULLUP_ENABLE,
+      .pull_down_en = GPIO_PULLDOWN_DISABLE,
+      .intr_type = GPIO_INTR_DISABLE,
+  };
+  if (gpio_config(&outputs) != ESP_OK || gpio_config(&input) != ESP_OK) {
+    return;
+  }
+  const auto clock_byte = [&pins](uint8_t value) {
+    for (int bit = 7; bit >= 0; --bit) {
+      gpio_set_level(pins.mosi, (value >> bit) & 1);
+      esp_rom_delay_us(2);
+      gpio_set_level(pins.clk, 1);
+      esp_rom_delay_us(2);
+      gpio_set_level(pins.clk, 0);
+    }
+  };
+  gpio_set_level(pins.clk, 0);
+  gpio_set_level(pins.cs, 1);
+  for (int i = 0; i < 10; ++i) {
+    clock_byte(0xff);
+  }
+  gpio_set_level(pins.cs, 0);
+  // CMD12, argument 0, CRC7 0x30 with end bit.
+  for (const uint8_t value : {0x4c, 0x00, 0x00, 0x00, 0x00, 0x61}) {
+    clock_byte(value);
+  }
+  // Stuff byte, R1b response, and busy release.
+  for (int i = 0; i < 64; ++i) {
+    clock_byte(0xff);
+  }
+  gpio_set_level(pins.cs, 1);
+  for (int i = 0; i < 10; ++i) {
+    clock_byte(0xff);
+  }
+  for (const gpio_num_t pin : {pins.clk, pins.mosi, pins.miso, pins.cs}) {
+    gpio_reset_pin(pin);
+  }
+}
 
 struct DiagnosticContext {
   musicremote::MusicUi *ui;
@@ -113,6 +172,13 @@ esp_err_t screenshot_handler(httpd_req_t *request) {
                static_cast<int32_t>(musicremote::PlaylistIndex::SearchMode::prefix), 0,
                filter});
         }
+      }
+      char refresh[4]{};
+      // The queue header's refresh control: re-request the active playlist.
+      // Read-only on AIMP; an unchanged response is reused by source hash.
+      if (httpd_query_key_value(query, "refresh", refresh, sizeof(refresh)) == ESP_OK &&
+          std::strcmp(refresh, "1") == 0) {
+        context->client->enqueue({musicremote::CommandType::request_playlist, -1});
       }
       if (httpd_query_key_value(query, "search", search, sizeof(search)) == ESP_OK &&
           search[0] != '\0') {
@@ -324,6 +390,7 @@ extern "C" void app_main() {
   const bool sd_required = std::strcmp(MUSICREMOTE_PLAYLIST_STORAGE, "sd") == 0;
   if (!flash_only) {
     for (int attempt = 0; attempt < 3 && !sd_ready; ++attempt) {
+      release_stalled_sd_card();
       sd_ready = board.initialize_sdcard({.format_if_mount_failed = false, .max_files = 8});
       if (!sd_ready) {
         vTaskDelay(pdMS_TO_TICKS(400));
