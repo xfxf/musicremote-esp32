@@ -558,6 +558,28 @@ On the SC01 Plus against the live AIMP host, the owner confirmed these cases:
 
 ![Now playing with cover after a track change](../artifacts/issue43-now.png)
 
+## Selawik UI font and CJK fallback qualification (issue #45)
+
+Date: 2026-11-18. SC01 Plus on `/dev/ttyACM0` (screen flipped), firmware from
+this branch merged with #48 and #49, live AIMP at `aerocore.local:19371`.
+`fonts/cjk.ttf` (Droid Sans Fallback Full, SHA-256 `2392015530…8240`) was
+placed on the card with `make load-data`.
+
+- Boot logs `cjk-font: Loaded /sdcard/fonts/cjk.ttf (3940 KB) at
+  14/18/22/28 px; PSRAM cache up to 315 KB; internal RAM free 211 KB, PSRAM
+  free 1915 KB`, after `sd_loader` recovery, so the font is opened only once
+  the card's interrupted uploads have been resolved.
+- LVGL allocates through #48's PSRAM-first allocator; the branch's earlier
+  scoped PSRAM preference for tiny_ttf was dropped as redundant.
+- After boot, 35 s idle logged no slow-GUI-loop warnings. The only warnings
+  come from first render and the initial AIMP sync (worst 135 ms and 342 ms).
+- The owner checked curly quotes, dashes, ellipses and Cyrillic in titles,
+  CJK composer names in the media library, and scrolling and clipping in QUEUE
+  and search: all render, nothing clipped. Device screenshots
+  `artifacts/issue45-now-playing.png` (Semibold title and album line) and
+  `artifacts/issue45-now-playing-cjk.png` (Japanese title, artist, album).
+- Known gap: Droid Sans Fallback has no Hangul syllables, so Korean shows boxes.
+
 ## USB microSD loader qualification (issue #49)
 
 Date: 2026-11-18. SC01 Plus on `/dev/ttyACM0` with a 64 GB microSD card,
