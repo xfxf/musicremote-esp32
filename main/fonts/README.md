@@ -138,17 +138,23 @@ has no Latin, Greek or Cyrillic, which the earlier tiers supply.
 
 ### Putting the font on the card
 
-With the card mounted on a computer (for example at `/media/$USER/SDCARD`):
+With the board connected over USB and running (close `idf.py monitor` first),
+from an ESP-IDF shell:
 
 ```sh
-tools/fetch_cjk_font.sh /media/$USER/SDCARD/fonts/cjk.ttf
+make load-data
 ```
 
-The script downloads the file from the pinned URL, checks its SHA-256 and
-size, and writes it to the path given. It must end up at `fonts/cjk.ttf` in
-the card's root, which the firmware sees as `/sdcard/fonts/cjk.ttf`. The
-firmware's FAT driver uses 8.3 names only, so keep the name `cjk.ttf`. Eject
-the card, insert it, and reset the board.
+This downloads the font from the pinned URL with `tools/fetch_cjk_font.sh`,
+checks its SHA-256 and size, and uploads it over the USB console to
+`/sdcard/fonts/cjk.ttf` (the loader, issue #49, verifies it on the device and
+skips an identical file). Reset the board afterwards: the font is opened at
+boot.
+
+Alternatively, with the card on a computer (for example at
+`/media/$USER/SDCARD`), run `tools/fetch_cjk_font.sh
+/media/$USER/SDCARD/fonts/cjk.ttf`. The firmware's FAT driver uses 8.3 names
+only, so keep the name `cjk.ttf`.
 
 Any TrueType (`glyf`) font at that path is used. tiny_ttf's stb_truetype has a
 CFF path, but the CFF-based Noto CJK OTFs have not been tested with streaming,

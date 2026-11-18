@@ -16,8 +16,8 @@ accent colour, and information hierarchy—without copying branded assets.
   punctuation, currency, arrows, common maths and music symbols), then to an
   optional CJK font that LVGL's tiny_ttf renders from
   `/sdcard/fonts/cjk.ttf`, then to Montserrat. Without that file, CJK text
-  shows placeholder boxes. To install it, run
-  `tools/fetch_cjk_font.sh <card>/fonts/cjk.ttf` with the card on a computer.
+  shows placeholder boxes. To install it, run `make load-data` with the board
+  connected over USB, then reset the board.
   Its glyphs are cached in PSRAM after first use, so the first draw of a CJK
   screen reads the card and later redraws do not. See `main/fonts/README.md`
   for provenance, regeneration, the memory budget, and the Hangul gap in the
