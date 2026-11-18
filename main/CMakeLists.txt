@@ -97,6 +97,16 @@ idf_component_register(
         "monkeymote_client.cpp"
         "playlist_index.cpp"
         "music_ui.cpp"
+        "cjk_font.cpp"
+        "fonts/ui_font_14.c"
+        "fonts/ui_font_14_semibold.c"
+        "fonts/ui_font_18.c"
+        "fonts/ui_font_22.c"
+        "fonts/ui_font_28.c"
+        "fonts/ui_font_ext_14.c"
+        "fonts/ui_font_ext_18.c"
+        "fonts/ui_font_ext_22.c"
+        "fonts/ui_font_ext_28.c"
         "lvgl_allocator.cpp"
     INCLUDE_DIRS "." "${generated_include_dir}"
     REQUIRES
@@ -115,6 +125,9 @@ idf_component_register(
 )
 
 target_compile_features(${COMPONENT_LIB} PUBLIC cxx_std_20)
+# The generated fonts include "lvgl/lvgl.h" unless this is defined; the managed
+# LVGL component is not installed under an lvgl/ directory.
+target_compile_definitions(${COMPONENT_LIB} PRIVATE LV_LVGL_H_INCLUDE_SIMPLE)
 
 # LVGL's custom-allocator hooks live in libmain, which is linked before
 # liblvgl; pull that object in up front (see lvgl_allocator.cpp).

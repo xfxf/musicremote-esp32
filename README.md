@@ -18,11 +18,13 @@ These are framebuffer captures from the physical 480x320 device, not desktop
 mockups. CI validates every image referenced here and requires UI-changing pull
 requests to include refreshed device evidence.
 
-| Now playing | 48,321-track queue |
+| Now playing | Japanese text from the microSD CJK font |
 |---|---|
-| ![Now-playing screen connected to AIMP](artifacts/issue20-now.png) | ![Persisted 48,321-track queue reused after reboot, with its refresh control](artifacts/issue48-cached-queue.png) |
-| Playlists | Media library |
-| ![AIMP playlist browser](artifacts/device-playlists.png) | ![AIMP media-library browser](artifacts/device-library-root.png) |
+| ![Now-playing screen in the Selawik-derived UI font](artifacts/issue45-now-playing.png) | ![Now-playing screen with Japanese and full-width text in the artist line](artifacts/issue45-now-playing-cjk.png) |
+| Queue | Playlists |
+| ![Queue with Japanese track titles and artists](artifacts/issue45-queue.png) | ![AIMP playlist browser including the 48,321-track playlist](artifacts/issue45-playlists.png) |
+| Media library | 48,321-track queue |
+| ![AIMP media-library browser](artifacts/issue45-library.png) | ![Persisted 48,321-track queue reused after reboot, with its refresh control](artifacts/issue48-cached-queue.png) |
 | Display settings | Advanced AIMP controls |
 | ![Brightness, screen-off, and flip-screen settings](artifacts/device-settings-display.png) | ![Advanced controls with unavailable sleep timer](artifacts/issue22-advanced-unavailable.png) |
 
@@ -58,7 +60,11 @@ independent interoperable client and is not affiliated with MonkeyMote or AIMP.
 - Smart Panlee / [Wireless-Tag WT32-SC01 Plus](https://www.aliexpress.com/w/wholesale-WT32-SC01-Plus.html) (ESP32-S3, ST7796 480x320 LCD, FT5x06 touch, 2 MB PSRAM)
 - ESP-IDF 5.5.4
 - `espp/smartpanlee-sc01-plus` managed component
-- LVGL 9 with the bundled Montserrat font (SIL Open Font License 1.1)
+- LVGL 9, with UI text in bitmap fonts derived from Microsoft's Selawik
+  (SIL Open Font License 1.1; see `main/fonts/README.md`). Noto Sans and Noto
+  Sans Math bitmap fonts (SIL Open Font License 1.1) cover European scripts
+  and symbols, an optional microSD font covers CJK, and the bundled Montserrat
+  font (SIL Open Font License 1.1) is the symbol fallback.
 
 ## Configure, build, and flash
 
@@ -78,6 +84,17 @@ Changes made under Settings are stored in NVS and take precedence on later
 boots; connection changes apply after restart. `.env`, generated configuration,
 dependencies, and `build/` are ignored; never publish a binary built with real
 credentials.
+
+### Optional CJK font
+
+Chinese and Japanese text (track, album, artist and playlist names) needs a
+font file on the microSD card; without it those characters show as boxes.
+With the board connected, `make load-data` (below) fetches Droid Sans Fallback
+Full (Apache 2.0) from a pinned AOSP commit, checks its SHA-256, and uploads
+it to `fonts/cjk.ttf` on the card. Alternatively, with the card on a computer,
+run `tools/fetch_cjk_font.sh /media/$USER/SDCARD/fonts/cjk.ttf`. The board
+loads the font at boot and logs a `cjk-font:` line. The font has no Hangul
+syllables, so Korean still shows boxes. See `main/fonts/README.md`.
 
 ### Loading data onto the microSD card
 

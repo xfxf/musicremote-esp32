@@ -20,6 +20,8 @@
       "main/device_settings.*",
       "main/settings_policy.hpp",
       "main/artwork_decoder.*",
+      "main/cjk_font.*",
+      "main/cjk_font_policy.hpp",
       "main/advanced_controls.hpp",
       "main/app_main.cpp",
       "partitions.csv"
