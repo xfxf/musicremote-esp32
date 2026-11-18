@@ -174,7 +174,7 @@ struct Relpath {
   std::string staging() const { return directory + "/" + stem + ".tmp"; }
   std::string backup() const { return directory + "/" + stem + ".bak"; }
   // Records name() while the target is moved aside, because <stem>.bak alone
-  // cannot say which extension it came from (see journal_outcome()).
+  // cannot say which extension it came from (see recovery_actions()).
   std::string journal() const { return directory + "/" + stem + ".jnl"; }
 };
 
@@ -243,16 +243,23 @@ inline std::optional<Relpath> validate_relpath(std::string_view text) {
   return Relpath{std::string(directory), std::string(stem), std::string(extension)};
 }
 
-// Boot-time recovery. Promotion writes <stem>.jnl naming the target, renames
-// the target to <stem>.bak, then renames <stem>.tmp to the target. Recovery
-// is driven by the journals, with the backup and target looked up by path,
-// so it never depends on seeing every directory entry in one scan.
+// Crash recovery for promotion. promote() runs, for one stem:
+//   1. delete any <stem>.bak left by an earlier, committed promotion;
+//   2. write <stem>.jnl = phase byte + target name ('R' replacing an existing
+//      target, 'N' creating it), fsync;
+//   3. 'R' only: rename the target to <stem>.bak;
+//   4. rename <stem>.tmp to the target;
+//   5. overwrite the phase byte with '+' (committed), fsync.
+// FatFs renames by creating the new entry before deleting the old, so a reset
+// inside step 3 or 4 can leave two names sharing one cluster chain; deleting
+// either would free the other's data. Recovery therefore deletes only what
+// the surviving names prove distinct, and otherwise leaves everything in
+// place (ambiguous) and refuses new uploads of that stem.
 
 enum class ReservedKind { none, staging, journal };
 
 // Classifies a directory entry (as readdir returns it, typically upper case
-// without LFN support): *.TMP is an interrupted upload, *.JNL a promotion
-// record. *.BAK is not listed: backups are handled through their journals.
+// without LFN support). *.BAK is handled through its journal.
 inline ReservedKind reserved_kind(std::string_view name) {
   const size_t dot = name.rfind('.');
   if (dot == std::string_view::npos) {
@@ -264,30 +271,96 @@ inline ReservedKind reserved_kind(std::string_view name) {
   return ReservedKind::none;
 }
 
-enum class JournalOutcome {
-  remove_backup,   // the target was promoted; the backup is superseded
-  restore_backup,  // a reset between the renames: rename the backup to target
-  no_backup,       // nothing was moved aside (or it was already handled)
-  unusable,        // the record is not a valid target for this stem
+inline constexpr char kJournalReplacing = 'R';
+inline constexpr char kJournalCreating = 'N';
+inline constexpr char kJournalCommitted = '+';
+
+struct Journal {
+  char phase;          // kJournalReplacing, kJournalCreating or kJournalCommitted
+  std::string target;  // name within the directory, e.g. "cjk.ttf"
 };
 
-// Decides what one journal means. recorded is the journal's content, the
-// target's name within directory; backup_exists and target_exists are
-// direct lookups of <stem>.bak and that target. The journal is deleted only
-// after the outcome's action succeeds. An unusable journal is deleted but its
-// backup, which may be the only copy, is kept.
-inline JournalOutcome journal_outcome(std::string_view directory, std::string_view journal_name,
-                                      std::string_view recorded, bool backup_exists,
-                                      bool target_exists) {
+inline std::string journal_content(char phase, std::string_view target) {
+  return std::string(1, phase) + std::string(target);
+}
+
+// Parses a journal's content. nullopt for anything torn or invalid: a target
+// that is not a valid upload name, or whose stem differs from the journal's.
+inline std::optional<Journal> parse_journal(std::string_view directory,
+                                            std::string_view journal_name,
+                                            std::string_view content) {
+  if (content.size() < 2 || (content[0] != kJournalReplacing && content[0] != kJournalCreating &&
+                             content[0] != kJournalCommitted)) {
+    return std::nullopt;
+  }
   const std::string_view stem = journal_name.substr(0, journal_name.rfind('.'));
-  const auto target = validate_relpath(std::string(directory) + "/" + std::string(recorded));
+  const auto target =
+      validate_relpath(std::string(directory) + "/" + std::string(content.substr(1)));
   if (!target || !ascii_iequals(target->stem, stem)) {
-    return JournalOutcome::unusable;
+    return std::nullopt;
   }
-  if (!backup_exists) {
-    return JournalOutcome::no_backup;
+  return Journal{content[0], std::string(content.substr(1))};
+}
+
+struct RecoveryActions {
+  bool restore_backup = false;  // rename <stem>.bak to the target (first)
+  bool remove_staging = false;
+  bool remove_backup = false;
+  bool remove_journal = false;  // only after the actions above succeed
+  bool ambiguous = false;       // leave everything; refuse uploads of the stem
+};
+
+// Decides recovery for one stem with a journal, from direct lookups of its
+// staging file, backup and journalled target. journal is nullopt when the
+// content was torn: that happens only while writing the journal (nothing
+// renamed yet) or the commit byte (both renames done), so the staging file
+// is distinct either way; the backup is kept in case it is the only copy.
+inline RecoveryActions recovery_actions(const std::optional<Journal> &journal, bool staging,
+                                        bool backup, bool target) {
+  RecoveryActions actions;
+  if (!journal) {
+    actions.remove_staging = staging;
+    actions.remove_journal = true;
+    return actions;
   }
-  return target_exists ? JournalOutcome::remove_backup : JournalOutcome::restore_backup;
+  switch (journal->phase) {
+    case kJournalCommitted:  // both renames finished: all names are distinct
+      actions.remove_staging = staging;
+      actions.remove_backup = backup;
+      actions.remove_journal = true;
+      return actions;
+    case kJournalCreating:  // no backup belongs to this promotion
+      if (staging && target) {
+        actions.ambiguous = true;  // reset inside step 4
+        return actions;
+      }
+      actions.remove_staging = staging;  // reset before step 4
+      actions.remove_journal = true;
+      return actions;
+    default:  // kJournalReplacing
+      if (!backup) {
+        if (staging && !target) {
+          actions.ambiguous = true;  // not reachable by promote(); keep it all
+          return actions;
+        }
+        actions.remove_staging = staging;  // reset before step 3
+        actions.remove_journal = true;
+        return actions;
+      }
+      if (!target) {
+        actions.restore_backup = true;  // reset between steps 3 and 4
+        actions.remove_staging = staging;
+        actions.remove_journal = true;
+        return actions;
+      }
+      if (staging) {
+        actions.ambiguous = true;  // reset inside step 3 or step 4
+        return actions;
+      }
+      actions.remove_backup = true;  // reset before step 5
+      actions.remove_journal = true;
+      return actions;
+  }
 }
 
 // ---------------------------------------------------------------- lines

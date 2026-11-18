@@ -105,7 +105,13 @@ The firmware accepts only 8.3 file names directly under an allow-listed
 directory (currently `fonts/`), up to 16 MiB each. It writes to a temporary
 file (`fonts/cjk.tmp`) and verifies the SHA-256 before it replaces the
 existing file. A failed, interrupted, or corrupt upload leaves the existing
-file in place. The protocol is documented in `main/sd_loader_policy.hpp`.
+file in place. The replacement itself is journalled (`fonts/cjk.jnl`, with the
+old file kept as `fonts/cjk.bak` until the next boot), so a reset part-way
+through is finished or undone at boot. In the rare case where a reset leaves
+two names that may share data, the firmware leaves them alone, logs a
+warning, and refuses uploads of that file (`device refused BEGIN: recovery`).
+To repair the card, copy `fonts/` off it, delete it, and copy it back. The
+protocol is documented in `main/sd_loader_policy.hpp`.
 
 ## Touch controls
 

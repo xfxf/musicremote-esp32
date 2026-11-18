@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -117,7 +118,6 @@ void test_paths() {
 }
 
 void test_recovery() {
-  using loader::JournalOutcome;
   using loader::ReservedKind;
   assert(loader::reserved_kind("CJK.TMP") == ReservedKind::staging);
   assert(loader::reserved_kind("cjk.jnl") == ReservedKind::journal);
@@ -125,24 +125,51 @@ void test_recovery() {
   assert(loader::reserved_kind("CJK.TTF") == ReservedKind::none);
   assert(loader::reserved_kind("README") == ReservedKind::none);
 
-  // Promotion completed: the journalled target exists, so the backup goes.
-  assert(loader::journal_outcome("fonts", "CJK.JNL", "cjk.ttf", true, true) ==
-         JournalOutcome::remove_backup);
-  // Reset between the renames: restore the backup to the exact name. A
-  // sibling sharing the stem (CJK.OTF) is irrelevant to the lookup.
-  assert(loader::journal_outcome("fonts", "CJK.JNL", "cjk.ttf", true, false) ==
-         JournalOutcome::restore_backup);
-  // Journal written but nothing moved aside, or already handled.
-  assert(loader::journal_outcome("fonts", "CJK.JNL", "cjk.ttf", false, true) ==
-         JournalOutcome::no_backup);
-  assert(loader::journal_outcome("fonts", "CJK.JNL", "cjk.ttf", false, false) ==
-         JournalOutcome::no_backup);
-  // An unusable record never deletes or moves the backup.
-  for (const std::string recorded : {"", "other.ttf", "../x.ttf", "cjk.bak", "cjk.jnl",
-                                     "cjk.tmp", "a/cjk.ttf"}) {
-    assert(loader::journal_outcome("fonts", "CJK.JNL", recorded, true, false) ==
-           JournalOutcome::unusable);
+  // Journal parsing.
+  assert(loader::journal_content('R', "cjk.ttf") == "Rcjk.ttf");
+  const auto replacing = loader::parse_journal("fonts", "CJK.JNL", "Rcjk.ttf");
+  assert(replacing && replacing->phase == 'R' && replacing->target == "cjk.ttf");
+  assert(loader::parse_journal("fonts", "CJK.JNL", "+CJK.TTF"));
+  for (const std::string torn : {"", "R", "cjk.ttf", "Xcjk.ttf", "Rother.ttf", "R../x.ttf",
+                                 "Rcjk.bak", "Rcjk.jnl", "Rcjk.tmp", "Ra/cjk.ttf"}) {
+    assert(!loader::parse_journal("fonts", "CJK.JNL", torn));
   }
+
+  const auto act = [](std::optional<loader::Journal> journal, bool staging, bool backup,
+                      bool target) {
+    const auto a = loader::recovery_actions(journal, staging, backup, target);
+    std::string out;
+    if (a.restore_backup) out += "restore ";
+    if (a.remove_staging) out += "-tmp ";
+    if (a.remove_backup) out += "-bak ";
+    if (a.remove_journal) out += "-jnl ";
+    if (a.ambiguous) out += "ambiguous ";
+    return out;
+  };
+  const loader::Journal r{'R', "cjk.ttf"};
+  const loader::Journal n{'N', "cjk.ttf"};
+  const loader::Journal c{'+', "cjk.ttf"};
+
+  // Replacing an existing target.
+  assert(act(r, true, false, true) == "-tmp -jnl ");          // reset before the first rename
+  assert(act(r, true, true, true) == "ambiguous ");           // inside a rename: may share data
+  assert(act(r, true, true, false) == "restore -tmp -jnl ");  // between the renames
+  assert(act(r, false, true, false) == "restore -jnl ");
+  assert(act(r, false, true, true) == "-bak -jnl ");          // before the commit byte
+  assert(act(r, true, false, false) == "ambiguous ");
+  assert(act(r, false, false, true) == "-jnl ");
+  // Creating a new target.
+  assert(act(n, true, false, false) == "-tmp -jnl ");
+  assert(act(n, true, false, true) == "ambiguous ");          // inside the staging rename
+  assert(act(n, false, false, true) == "-jnl ");
+  assert(act(n, false, true, true) == "-jnl ");               // a foreign backup is kept
+  // Committed: every name is distinct.
+  assert(act(c, false, true, true) == "-bak -jnl ");
+  assert(act(c, true, true, true) == "-tmp -bak -jnl ");
+  assert(act(c, false, false, true) == "-jnl ");
+  // Torn journal: nothing renamed yet, or both renames done. Backup kept.
+  assert(act(std::nullopt, true, true, true) == "-tmp -jnl ");
+  assert(act(std::nullopt, false, true, false) == "-jnl ");
 }
 
 void test_line_assembler() {

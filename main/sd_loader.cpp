@@ -52,11 +52,27 @@ constexpr TickType_t kReplyWait = pdMS_TO_TICKS(50);
 // Free space required beyond the file itself, for FAT cluster rounding and
 // directory growth.
 constexpr uint64_t kFreeSpaceMarginBytes = 256 * 1024;
-// Reserved entries (*.tmp, *.jnl) handled per boot-time recovery pass.
-constexpr size_t kRecoveryBatch = 16;
 
 std::string absolute(const std::string &relpath) {
   return std::string(kMountPoint) + "/" + relpath;
+}
+
+enum class JournalRead { absent, read, error };
+
+// Reads a journal (a phase byte and an 8.3 name).
+JournalRead read_journal(const std::string &path, std::string &content) {
+  const int journal = open(path.c_str(), O_RDONLY);
+  if (journal < 0) {
+    return errno == ENOENT ? JournalRead::absent : JournalRead::error;
+  }
+  char buffer[24] = {};
+  const ssize_t length = read(journal, buffer, sizeof(buffer) - 1);
+  close(journal);
+  if (length < 0) {
+    return JournalRead::error;
+  }
+  content.assign(buffer, static_cast<size_t>(length));
+  return JournalRead::read;
 }
 
 class Loader {
@@ -235,6 +251,10 @@ class Loader {
       reply_nak("BEGIN", "path");
       return;
     }
+    if (!promotion_settled(*path)) {
+      reply_nak("BEGIN", "recovery");
+      return;
+    }
     if (command.size > kMaxFileBytes) {
       reply_nak("BEGIN", "size");
       return;
@@ -374,32 +394,60 @@ class Loader {
     send(reply, sd_loader::reply_file(reply, FileReply::ok, path, size, actual));
   }
 
-  // Replaces the target with the verified staging file. The previous target
-  // becomes <stem>.bak rather than being deleted: a reader that opened it
-  // before the upload (the run-time CJK font holds its file open) keeps
-  // valid clusters until reboot, when recover_directory() deletes it. The
-  // journal written first names the target, so a reset between the renames
-  // is undone at boot by restoring the backup to that exact name.
+  // True unless this stem has a journal that boot recovery left in place
+  // (ambiguous) or could not read. Uploading then could truncate or delete a
+  // name that shares clusters with the target.
+  bool promotion_settled(const Relpath &path) {
+    std::string content;
+    switch (read_journal(absolute(path.journal()), content)) {
+      case JournalRead::absent:
+        return true;
+      case JournalRead::error:
+        return false;
+      case JournalRead::read: {
+        const auto journal = sd_loader::parse_journal(path.directory, path.stem + ".jnl", content);
+        return journal && journal->phase == sd_loader::kJournalCommitted;
+      }
+    }
+    return false;
+  }
+
+  // Replaces the target with the verified staging file, following the
+  // journalled sequence in sd_loader_policy.hpp so a reset at any point is
+  // recoverable at boot. The previous target becomes <stem>.bak rather than
+  // being deleted: a reader that opened it before the upload (the run-time
+  // CJK font holds its file open) keeps valid clusters until reboot, when
+  // recovery deletes it.
   bool promote() {
     const std::string target = absolute(path_->target());
     const std::string staging = absolute(path_->staging());
     const std::string backup = absolute(path_->backup());
+    const std::string journal = absolute(path_->journal());
     struct stat status {};
     const bool had_target = stat(target.c_str(), &status) == 0;
-    if (had_target) {
-      if (!write_journal(absolute(path_->journal()), path_->name())) {
-        return false;
-      }
-      unlink(backup.c_str());
-      if (rename(target.c_str(), backup.c_str()) != 0) {
-        return false;
-      }
+    if (had_target && !S_ISREG(status.st_mode)) {
+      return false;
+    }
+    if (unlink(backup.c_str()) != 0 && errno != ENOENT) {
+      return false;
+    }
+    const char phase = had_target ? sd_loader::kJournalReplacing : sd_loader::kJournalCreating;
+    if (!write_journal(journal, sd_loader::journal_content(phase, path_->name()))) {
+      return false;
+    }
+    if (had_target && rename(target.c_str(), backup.c_str()) != 0) {
+      unlink(journal.c_str());
+      return false;
     }
     if (rename(staging.c_str(), target.c_str()) != 0) {
-      if (had_target) {
-        rename(backup.c_str(), target.c_str());
+      if (!had_target || rename(backup.c_str(), target.c_str()) == 0) {
+        unlink(journal.c_str());
       }
       return false;
+    }
+    if (!commit_journal(journal)) {
+      // The file is in place; boot recovery finishes the cleanup.
+      ESP_LOGW(kTag, "Could not commit %s", journal.c_str());
     }
     return true;
   }
@@ -432,14 +480,26 @@ class Loader {
     active_ = false;
   }
 
-  static bool write_journal(const std::string &path, const std::string &name) {
+  static bool write_journal(const std::string &path, const std::string &content) {
     const int journal = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (journal < 0) {
       return false;
     }
-    const bool written = write(journal, name.data(), name.size()) ==
-                             static_cast<ssize_t>(name.size()) &&
+    const bool written = write(journal, content.data(), content.size()) ==
+                             static_cast<ssize_t>(content.size()) &&
                          fsync(journal) == 0;
+    close(journal);
+    return written;
+  }
+
+  // Overwrites only the phase byte, so a reset leaves either phase intact.
+  static bool commit_journal(const std::string &path) {
+    const int journal = open(path.c_str(), O_WRONLY);
+    if (journal < 0) {
+      return false;
+    }
+    const char committed = sd_loader::kJournalCommitted;
+    const bool written = write(journal, &committed, 1) == 1 && fsync(journal) == 0;
     close(journal);
     return written;
   }
@@ -491,96 +551,111 @@ class Loader {
 
 void task_entry(void *argument) { static_cast<Loader *>(argument)->run(); }
 
-// Handles one promotion journal; returns false, keeping the journal, when its
-// backup could not be dealt with.
-bool recover_journal(const std::string &directory, std::string_view directory_name,
-                     const std::string &name) {
-  const std::string path = directory + "/" + name;
-  char recorded[16] = {};
-  const int journal = open(path.c_str(), O_RDONLY);
-  const ssize_t length = journal < 0 ? -1 : read(journal, recorded, sizeof(recorded) - 1);
-  if (journal >= 0) {
-    close(journal);
-  }
-  const std::string target_name =
-      length > 0 ? std::string(recorded, static_cast<size_t>(length)) : std::string();
-  const std::string backup = directory + "/" + name.substr(0, name.rfind('.')) + ".bak";
-  const std::string target = directory + "/" + target_name;
+enum class Lookup { absent, present, error };
+
+Lookup lookup(const std::string &path) {
   struct stat status {};
-  const bool backup_exists = stat(backup.c_str(), &status) == 0;
-  const bool target_exists = !target_name.empty() && stat(target.c_str(), &status) == 0;
-  bool handled = true;
-  switch (sd_loader::journal_outcome(directory_name, name, target_name, backup_exists,
-                                     target_exists)) {
-    case sd_loader::JournalOutcome::remove_backup:
-      handled = unlink(backup.c_str()) == 0;
-      if (handled) {
-        ESP_LOGI(kTag, "Removed stale %s", backup.c_str());
-      }
-      break;
-    case sd_loader::JournalOutcome::restore_backup:
-      handled = rename(backup.c_str(), target.c_str()) == 0;
-      if (handled) {
-        ESP_LOGW(kTag, "Restored %s from an interrupted replacement", target.c_str());
-      } else {
-        ESP_LOGE(kTag, "Could not restore %s from %s", target.c_str(), backup.c_str());
-      }
-      break;
-    case sd_loader::JournalOutcome::unusable:
-      ESP_LOGW(kTag, "Ignoring unreadable %s; any backup is kept", path.c_str());
-      break;
-    case sd_loader::JournalOutcome::no_backup:
-      break;
+  if (stat(path.c_str(), &status) == 0) {
+    return Lookup::present;
   }
-  return handled && unlink(path.c_str()) == 0;
+  return errno == ENOENT ? Lookup::absent : Lookup::error;
+}
+
+// Recovers one stem from its journal (see sd_loader::recovery_actions). Any
+// lookup or read error other than "not found" leaves everything for the next
+// boot.
+void recover_journal(const std::string &directory, std::string_view directory_name,
+                     const std::string &name) {
+  const std::string journal_path = directory + "/" + name;
+  const std::string stem = name.substr(0, name.rfind('.'));
+  std::string content;
+  if (read_journal(journal_path, content) != JournalRead::read) {
+    return;
+  }
+  const auto journal = sd_loader::parse_journal(directory_name, name, content);
+  const std::string staging = directory + "/" + stem + ".tmp";
+  const std::string backup = directory + "/" + stem + ".bak";
+  const std::string target = journal ? directory + "/" + journal->target : std::string();
+  const Lookup staging_found = lookup(staging);
+  const Lookup backup_found = lookup(backup);
+  const Lookup target_found = journal ? lookup(target) : Lookup::absent;
+  if (staging_found == Lookup::error || backup_found == Lookup::error ||
+      target_found == Lookup::error) {
+    ESP_LOGW(kTag, "Could not inspect %s; recovery deferred to the next boot",
+             journal_path.c_str());
+    return;
+  }
+  const auto actions =
+      sd_loader::recovery_actions(journal, staging_found == Lookup::present,
+                                  backup_found == Lookup::present,
+                                  target_found == Lookup::present);
+  if (actions.ambiguous) {
+    ESP_LOGW(kTag,
+             "Interrupted replacement of %s left entries that may share data; leaving them "
+             "untouched and refusing uploads of it (copy the card's fonts/ off and back to "
+             "repair)",
+             target.c_str());
+    return;
+  }
+  if (!journal) {
+    ESP_LOGW(kTag, "Ignoring unreadable %s; any backup is kept", journal_path.c_str());
+  }
+  if (actions.restore_backup) {
+    if (rename(backup.c_str(), target.c_str()) != 0) {
+      ESP_LOGE(kTag, "Could not restore %s from %s", target.c_str(), backup.c_str());
+      return;
+    }
+    ESP_LOGW(kTag, "Restored %s from an interrupted replacement", target.c_str());
+  }
+  bool handled = true;
+  if (actions.remove_staging) {
+    handled = unlink(staging.c_str()) == 0 && handled;
+  }
+  if (actions.remove_backup) {
+    const bool removed = unlink(backup.c_str()) == 0;
+    if (removed) {
+      ESP_LOGI(kTag, "Removed stale %s", backup.c_str());
+    }
+    handled = removed && handled;
+  }
+  if (actions.remove_journal && handled) {
+    unlink(journal_path.c_str());
+  }
 }
 
 // Finishes or undoes interrupted uploads and promotions before any upload or
-// file reader starts. Each pass streams the whole directory, collecting at
-// most kRecoveryBatch reserved entries, and handles them by direct lookups;
-// passes repeat until one finds nothing more it can handle.
+// file reader starts. One streaming pass handles each reserved entry as it is
+// listed, by direct lookups, so memory does not grow with the directory. An
+// orphan *.TMP (no journal for its stem) is an interrupted upload.
 void recover_directory(std::string_view directory_name) {
   const std::string directory = absolute(std::string(directory_name));
-  std::vector<std::string> kept;  // journals whose backup could not be handled
-  for (;;) {
-    DIR *listing = opendir(directory.c_str());
-    if (listing == nullptr) {
-      return;
+  DIR *listing = opendir(directory.c_str());
+  if (listing == nullptr) {
+    return;
+  }
+  while (const dirent *entry = readdir(listing)) {
+    if (entry->d_type != DT_REG) {
+      continue;
     }
-    std::vector<std::string> batch;
-    bool more = false;
-    while (const dirent *entry = readdir(listing)) {
-      if (entry->d_type != DT_REG ||
-          sd_loader::reserved_kind(entry->d_name) == sd_loader::ReservedKind::none ||
-          std::find(kept.begin(), kept.end(), entry->d_name) != kept.end()) {
-        continue;
-      }
-      if (batch.size() == kRecoveryBatch) {
-        more = true;
+    const std::string name(entry->d_name);
+    switch (sd_loader::reserved_kind(name)) {
+      case sd_loader::ReservedKind::journal:
+        recover_journal(directory, directory_name, name);
+        break;
+      case sd_loader::ReservedKind::staging: {
+        const std::string stem = name.substr(0, name.rfind('.'));
+        const std::string path = directory + "/" + name;
+        if (lookup(directory + "/" + stem + ".jnl") == Lookup::absent &&
+            unlink(path.c_str()) == 0) {
+          ESP_LOGI(kTag, "Removed stale %s", path.c_str());
+        }
         break;
       }
-      batch.emplace_back(entry->d_name);
-    }
-    closedir(listing);
-
-    for (const auto &name : batch) {
-      const std::string path = directory + "/" + name;
-      if (sd_loader::reserved_kind(name) == sd_loader::ReservedKind::staging) {
-        if (unlink(path.c_str()) == 0) {
-          ESP_LOGI(kTag, "Removed stale %s", path.c_str());
-        } else {
-          kept.push_back(name);
-        }
-        continue;
-      }
-      if (!recover_journal(directory, directory_name, name)) {
-        kept.push_back(name);
-      }
-    }
-    if (!more) {
-      return;
+      case sd_loader::ReservedKind::none:
+        break;
     }
   }
+  closedir(listing);
 }
 
 }  // namespace
