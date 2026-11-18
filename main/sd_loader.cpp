@@ -377,10 +377,23 @@ class Loader {
       reply_nak("END", "write");
       return;
     }
-    if (!promote()) {
-      fail("rename");
-      reply_nak("END", "rename");
-      return;
+    switch (promote()) {
+      case Promotion::done:
+        break;
+      case Promotion::unchanged:
+        fail("rename");
+        reply_nak("END", "rename");
+        return;
+      case Promotion::uncertain:
+        // A rename can fail after partly happening, leaving names that share
+        // data. Keep the staging file and journal for boot recovery; uploads
+        // of this stem are refused until then (promotion_settled()).
+        ESP_LOGE(kTag, "Replacing %s failed part-way; reboot to recover it",
+                 path_->target().c_str());
+        release(false);
+        failure_ = "rename";
+        reply_nak("END", "rename");
+        return;
     }
     const Relpath path = *path_;
     const uint32_t size = progress_.declared_size();
@@ -412,13 +425,19 @@ class Loader {
     return false;
   }
 
+  enum class Promotion {
+    done,
+    unchanged,  // failed before the journal: the card is as it was
+    uncertain,  // failed after the journal: everything is left for recovery
+  };
+
   // Replaces the target with the verified staging file, following the
   // journalled sequence in sd_loader_policy.hpp so a reset at any point is
   // recoverable at boot. The previous target becomes <stem>.bak rather than
   // being deleted: a reader that opened it before the upload (the run-time
   // CJK font holds its file open) keeps valid clusters until reboot, when
   // recovery deletes it.
-  bool promote() {
+  Promotion promote() {
     const std::string target = absolute(path_->target());
     const std::string staging = absolute(path_->staging());
     const std::string backup = absolute(path_->backup());
@@ -426,30 +445,26 @@ class Loader {
     struct stat status {};
     const bool had_target = stat(target.c_str(), &status) == 0;
     if (had_target && !S_ISREG(status.st_mode)) {
-      return false;
+      return Promotion::unchanged;
     }
     if (unlink(backup.c_str()) != 0 && errno != ENOENT) {
-      return false;
+      return Promotion::unchanged;
     }
     const char phase = had_target ? sd_loader::kJournalReplacing : sd_loader::kJournalCreating;
     if (!write_journal(journal, sd_loader::journal_content(phase, path_->name()))) {
-      return false;
+      // A torn journal is harmless: recovery keeps any backup and deletes
+      // only the (distinct) staging file and the journal.
+      return Promotion::uncertain;
     }
-    if (had_target && rename(target.c_str(), backup.c_str()) != 0) {
-      unlink(journal.c_str());
-      return false;
-    }
-    if (rename(staging.c_str(), target.c_str()) != 0) {
-      if (!had_target || rename(backup.c_str(), target.c_str()) == 0) {
-        unlink(journal.c_str());
-      }
-      return false;
+    if ((had_target && rename(target.c_str(), backup.c_str()) != 0) ||
+        rename(staging.c_str(), target.c_str()) != 0) {
+      return Promotion::uncertain;
     }
     if (!commit_journal(journal)) {
       // The file is in place; boot recovery finishes the cleanup.
       ESP_LOGW(kTag, "Could not commit %s", journal.c_str());
     }
-    return true;
+    return Promotion::done;
   }
 
   // ------------------------------------------------------------ state
@@ -592,8 +607,8 @@ void recover_journal(const std::string &directory, std::string_view directory_na
   if (actions.ambiguous) {
     ESP_LOGW(kTag,
              "Interrupted replacement of %s left entries that may share data; leaving them "
-             "untouched and refusing uploads of it (copy the card's fonts/ off and back to "
-             "repair)",
+             "untouched and refusing uploads of it (power off, back up fonts/, recreate it, "
+             "then restore only data files, excluding .tmp/.bak/.jnl)",
              target.c_str());
     return;
   }

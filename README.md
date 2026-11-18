@@ -110,7 +110,10 @@ old file kept as `fonts/cjk.bak` until the next boot), so a reset part-way
 through is finished or undone at boot. In the rare case where a reset leaves
 two names that may share data, the firmware leaves them alone, logs a
 warning, and refuses uploads of that file (`device refused BEGIN: recovery`).
-To repair the card, copy `fonts/` off it, delete it, and copy it back. The
+To repair the card, power off, back up `fonts/` with a card reader, recreate
+the directory, and restore only the data files: leave `.tmp`, `.bak` and
+`.jnl` files in the backup. A replacement that fails part-way while running
+is left for the same boot-time recovery, so reboot before retrying. The
 protocol is documented in `main/sd_loader_policy.hpp`.
 
 ## Touch controls
