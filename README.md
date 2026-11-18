@@ -79,6 +79,43 @@ boots; connection changes apply after restart. `.env`, generated configuration,
 dependencies, and `build/` are ignored; never publish a binary built with real
 credentials.
 
+### Loading data onto the microSD card
+
+Data files such as the run-time CJK font can be written to the microSD card
+over the same USB connection, without opening the enclosure. Close
+`idf.py monitor` first, then run:
+
+```sh
+make load-data            # PORT=/dev/ttyACM0 by default
+```
+
+This fetches the pinned font with `tools/fetch_cjk_font.sh` into
+`build/data/fonts/cjk.ttf`, asks the device whether the card already holds an
+identical `fonts/cjk.ttf`, and uploads it if not. The board is not reset, and
+the firmware keeps running during the upload. Firmware that opens a file at
+boot, such as the CJK font, sees the new file after the next restart. To load
+another file or inspect the card:
+
+```sh
+python3 tools/load_sd_data.py --port /dev/ttyACM0 <local-file> fonts/<name>
+python3 tools/load_sd_data.py --port /dev/ttyACM0 --query fonts/cjk.ttf
+```
+
+The firmware accepts only 8.3 file names directly under an allow-listed
+directory (currently `fonts/`), up to 16 MiB each. It writes to a temporary
+file (`fonts/cjk.tmp`) and verifies the SHA-256 before it replaces the
+existing file. A failed, interrupted, or corrupt upload leaves the existing
+file in place. The replacement itself is journalled (`fonts/cjk.jnl`, with the
+old file kept as `fonts/cjk.bak` until the next boot), so a reset part-way
+through is finished or undone at boot. In the rare case where a reset leaves
+two names that may share data, the firmware leaves them alone, logs a
+warning, and refuses uploads of that file (`device refused BEGIN: recovery`).
+To repair the card, power off, back up `fonts/` with a card reader, recreate
+the directory, and restore only the data files: leave `.tmp`, `.bak` and
+`.jnl` files in the backup. A replacement that fails part-way while running
+is left for the same boot-time recovery, so reboot before retrying. The
+protocol is documented in `main/sd_loader_policy.hpp`.
+
 ## Touch controls
 
 | Surface | Tap | Long press |

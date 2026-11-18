@@ -558,6 +558,28 @@ On the SC01 Plus against the live AIMP host, the owner confirmed these cases:
 
 ![Now playing with cover after a track change](../artifacts/issue43-now.png)
 
+## USB microSD loader qualification (issue #49)
+
+Date: 2026-11-18. SC01 Plus on `/dev/ttyACM0` with a 64 GB microSD card,
+firmware built from this branch merged with #48 (the PSRAM-first LVGL
+allocator, which keeps internal RAM free for SD DMA). The board stayed in the
+case; nothing was removed or reset.
+
+- Boot logs `sd_loader: USB microSD loader ready (fonts/, up to 16 MiB)`.
+- `make load-data` uploaded `fonts/cjk.ttf` (DroidSansFallbackFull.ttf,
+  4,033,576 bytes) in 8.1 s at 488 KB/s with 0 chunk retries. The device
+  verified SHA-256 `2392015530438bafc48edfc4aee6d9de2387f627a6134d8ab3dfcc99d21c8240`
+  before renaming the temporary file into place.
+- A repeat run reported the file already on the card and skipped it.
+- `../x` and `mremote/x` were refused (`device refused BEGIN: path`).
+- An upload interrupted part-way left the existing file in place: a query
+  afterwards still returned the original size and SHA-256.
+- Opening the port did not reset the board (RTS is released before DTR), and
+  `idf.py monitor` logging and AIMP control kept working with the loader
+  installed.
+
+The font itself is used by the CJK fallback in #45, which is qualified there.
+
 ## Large-playlist reconnect loop qualification (issue #48)
 
 Date: 2026-11-17. SC01 Plus on `/dev/ttyACM0` with a 64 GB microSD card,
