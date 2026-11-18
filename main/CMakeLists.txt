@@ -97,6 +97,7 @@ idf_component_register(
         "monkeymote_client.cpp"
         "playlist_index.cpp"
         "music_ui.cpp"
+        "lvgl_allocator.cpp"
     INCLUDE_DIRS "." "${generated_include_dir}"
     REQUIRES
         esp_event
@@ -105,6 +106,7 @@ idf_component_register(
         esp_http_server
         esp_rom
         esp_driver_usb_serial_jtag
+        esp_driver_gpio
         fatfs
         spiffs
         nvs_flash
@@ -113,3 +115,7 @@ idf_component_register(
 )
 
 target_compile_features(${COMPONENT_LIB} PUBLIC cxx_std_20)
+
+# LVGL's custom-allocator hooks live in libmain, which is linked before
+# liblvgl; pull that object in up front (see lvgl_allocator.cpp).
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-u lv_mem_init")

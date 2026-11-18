@@ -16,6 +16,7 @@
       "main/playlist_cache_policy.hpp",
       "main/sd_loader.*",
       "main/sd_loader_policy.hpp",
+      "main/connection_policy.hpp",
       "main/device_settings.*",
       "main/settings_policy.hpp",
       "main/artwork_decoder.*",

@@ -560,9 +560,274 @@ On the SC01 Plus against the live AIMP host, the owner confirmed these cases:
 
 ## USB microSD loader qualification (issue #49)
 
-Pending: hardware dogfooding on the SC01 Plus. To record: firmware build and
-flash, the boot line from `sd_loader`, `make load-data` uploading the
-4,033,576-byte CJK font with its transfer time and throughput, a repeat run
-skipping the identical file, an interrupted upload leaving the existing file
-intact, and a reboot loading the new font. Also confirm that `idf.py monitor`
-and AIMP control keep working with the loader installed.
+Date: 2026-11-18. SC01 Plus on `/dev/ttyACM0` with a 64 GB microSD card,
+firmware built from this branch merged with #48 (the PSRAM-first LVGL
+allocator, which keeps internal RAM free for SD DMA). The board stayed in the
+case; nothing was removed or reset.
+
+- Boot logs `sd_loader: USB microSD loader ready (fonts/, up to 16 MiB)`.
+- `make load-data` uploaded `fonts/cjk.ttf` (DroidSansFallbackFull.ttf,
+  4,033,576 bytes) in 8.1 s at 488 KB/s with 0 chunk retries. The device
+  verified SHA-256 `2392015530438bafc48edfc4aee6d9de2387f627a6134d8ab3dfcc99d21c8240`
+  before renaming the temporary file into place.
+- A repeat run reported the file already on the card and skipped it.
+- `../x` and `mremote/x` were refused (`device refused BEGIN: path`).
+- An upload interrupted part-way left the existing file in place: a query
+  afterwards still returned the original size and SHA-256.
+- Opening the port did not reset the board (RTS is released before DTR), and
+  `idf.py monitor` logging and AIMP control kept working with the loader
+  installed.
+
+The font itself is used by the CJK fallback in #45, which is qualified there.
+
+## Large-playlist reconnect loop qualification (issue #48)
+
+Date: 2026-11-17. SC01 Plus on `/dev/ttyACM0` with a 64 GB microSD card,
+live AIMP host `aerocore.local:19371`, and the 48,321-row `NAS:Music`
+playlist (ID 2) active. Firmware image `0x1eb9a0` bytes.
+
+### Root cause
+
+With the reason logging added in this change, the original loop logged:
+
+```
+I (20482) monkeymote: Authenticated to aerocore.local:19371
+I (22223) monkeymote: Streaming 1223087-byte playlist frame to index storage
+W (35271) monkeymote: Closing AIMP connection: AIMP closed the connection (during large playlist transfer)
+I (43520) monkeymote: mDNS resolved aerocore.local to 192.168.227.178
+```
+
+It repeated every 23 seconds. No client deadline fired: AIMP closed the
+socket. Two faults combined.
+
+1. **AIMP liveness.** AIMP drops a client that has sent nothing for about
+   10 seconds (`docs/PROTOCOL.md`). The firmware sent a keepalive only after
+   10 seconds without receiving, which never happens mid-transfer. A host
+   probe reading the frame at 20 KB/s was cut off after 13.4 seconds; with a
+   client keepalive every 3 seconds the same read stayed connected for 90
+   seconds.
+2. **Slow storage after an SD panic.** On boot with a persisted index, the
+   100 cached queue rows' LVGL objects were allocated from internal RAM,
+   because `malloc()` places blocks under 4 KiB there. Internal free memory
+   fell from about 36 KiB to 867 bytes within one 200 ms sample. The microSD
+   SPI driver then could not allocate a 512-byte DMA bounce buffer, and
+   ESP-IDF panicked (`setup_dma_priv_buffer: Failed to allocate priv RX
+   buffer`, `LoadProhibited`) in the artwork cache's directory scan. The reset
+   left the card mid-read, so later boots failed to mount it
+   (`sdmmc_io_reset: unexpected return`) and fell back to the internal SPIFFS
+   partition. SPIFFS writes at about 19 KB/s (135 KB in 7 seconds), so
+   the 1.2 MB frame needed about 60 seconds, far beyond AIMP's 10-second
+   limit.
+
+### Fixes verified on hardware
+
+- A keepalive is sent whenever the client has sent nothing for 4 seconds, and
+  every request deadline (playlist, lyrics, library, library-play, cache
+  check, advanced controls, and the equalizer overlay) pauses while a partial
+  frame is in flight. Host tests: `tools/test_connection_policy.cpp` and
+  `tools/test_advanced_controls.cpp`.
+- LVGL uses a PSRAM-first allocator. On the same boot sequence, internal free
+  memory stayed at 100 to 118 KiB. Five later runs with an allocation-failure
+  hook reported no failure, and no run panicked.
+- Each mount attempt first clocks out an SPI-mode CMD12 and idle clocks. After
+  a USB chip reset this recovered the card that the panic had left
+  unmountable. After the panic's own software reset it did not; the PSRAM
+  allocator removes that panic.
+- On microSD, the frame streamed in 3.8 to 4.8 seconds in every run, with no
+  disconnect.
+
+### Index, cache, and refresh timings
+
+| Case | Serial evidence | Time |
+|---|---|---|
+| First build, version 3 index | `Indexed 48321 tracks ... (rebuilt)` | 143 to 147 s after a 4.2 s transfer |
+| Reset with the persisted marker | `Reused persisted playlist index without queue transfer: id=2 count=48321` | 0.9 s after authentication; no transfer |
+| Queue refresh (`refresh=1`) | `Indexed 48321 tracks for playlist -1 in 3035 ms (reused: source hash)` | 4.1 s transfer plus 3.0 s |
+| Switch to `Music` (195 rows) and back | `Indexed 48321 tracks for playlist 2 in 25953 ms (reused: content hash)`, then `... in 3079 ms (reused: source hash)` | 26 s, then 3 s for AIMP's follow-up current-queue response |
+
+Before the content hash was added, the same switch back rebuilt the index for
+the explicit-ID response (135 seconds), then started a second full rebuild for
+AIMP's follow-up current-queue response. The explicit-ID and current-queue responses
+differ only in the playlist ID and flags bytes, but they compress to different
+frames. Switching to the small playlist left `INDEX.DAT` in place; the switch
+back reused it. The playlist switch used a temporary diagnostic build, because
+a tap cannot be automated. The switch path itself is the production
+`activate_playlist` command, and that diagnostic hook is not committed.
+
+Serial logs from every run above contained no `Closing AIMP connection` line.
+After the final flash, the board was left online and idle. AIMP's active
+playlist was restored to `NAS:Music` (ID 2), as recorded at the start of the
+session.
+
+### Search
+
+AIMP's per-row strings are title, artist, album, and genre
+(`docs/PROTOCOL.md`). The version 3 index stores and searches title, artist,
+and album. Version 2 files were rejected at boot and rebuilt, not reused.
+Searching `messages` returned a title match (row 7873) and the Strawpeople
+tracks on the album `No new messages` (rows 39999 to 40001), whose titles and
+artist do not contain the word. `autechre` returned artist matches, and A-Z
+`M` returned title-prefix matches. Paging to row 48,300 read the final page.
+
+![Persisted queue after reset, marked cached, with the refresh button](../artifacts/issue48-cached-queue.png)
+![Refresh in progress](../artifacts/issue48-refreshing.png)
+![After refresh, authoritative](../artifacts/issue48-refreshed.png)
+![A-Z overlay](../artifacts/issue48-az.png)
+![A-Z M results](../artifacts/issue48-az-results.png)
+![Album match for "messages"](../artifacts/issue48-album-search.png)
+![Artist match for "autechre"](../artifacts/issue48-artist-search.png)
+![Search keyboard with the new placeholder](../artifacts/issue48-search-overlay.png)
+![Final page at row 48,300](../artifacts/issue48-deep-page.png)
+
+### Owner touch checks
+
+These were not exercised by touch:
+
+- Tap the refresh button on the cached `NAS:Music` queue. The title should
+  show the transfer, then the rows should return without `CACHED` in about
+  8 seconds.
+- Switch to a small playlist and back from the Playlists page. The rows should
+  return in about 30 seconds with no full rebuild.
+- In FIND > SEARCH, type an album name and confirm that its tracks are listed.
+- Confirm that the refresh, FIND, and arrow buttons respond reliably at their
+  new 44 px widths.
+
+### Owner touch re-check fixes and review round 1
+
+The owner's touch testing of PR #50 found three problems. Each was then
+reproduced on the board. A temporary diagnostic that sent a click to a queue
+row, and one that activated a playlist, stood in for touch; neither is
+committed.
+
+1. **The playlist reloaded when switching from NOW to QUEUE.** Page
+   navigation sends nothing to AIMP: six NOW/QUEUE switches logged no
+   request. Host probing showed that play, next, previous, pause, and stop
+   produce no change notification. The reload came from tapping a cached
+   row. The cached-play path activates the recorded playlist, and AIMP
+   answers every activation with a type 12 notification. The firmware treated
+   that echo as a change, which made the confirmation reply stale. The tap
+   therefore never played, and the 1.2 MB playlist was transferred three
+   times while the queue was blank:
+
+   ```
+   I (34700) monkeymote: AIMP playlist notification type 12
+   I (35561) monkeymote: Streaming 1223087-byte playlist frame to index storage
+   I (39479) monkeymote: Deferring large playlist received while index build is active
+   I (43871) monkeymote: Streaming 1223087-byte playlist frame to index storage
+   ```
+
+   After the fix, the echo is absorbed, one transfer runs, and the rows stay on
+   screen during it:
+
+   ```
+   I (34714) monkeymote: AIMP echoed our playlist activation; request already outstanding
+   I (34719) monkeymote: Streaming 1223087-byte playlist frame to index storage
+   I (42167) monkeymote: Indexed 48321 tracks for playlist -1 in 3187 ms (reused: source hash)
+   ```
+
+   A refresh likewise kept the visible page during `RECEIVING LIBRARY` and
+   `INDEXING LIBRARY`. A switch to `Music` and back now absorbs both echoes,
+   transfers once, reuses the index by content digest in 8.0 seconds, and
+   persists the cached-queue marker.
+2. **Tapping a FIND result did nothing.** This had the same cause, because the
+   index was cached after boot. With the fix, tapping `scared of flying` in
+   the cached `messages` results played it after one confirmation transfer,
+   about 8 seconds. In the authoritative state, tapping an `autechre` result
+   played it at once.
+3. **After a result is selected**, the filter is cleared and the queue stays
+   on the playlist page that holds the track: page 39,901 to 40,000 for
+   `scared of flying`, and page 1 to 100 for the Autechre row 8. The row is
+   scrolled into view and highlighted when AIMP reports it as current, and
+   the neighbouring tracks of the album are listed around it.
+
+Review round 1 also changed content-hash reuse in `playlist_index.cpp`. A
+current-playlist (`-1`) response no longer reuses an index stored under an
+explicit playlist ID. The response is decoded into a digest before the
+internal-flash wear throttle or the free-space reserve applies, so an
+unchanged playlist is never reported stale or `SD CARD FULL`. The digest
+writes nothing to storage, which cut the switch-back reuse from 26 seconds to
+8 seconds.
+
+![Cached FIND result selected: its playlist page, scrolled and highlighted](../artifacts/issue48-result-selected.png)
+![Authoritative FIND result selected on page 1](../artifacts/issue48-result-selected-direct.png)
+![Refresh re-validating with the page still visible](../artifacts/issue48-revalidating.png)
+
+AIMP was left stopped on `NAS:Music` (ID 2), as found.
+
+**Owner touch results (2026-11-18).** The owner's re-check of `2a7b2b9` found
+that selecting a track still showed the indexing state for a long time and
+did not always play. The optimistic-play design below replaced it. On the
+optimistic-play build, the owner confirmed by touch that:
+
+- tapping a queue row, a FIND search result, or an A-Z result plays at once
+  and goes to Now Playing;
+- the queue then returns to playlist order with the track highlighted;
+- switching playlists on the Playlists page behaves as expected.
+
+### Optimistic play, timings, and responsiveness (issue #48)
+
+Tapping a row now sends play-row and play at once, switches to Now Playing,
+and verifies afterwards against AIMP's type 5 and 11 reports. A cached queue
+first activates its playlist, and that activation's echo is absorbed. The
+library append-and-play confirmation is kept, because an appended row must
+exist before it can be played.
+
+The measurements below come from serial timestamps on the board, using
+temporary diagnostics that are not committed. Those diagnostics sent a click
+to a queue row or playlist row, perturbed one expected title, and discarded
+the cached index.
+
+| Measurement | Before | After |
+|---|---|---|
+| Tap to play-row sent | 8 s or never (confirmation transfer) | 17 to 95 ms (11 taps) |
+| Tap to verified match | n/a | 0.2 s typical, 2.3 s worst |
+| Refresh: request to first byte | 0.86 to 0.89 s | 0.90 s |
+| Refresh: transfer | 3.7 s | 3.8 to 4.2 s |
+| Refresh: source hash | 2.9 to 3.0 s (re-read) | 0 ms (hashed while streaming) |
+| Refresh: hash-match reuse | in the 3.0 s above | 65 to 249 ms |
+| Refresh: page publish | 2.1 s | 37 to 95 ms |
+| Refresh: request to rows ready | 9.6 to 9.8 s | 4.9 to 5.4 s |
+| Switch back to `NAS:Music` | 11.2 s (content digest 6.1 s) | 5.2 s (source hash) |
+| First index build | 134.5 s (search pass about 58 s) | 97 to 98 s |
+| Build: decode / rows / search area / finalize | 29.8 / 75.6 / 21.3 / 0.2 s (first instrumented) | 15.6-16.8 / 66.6-69.7 / 11.4-14.5 / 0.2 s |
+| FIND `messages` (11 matches) | 5.3 s (first instrumented) | 2.7 to 2.8 s (scan 2.6 s) |
+| A-Z `M` (2,341 matches) | 5.5 s (first instrumented) | 3.1 s (scan 2.5 s) |
+
+The original refresh path decoded nothing but re-read WIRE.TMP for its hash,
+and it loaded each page with three seeks per row in a 10 MB FAT file. Now the
+hash is computed while the frame streams, and a page loads with two
+sequential reads.
+
+The first-build speedup has two causes. Search entries go to their own
+sequential file during the row pass, which replaced 48,321 seeks. The build's
+stdio streams use 16 KiB internal DMA-capable buffers, so SD transfers are
+multi-sector. The progress bar weights the measured phases. At 52 s of a 98 s
+build it showed 55%, and it closed when the build finished.
+
+The perturbed-title test logged `Played row 3 does not match the index;
+refreshing`. The refresh followed with the rows still on screen, and the
+queue was ready 5.4 s after the request, with no repeated transfer.
+
+**GUI responsiveness.** Each 5-second window logs the worst GUI pass.
+Excluding the diagnostic screenshot's own lock hold:
+
+- During refreshes and the 98 s build, the worst pass was 4 to 61 ms (usually
+  9 to 31 ms).
+- Refilling queue rows takes 6 ms per frame. Before pooling, 8 new rows took
+  36 ms, and deleting a page took up to 112 ms.
+- A full-screen render, such as a tap changing pages, takes 55 to 130 ms of
+  LVGL time. 240 MHz and internal-RAM LVGL objects were each tried and made
+  no material difference, so both were left out.
+- The index worker now runs at priority 2, below the GUI (4), on the same
+  core.
+- A tap is handled in the LVGL pass that renders its result, so the Now
+  Playing page appears about 70 to 100 ms after the touch.
+
+The search scan runs on the network task. It sends AIMP keepalives during the
+scan, because an earlier experiment that took 81 s was dropped by AIMP.
+
+![Searching modal](../artifacts/issue48-searching.png)
+![Indexing modal](../artifacts/issue48-indexing-modal.png)
+![Loading playlist modal](../artifacts/issue48-loading-playlist.png)
+![Tap result: Now Playing at once](../artifacts/issue48-tap-now.png)
+![Queue after an A-Z selection: playlist order, highlighted](../artifacts/issue48-queue-after-selection.png)
