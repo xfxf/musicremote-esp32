@@ -116,46 +116,33 @@ void test_paths() {
   assert(!loader::validate_relpath(std::string_view("fonts/cjk\0.ttf", 14)));
 }
 
-bool has_step(const std::vector<loader::RecoveryStep> &steps, loader::RecoveryStep::Kind kind,
-              const std::string &name, const std::string &target = {}) {
-  return std::any_of(steps.begin(), steps.end(), [&](const loader::RecoveryStep &step) {
-    return step.kind == kind && step.name == name && step.target == target;
-  });
-}
+void test_recovery() {
+  using loader::JournalOutcome;
+  using loader::ReservedKind;
+  assert(loader::reserved_kind("CJK.TMP") == ReservedKind::staging);
+  assert(loader::reserved_kind("cjk.jnl") == ReservedKind::journal);
+  assert(loader::reserved_kind("CJK.BAK") == ReservedKind::none);  // via its journal
+  assert(loader::reserved_kind("CJK.TTF") == ReservedKind::none);
+  assert(loader::reserved_kind("README") == ReservedKind::none);
 
-void test_recovery_plan() {
-  using Kind = loader::RecoveryStep::Kind;
-  // Promotion completed: the journalled target exists, so the backup is stale.
-  auto steps = loader::recovery_plan("fonts", {"CJK.TTF", "CJK.BAK", "CJK.JNL", "CJK.TMP"},
-                                     {{"CJK.JNL", "cjk.ttf"}});
-  assert(steps.size() == 3);
-  assert(has_step(steps, Kind::remove, "CJK.TMP"));
-  assert(has_step(steps, Kind::remove, "CJK.BAK"));
-  assert(has_step(steps, Kind::remove_journal, "CJK.JNL"));
-
-  // Reset between the renames: the backup is restored to the exact name,
-  // even though another file shares its stem.
-  steps = loader::recovery_plan("fonts", {"CJK.OTF", "CJK.BAK", "CJK.JNL", "CJK.TMP"},
-                                {{"CJK.JNL", "cjk.ttf"}});
-  assert(steps.size() == 3);
-  assert(has_step(steps, Kind::remove, "CJK.TMP"));
-  assert(has_step(steps, Kind::restore, "CJK.BAK", "cjk.ttf"));
-  assert(has_step(steps, Kind::remove_journal, "CJK.JNL"));
-  // Restore precedes removing the journal.
-  assert(steps.back().kind == Kind::remove_journal);
-
-  // No usable journal: the backup may be the only copy, so it is kept.
-  steps = loader::recovery_plan("fonts", {"CJK.OTF", "CJK.BAK"}, {});
-  assert(steps.empty());
-  for (const std::string recorded : {"", "other.ttf", "../x.ttf", "cjk.bak", "cjk.jnl"}) {
-    steps = loader::recovery_plan("fonts", {"CJK.BAK", "CJK.JNL"}, {{"CJK.JNL", recorded}});
-    assert(steps.size() == 1 && has_step(steps, Kind::remove_journal, "CJK.JNL"));
+  // Promotion completed: the journalled target exists, so the backup goes.
+  assert(loader::journal_outcome("fonts", "CJK.JNL", "cjk.ttf", true, true) ==
+         JournalOutcome::remove_backup);
+  // Reset between the renames: restore the backup to the exact name. A
+  // sibling sharing the stem (CJK.OTF) is irrelevant to the lookup.
+  assert(loader::journal_outcome("fonts", "CJK.JNL", "cjk.ttf", true, false) ==
+         JournalOutcome::restore_backup);
+  // Journal written but nothing moved aside, or already handled.
+  assert(loader::journal_outcome("fonts", "CJK.JNL", "cjk.ttf", false, true) ==
+         JournalOutcome::no_backup);
+  assert(loader::journal_outcome("fonts", "CJK.JNL", "cjk.ttf", false, false) ==
+         JournalOutcome::no_backup);
+  // An unusable record never deletes or moves the backup.
+  for (const std::string recorded : {"", "other.ttf", "../x.ttf", "cjk.bak", "cjk.jnl",
+                                     "cjk.tmp", "a/cjk.ttf"}) {
+    assert(loader::journal_outcome("fonts", "CJK.JNL", recorded, true, false) ==
+           JournalOutcome::unusable);
   }
-
-  // Journal written but the target never moved aside: only the journal goes.
-  steps = loader::recovery_plan("fonts", {"CJK.TTF", "CJK.JNL"}, {{"CJK.JNL", "cjk.ttf"}});
-  assert(steps.size() == 1 && has_step(steps, Kind::remove_journal, "CJK.JNL"));
-  assert(loader::recovery_plan("fonts", {}, {}).empty());
 }
 
 void test_line_assembler() {
@@ -300,7 +287,7 @@ int main() {
   test_crc32();
   test_numbers();
   test_paths();
-  test_recovery_plan();
+  test_recovery();
   test_line_assembler();
   test_commands();
   test_progress();

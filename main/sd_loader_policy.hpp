@@ -174,7 +174,7 @@ struct Relpath {
   std::string staging() const { return directory + "/" + stem + ".tmp"; }
   std::string backup() const { return directory + "/" + stem + ".bak"; }
   // Records name() while the target is moved aside, because <stem>.bak alone
-  // cannot say which extension it came from (see recovery_plan()).
+  // cannot say which extension it came from (see journal_outcome()).
   std::string journal() const { return directory + "/" + stem + ".jnl"; }
 };
 
@@ -243,73 +243,51 @@ inline std::optional<Relpath> validate_relpath(std::string_view text) {
   return Relpath{std::string(directory), std::string(stem), std::string(extension)};
 }
 
-// One boot-time recovery step for an allow-listed directory.
-struct RecoveryStep {
-  enum class Kind {
-    remove,          // delete name
-    restore,         // rename name (a backup) to target
-    remove_journal,  // delete name, unless restoring its stem's backup failed
-  };
-  Kind kind;
-  std::string name;
-  std::string target;  // restore only
+// Boot-time recovery. Promotion writes <stem>.jnl naming the target, renames
+// the target to <stem>.bak, then renames <stem>.tmp to the target. Recovery
+// is driven by the journals, with the backup and target looked up by path,
+// so it never depends on seeing every directory entry in one scan.
+
+enum class ReservedKind { none, staging, journal };
+
+// Classifies a directory entry (as readdir returns it, typically upper case
+// without LFN support): *.TMP is an interrupted upload, *.JNL a promotion
+// record. *.BAK is not listed: backups are handled through their journals.
+inline ReservedKind reserved_kind(std::string_view name) {
+  const size_t dot = name.rfind('.');
+  if (dot == std::string_view::npos) {
+    return ReservedKind::none;
+  }
+  const std::string_view extension = name.substr(dot + 1);
+  if (ascii_iequals(extension, "tmp")) return ReservedKind::staging;
+  if (ascii_iequals(extension, "jnl")) return ReservedKind::journal;
+  return ReservedKind::none;
+}
+
+enum class JournalOutcome {
+  remove_backup,   // the target was promoted; the backup is superseded
+  restore_backup,  // a reset between the renames: rename the backup to target
+  no_backup,       // nothing was moved aside (or it was already handled)
+  unusable,        // the record is not a valid target for this stem
 };
 
-// Boot-time recovery for one allow-listed directory, run before any upload or
-// reader opens its files. names are the entries as readdir returns them
-// (upper case without LFN support); journals pairs each <stem>.JNL entry with
-// the target name it recorded. Promotion writes the journal, renames the
-// target to <stem>.bak, then renames <stem>.tmp to the target, so:
-//   - every *.TMP is an interrupted upload: removed;
-//   - a *.BAK whose journal names a target that exists was superseded:
-//     removed;
-//   - a *.BAK whose journal names a missing target is the only copy left by
-//     a reset between the renames: restored to that exact name;
-//   - a *.BAK without a usable journal is kept, since it may be the only copy;
-//   - every *.JNL is removed once its backup has been dealt with.
-inline std::vector<RecoveryStep> recovery_plan(
-    std::string_view directory, const std::vector<std::string> &names,
-    const std::vector<std::pair<std::string, std::string>> &journals) {
-  const auto split = [](std::string_view name) {
-    const size_t dot = name.rfind('.');
-    return dot == std::string_view::npos
-               ? std::pair{name, std::string_view{}}
-               : std::pair{name.substr(0, dot), name.substr(dot + 1)};
-  };
-  const auto present = [&](std::string_view wanted) {
-    return std::any_of(names.begin(), names.end(),
-                       [&](const std::string &name) { return ascii_iequals(name, wanted); });
-  };
-  std::vector<RecoveryStep> steps;
-  for (const auto &name : names) {
-    const auto [stem, extension] = split(name);
-    if (ascii_iequals(extension, "tmp")) {
-      steps.push_back({RecoveryStep::Kind::remove, name, {}});
-      continue;
-    }
-    if (!ascii_iequals(extension, "bak")) {
-      continue;
-    }
-    for (const auto &[journal, recorded] : journals) {
-      if (!ascii_iequals(split(journal).first, stem)) {
-        continue;
-      }
-      const auto target = validate_relpath(std::string(directory) + "/" + recorded);
-      if (!target || !ascii_iequals(target->stem, stem)) {
-        break;
-      }
-      if (present(recorded)) {
-        steps.push_back({RecoveryStep::Kind::remove, name, {}});
-      } else {
-        steps.push_back({RecoveryStep::Kind::restore, name, recorded});
-      }
-      break;
-    }
+// Decides what one journal means. recorded is the journal's content, the
+// target's name within directory; backup_exists and target_exists are
+// direct lookups of <stem>.bak and that target. The journal is deleted only
+// after the outcome's action succeeds. An unusable journal is deleted but its
+// backup, which may be the only copy, is kept.
+inline JournalOutcome journal_outcome(std::string_view directory, std::string_view journal_name,
+                                      std::string_view recorded, bool backup_exists,
+                                      bool target_exists) {
+  const std::string_view stem = journal_name.substr(0, journal_name.rfind('.'));
+  const auto target = validate_relpath(std::string(directory) + "/" + std::string(recorded));
+  if (!target || !ascii_iequals(target->stem, stem)) {
+    return JournalOutcome::unusable;
   }
-  for (const auto &[journal, recorded] : journals) {
-    steps.push_back({RecoveryStep::Kind::remove_journal, journal, {}});
+  if (!backup_exists) {
+    return JournalOutcome::no_backup;
   }
-  return steps;
+  return target_exists ? JournalOutcome::remove_backup : JournalOutcome::restore_backup;
 }
 
 // ---------------------------------------------------------------- lines

@@ -52,8 +52,8 @@ constexpr TickType_t kReplyWait = pdMS_TO_TICKS(50);
 // Free space required beyond the file itself, for FAT cluster rounding and
 // directory growth.
 constexpr uint64_t kFreeSpaceMarginBytes = 256 * 1024;
-// Bounds the boot-time stale-file scan of one allow-listed directory.
-constexpr size_t kMaxScannedEntries = 64;
+// Reserved entries (*.tmp, *.jnl) handled per boot-time recovery pass.
+constexpr size_t kRecoveryBatch = 16;
 
 std::string absolute(const std::string &relpath) {
   return std::string(kMountPoint) + "/" + relpath;
@@ -491,73 +491,94 @@ class Loader {
 
 void task_entry(void *argument) { static_cast<Loader *>(argument)->run(); }
 
-// Finishes or undoes interrupted uploads and promotions (see
-// sd_loader::recovery_plan) before any upload or file reader starts.
+// Handles one promotion journal; returns false, keeping the journal, when its
+// backup could not be dealt with.
+bool recover_journal(const std::string &directory, std::string_view directory_name,
+                     const std::string &name) {
+  const std::string path = directory + "/" + name;
+  char recorded[16] = {};
+  const int journal = open(path.c_str(), O_RDONLY);
+  const ssize_t length = journal < 0 ? -1 : read(journal, recorded, sizeof(recorded) - 1);
+  if (journal >= 0) {
+    close(journal);
+  }
+  const std::string target_name =
+      length > 0 ? std::string(recorded, static_cast<size_t>(length)) : std::string();
+  const std::string backup = directory + "/" + name.substr(0, name.rfind('.')) + ".bak";
+  const std::string target = directory + "/" + target_name;
+  struct stat status {};
+  const bool backup_exists = stat(backup.c_str(), &status) == 0;
+  const bool target_exists = !target_name.empty() && stat(target.c_str(), &status) == 0;
+  bool handled = true;
+  switch (sd_loader::journal_outcome(directory_name, name, target_name, backup_exists,
+                                     target_exists)) {
+    case sd_loader::JournalOutcome::remove_backup:
+      handled = unlink(backup.c_str()) == 0;
+      if (handled) {
+        ESP_LOGI(kTag, "Removed stale %s", backup.c_str());
+      }
+      break;
+    case sd_loader::JournalOutcome::restore_backup:
+      handled = rename(backup.c_str(), target.c_str()) == 0;
+      if (handled) {
+        ESP_LOGW(kTag, "Restored %s from an interrupted replacement", target.c_str());
+      } else {
+        ESP_LOGE(kTag, "Could not restore %s from %s", target.c_str(), backup.c_str());
+      }
+      break;
+    case sd_loader::JournalOutcome::unusable:
+      ESP_LOGW(kTag, "Ignoring unreadable %s; any backup is kept", path.c_str());
+      break;
+    case sd_loader::JournalOutcome::no_backup:
+      break;
+  }
+  return handled && unlink(path.c_str()) == 0;
+}
+
+// Finishes or undoes interrupted uploads and promotions before any upload or
+// file reader starts. Each pass streams the whole directory, collecting at
+// most kRecoveryBatch reserved entries, and handles them by direct lookups;
+// passes repeat until one finds nothing more it can handle.
 void recover_directory(std::string_view directory_name) {
   const std::string directory = absolute(std::string(directory_name));
-  DIR *listing = opendir(directory.c_str());
-  if (listing == nullptr) {
-    return;
-  }
-  std::vector<std::string> names;
-  while (names.size() < kMaxScannedEntries) {
-    const dirent *entry = readdir(listing);
-    if (entry == nullptr) {
-      break;
+  std::vector<std::string> kept;  // journals whose backup could not be handled
+  for (;;) {
+    DIR *listing = opendir(directory.c_str());
+    if (listing == nullptr) {
+      return;
     }
-    if (entry->d_type == DT_REG) {
-      names.emplace_back(entry->d_name);
+    std::vector<std::string> batch;
+    bool more = false;
+    while (const dirent *entry = readdir(listing)) {
+      if (entry->d_type != DT_REG ||
+          sd_loader::reserved_kind(entry->d_name) == sd_loader::ReservedKind::none ||
+          std::find(kept.begin(), kept.end(), entry->d_name) != kept.end()) {
+        continue;
+      }
+      if (batch.size() == kRecoveryBatch) {
+        more = true;
+        break;
+      }
+      batch.emplace_back(entry->d_name);
     }
-  }
-  closedir(listing);
+    closedir(listing);
 
-  std::vector<std::pair<std::string, std::string>> journals;
-  for (const auto &name : names) {
-    const size_t dot = name.rfind('.');
-    if (dot == std::string::npos || !sd_loader::ascii_iequals(name.substr(dot + 1), "jnl")) {
-      continue;
-    }
-    char recorded[16] = {};
-    const int journal = open((directory + "/" + name).c_str(), O_RDONLY);
-    ssize_t length = journal < 0 ? -1 : read(journal, recorded, sizeof(recorded) - 1);
-    if (journal >= 0) {
-      close(journal);
-    }
-    journals.emplace_back(name, length > 0 ? std::string(recorded, static_cast<size_t>(length))
-                                           : std::string());
-  }
-
-  std::vector<std::string> failed_stems;
-  const auto stem_of = [](const std::string &name) { return name.substr(0, name.rfind('.')); };
-  for (const auto &step : sd_loader::recovery_plan(directory_name, names, journals)) {
-    const std::string path = directory + "/" + step.name;
-    switch (step.kind) {
-      case sd_loader::RecoveryStep::Kind::remove:
+    for (const auto &name : batch) {
+      const std::string path = directory + "/" + name;
+      if (sd_loader::reserved_kind(name) == sd_loader::ReservedKind::staging) {
         if (unlink(path.c_str()) == 0) {
           ESP_LOGI(kTag, "Removed stale %s", path.c_str());
-        }
-        break;
-      case sd_loader::RecoveryStep::Kind::restore: {
-        const std::string target = directory + "/" + step.target;
-        if (rename(path.c_str(), target.c_str()) == 0) {
-          ESP_LOGW(kTag, "Restored %s from an interrupted replacement", target.c_str());
         } else {
-          ESP_LOGE(kTag, "Could not restore %s from %s", target.c_str(), path.c_str());
-          failed_stems.push_back(stem_of(step.name));
+          kept.push_back(name);
         }
-        break;
+        continue;
       }
-      case sd_loader::RecoveryStep::Kind::remove_journal: {
-        const std::string stem = stem_of(step.name);
-        const bool keep = std::any_of(failed_stems.begin(), failed_stems.end(),
-                                      [&](const std::string &failed) {
-                                        return sd_loader::ascii_iequals(failed, stem);
-                                      });
-        if (!keep) {
-          unlink(path.c_str());
-        }
-        break;
+      if (!recover_journal(directory, directory_name, name)) {
+        kept.push_back(name);
       }
+    }
+    if (!more) {
+      return;
     }
   }
 }
